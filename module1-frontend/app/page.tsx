@@ -1,79 +1,25 @@
-/**
- * SAIV Student Frontend - Module 1
- *
- * This is the skeleton implementation for the Student Frontend PWA.
- * Students must implement the check-in interface with camera access,
- * geolocation, and device binding.
- */
+'use client';
+import { useEffect, useState } from 'react';
+import { AuthCard } from '@/components/auth/AuthCard';
+import { StudentDashboard } from '@/components/check-in/StudentDashboard';
+import { getMe, logout } from '@/lib/api/auth';
+import { refreshAccessToken } from '@/lib/api/client';
+import type { User } from '@/types/api';
+
+const demoUser: User = { id: 'demo-student', email: 'student@demo.local', full_name: 'Alex Tan', role: 'student' };
 
 export default function Home() {
-  return (
-    <main className="min-h-screen p-8">
-      <h1 className="text-3xl font-bold mb-4">
-        SAIV - Secure Attendance System
-      </h1>
-      <p className="text-gray-600 mb-8">
-        Student Check-in Interface
-      </p>
-
-      {/* ================================================================== */}
-      {/* TODO: Implement the following features                             */}
-      {/* ================================================================== */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Authentication                                                     */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - Login form with email/password                                   */}
-      {/* - Registration form                                                */}
-      {/* - JWT token storage (secure, HttpOnly where possible)              */}
-      {/* - Auto-refresh token logic                                         */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Camera Access                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - WebRTC camera stream                                             */}
-      {/* - Liveness challenge UI (blink, head turn prompts)                 */}
-      {/* - Frame capture for face verification                              */}
-      {/* - Consent flow before camera access                                */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Geolocation                                                        */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - Geolocation API integration                                      */}
-      {/* - Explicit consent before location access                          */}
-      {/* - GPS coordinates sent with check-in                               */}
-      {/* - Error handling for denied permissions                            */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Device Binding                                                     */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - ECDSA key pair generation (Web Crypto API)                       */}
-      {/* - Public key rotation on each session                              */}
-      {/* - Device fingerprinting                                            */}
-      {/* - Secure key storage                                               */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* PWA Features                                                       */}
-      {/* ------------------------------------------------------------------ */}
-      {/* - Service worker for offline support                               */}
-      {/* - PWA manifest                                                     */}
-      {/* - Offline check-in queue with sync                                 */}
-      {/* - LocalForage for persistent storage                               */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Check-in Flow                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      {/* 1. Select active session                                           */}
-      {/* 2. Grant camera permission (with consent)                          */}
-      {/* 3. Complete liveness challenge                                     */}
-      {/* 4. Grant location permission (with consent)                        */}
-      {/* 5. Submit check-in to backend                                      */}
-      {/* 6. Display success/failure with risk score                         */}
-
-      <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mt-8">
-        <p className="font-bold">Skeleton Implementation</p>
-        <p>Please implement the required features as described above.</p>
-      </div>
-    </main>
-  );
+  const [user, setUser] = useState<User>();
+  const [demo, setDemo] = useState(false);
+  const [restoring, setRestoring] = useState(true);
+  useEffect(() => {
+    refreshAccessToken().then(ok => ok ? getMe().then(setUser).catch(() => undefined) : undefined).finally(() => setRestoring(false));
+    if ('serviceWorker' in navigator) {
+      if (process.env.NODE_ENV === 'production') navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+      else navigator.serviceWorker.getRegistrations().then(items => items.forEach(item => item.unregister()));
+    }
+  }, []);
+  if (restoring) return <main className="loading-screen"><div className="brand-mark">S</div><p>Preparing your secure session…</p></main>;
+  if (!user) return <AuthCard onAuthenticated={setUser} onDemo={() => { setDemo(true); setUser(demoUser); }}/>;
+  return <StudentDashboard user={user} demo={demo} onLogout={async () => { if (!demo) await logout(); setDemo(false); setUser(undefined); }}/>;
 }
