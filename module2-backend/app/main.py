@@ -56,7 +56,8 @@ def db_health():
         connection.execute(text("SELECT 1"))
     return {"database": "connected"}
 
-@app.post("/auth/register", status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED)
+@app.post("/auth/register", status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def register_user(
     user_data: UserRegister,
     db: Session = Depends(get_db)
@@ -97,7 +98,8 @@ def register_user(
     }
 
 
-@app.post("/auth/login")
+@app.post("/api/v1/auth/login")
+@app.post("/auth/login", include_in_schema=False)
 def login_user(
     login_data: UserLogin,
     db: Session = Depends(get_db)
@@ -152,7 +154,8 @@ def login_user(
         }
     }
     
-@app.post("/auth/refresh")
+@app.post("/api/v1/auth/refresh")
+@app.post("/auth/refresh", include_in_schema=False)
 def refresh_access_token(
     token_data: RefreshTokenRequest,
     db: Session = Depends(get_db)
@@ -208,7 +211,8 @@ def refresh_access_token(
         "token_type": "bearer"
     }
     
-@app.get("/auth/me")
+@app.get("/api/v1/users/me")
+@app.get("/auth/me", include_in_schema=False)
 def get_me(current_user: User = Depends(get_current_user)):
     return {
         "id": current_user.id,

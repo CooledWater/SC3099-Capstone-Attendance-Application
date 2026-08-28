@@ -51,7 +51,7 @@ services:
     environment:
       DATABASE_URL: postgresql://saiv:saiv_password@postgres:5432/saiv
       REDIS_URL: redis://redis:6379
-      SECRET_KEY: your-secret-key-change-in-production
+      JWT_SECRET: your-secret-key-change-in-production
       FACE_SERVICE_URL: http://face-recognition:8001
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
