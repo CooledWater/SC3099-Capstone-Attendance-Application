@@ -1,430 +1,648 @@
-"""
-SAIV Face Recognition & Risk Service - Module 3
+"""HTTP wiring for the SAIV face-recognition and risk service.
 
-This is the skeleton implementation for the Face Recognition module.
-Students must implement face enrollment, verification, liveness detection,
-and risk scoring.
-
-Privacy Requirements:
-- NO raw face images should be stored
-- Process images in-memory only
-- Store only SHA-256 hashes of face embeddings
-
-Recommended Libraries:
-- MediaPipe: Face detection and 468-landmark face mesh
-- OpenCV: Image processing
-- Pillow: Image loading from base64
-- NumPy: Numerical operations
+All biometric processing is local and request-scoped. This module deliberately
+contains no persistence, cache, or request-body logging.
 """
 
-from fastapi import FastAPI, HTTPException
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, Dict, List, Any
+from fastapi.responses import JSONResponse
+
+from .attestation import verify_device_attestation
+from .config import settings
+from .detection import (
+    FaceDetectionError,
+    FaceDetectionResult,
+    ModelUnavailableError,
+    detect_face,
+)
+from .embedding import (
+    EmbeddingModelUnavailableError,
+    FaceEmbeddingError,
+    NoFaceError,
+    extract_face_embedding,
+)
+from .imaging import InvalidImageError, decode_base64_image
+from .liveness import (
+    LivenessUnavailableError,
+    analyze_face_mesh,
+    assess_liveness,
+    detect_blink,
+)
+from .metrics import (
+    record_face_outcome,
+    record_liveness_outcome,
+    record_risk_outcome,
+    setup_metrics,
+)
+from .quality import assess_face_quality
+from .risk import assess_risk as calculate_risk
+from .risk import detect_vpn_proxy
+from .schemas import (
+    DeviceAttestRequest,
+    DeviceAttestResponse,
+    FaceEnrollRequest,
+    FaceEnrollResponse,
+    FaceMatchRequest,
+    FaceMatchResponse,
+    FaceVerifyRequest,
+    FaceVerifyResponse,
+    HealthResponse,
+    LivenessRequest,
+    LivenessResponse,
+    RiskAssessRequest,
+    RiskAssessResponse,
+    RootResponse,
+)
+from .telemetry import (
+    configure_privacy_logging,
+    configure_telemetry,
+    operation_span,
+    safe_log,
+    set_span_attributes,
+)
+from .template import (
+    InvalidEmbeddingError as InvalidTemplateEmbeddingError,
+    InvalidTemplateHashError,
+    compare_templates,
+    simhash_hex,
+    validate_template_hash,
+)
+
+
+DISPLAY_NAME = "SAIV Face Recognition & Risk Service"
+_MAX_JSON_OVERHEAD_BYTES = 128 * 1024
+
+logger = (
+    configure_privacy_logging()
+    if settings.json_logging_enabled
+    else logging.getLogger(settings.service_name)
+)
 
 app = FastAPI(
     title="SAIV Face Recognition Service",
-    description="Face enrollment, verification, liveness detection, and risk scoring service",
-    version="1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    description=(
+        "Face enrollment, verification, liveness detection, and risk scoring "
+        "service"
+    ),
+    version=settings.service_version,
 )
 
 
-# =============================================================================
-# REQUEST/RESPONSE MODELS
-# =============================================================================
+class ContentLengthLimitMiddleware:
+    """Reject an obviously oversized JSON request before body parsing."""
 
-class FaceEnrollRequest(BaseModel):
-    """Request model for face enrollment."""
-    user_id: str
-    image: str  # Base64 encoded image
-    camera_consent: bool = False
+    def __init__(self, app: Any) -> None:
+        self.application = app
+        encoded_image_limit = 4 * ((settings.max_image_bytes + 2) // 3)
+        self.max_body_bytes = encoded_image_limit + _MAX_JSON_OVERHEAD_BYTES
 
-
-class FaceEnrollResponse(BaseModel):
-    """Response model for face enrollment."""
-    enrollment_successful: bool
-    face_template_hash: str  # 64-char SHA-256 hex string
-    quality_score: float  # 0.0 to 1.0
-    details: Dict[str, Any]
-
-
-class FaceVerifyRequest(BaseModel):
-    """Request model for face verification."""
-    image: str  # Base64 encoded image
-    reference_template_hash: str  # Hash from enrollment
-
-
-class FaceVerifyResponse(BaseModel):
-    """Response model for face verification."""
-    match_passed: bool
-    match_score: float  # 0.0 to 1.0
-    match_threshold: float  # Default: 0.70
-    face_detected: bool
-    current_template_hash: str
-
-
-class LivenessRequest(BaseModel):
-    """Request model for liveness check."""
-    challenge_response: str  # Base64 encoded image
-    challenge_type: str = "blink"  # blink, head_turn, passive
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("method") in {
+            "POST",
+            "PUT",
+            "PATCH",
+        }:
+            headers = dict(scope.get("headers") or ())
+            raw_length = headers.get(b"content-length")
+            if raw_length is not None:
+                try:
+                    content_length = int(raw_length)
+                except (TypeError, ValueError):
+                    response = JSONResponse(
+                        status_code=400,
+                        content={"detail": "Invalid Content-Length header"},
+                    )
+                    await response(scope, receive, send)
+                    return
+                if content_length < 0 or content_length > self.max_body_bytes:
+                    response = JSONResponse(
+                        status_code=400,
+                        content={
+                            "detail": "Request body exceeds the configured image limit"
+                        },
+                    )
+                    await response(scope, receive, send)
+                    return
+        await self.application(scope, receive, send)
 
 
-class LivenessResponse(BaseModel):
-    """Response model for liveness check."""
-    liveness_passed: bool
-    liveness_score: float  # 0.0 to 1.0
-    liveness_threshold: float  # Default: 0.60
-    face_embedding_hash: str
-    details: Dict[str, Any]
+app.add_middleware(ContentLengthLimitMiddleware)
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_credentials=settings.cors_allow_credentials,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
-class GeolocationData(BaseModel):
-    """Geolocation data for risk assessment."""
-    latitude: float
-    longitude: float
-    accuracy: float
+@app.exception_handler(RequestValidationError)
+def request_validation_error(
+    _request: Request, exception: RequestValidationError
+) -> JSONResponse:
+    """Return useful validation metadata without echoing biometric input."""
+
+    safe_errors = [
+        {
+            "type": error.get("type", "value_error"),
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg", "Invalid request value"),
+        }
+        for error in exception.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
 
 
-class RiskAssessRequest(BaseModel):
-    """Request model for risk assessment."""
-    liveness_score: Optional[float] = None
-    face_match_score: Optional[float] = None
-    device_signature: Optional[str] = None
-    device_public_key: Optional[str] = None
-    ip_address: Optional[str] = None
-    user_agent: Optional[str] = None
-    geolocation: Optional[GeolocationData] = None
+@app.exception_handler(Exception)
+def unexpected_error(_request: Request, exception: Exception) -> JSONResponse:
+    """Keep native/model error details and request data out of responses/logs."""
+
+    safe_log(
+        logger,
+        logging.ERROR,
+        "Unhandled face-service error",
+        exception_type=type(exception).__name__,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Face service could not complete the request"},
+    )
 
 
-class RiskAssessResponse(BaseModel):
-    """Response model for risk assessment."""
-    risk_score: float  # 0.0 to 1.0
-    risk_level: str  # LOW, MEDIUM, HIGH, CRITICAL
-    pass_threshold: bool
-    risk_threshold: float  # Default: 0.50
-    signal_breakdown: Dict[str, float]
-    recommendations: List[str]
+@app.get("/health", response_model=HealthResponse)
+def health_check() -> HealthResponse:
+    return HealthResponse(
+        status="healthy",
+        service=settings.service_name,
+        version=settings.service_version,
+    )
 
 
-# =============================================================================
-# HEALTH & ROOT ENDPOINTS
-# =============================================================================
+@app.get("/", response_model=RootResponse)
+def root() -> RootResponse:
+    return RootResponse(
+        service=DISPLAY_NAME,
+        version=settings.service_version,
+        endpoints=[
+            "/face/enroll",
+            "/face/verify",
+            "/face/match",
+            "/liveness/check",
+            "/risk/assess",
+            "/device/attest",
+            "/health",
+            "/metrics",
+        ],
+    )
 
-@app.get("/health")
-async def health_check():
-    """Basic health check endpoint."""
-    return {"status": "healthy"}
+
+def _face_processing_unavailable(exception: Exception) -> HTTPException:
+    safe_log(
+        logger,
+        logging.ERROR,
+        "Local face model unavailable",
+        exception_type=type(exception).__name__,
+    )
+    return HTTPException(
+        status_code=503,
+        detail="Face processing is temporarily unavailable",
+    )
 
 
-@app.get("/")
-async def root():
-    """List available endpoints."""
-    return {
-        "service": "SAIV Face Recognition & Risk Service",
-        "version": "1.0.0",
-        "endpoints": [
-            "GET /health - Health check",
-            "POST /face/enroll - Enroll a face for verification",
-            "POST /face/verify - Verify a face against enrolled template",
-            "POST /face/match - Legacy face matching (use /face/verify)",
-            "POST /liveness/check - Perform liveness detection",
-            "POST /risk/assess - Multi-signal risk assessment"
-        ]
+def _set_detection_span(
+    detection: FaceDetectionResult,
+    *,
+    score: float | None = None,
+    passed: bool | None = None,
+) -> None:
+    attributes: dict[str, Any] = {
+        "face.detected": detection.detected,
+        "face.confidence": float(detection.confidence),
+        "face.count": int(detection.face_count),
     }
+    if score is not None:
+        attributes["match.score"] = float(score)
+    if passed is not None:
+        attributes["match.passed"] = bool(passed)
+    set_span_attributes(**attributes)
 
 
-# =============================================================================
-# FACE ENROLLMENT ENDPOINT (REQUIRED - 4 points in public tests)
-# =============================================================================
+def generate_face_hash(embedding: Any) -> str:
+    """Skeleton-compatible name for the approved cancelable SimHash template."""
+
+    return simhash_hex(embedding)
+
 
 @app.post("/face/enroll", response_model=FaceEnrollResponse, status_code=201)
-async def enroll_face(request: FaceEnrollRequest):
-    """
-    Enroll a user's face for future verification.
+def enroll_face(request: FaceEnrollRequest) -> FaceEnrollResponse:
+    started = time.perf_counter()
+    outcome = "error"
+    image = None
+    embedding = None
+    with operation_span("face_enroll"):
+        try:
+            # Consent must be checked before decoding or inspecting the image.
+            if request.camera_consent is not True:
+                outcome = "invalid_input"
+                raise HTTPException(
+                    status_code=400,
+                    detail="Camera consent is required for face enrollment",
+                )
 
-    TODO: Implement the following:
-    1. Validate camera_consent is True (return 400 if False)
-    2. Decode base64 image to numpy array
-    3. Detect face using MediaPipe FaceDetection
-    4. If no face detected, return 400 with "No face detected"
-    5. Extract face features/embedding
-    6. Generate SHA-256 hash of embedding (64 hex chars)
-    7. Calculate quality score based on:
-       - Face detection confidence
-       - Image resolution
-       - Face size relative to image
-    8. Return enrollment response
+            image = decode_base64_image(request.image)
+            detection = detect_face(image)
+            _set_detection_span(detection)
+            if (
+                not detection.detected
+                or detection.confidence < settings.face_detection_threshold
+            ):
+                outcome = "no_face"
+                raise HTTPException(
+                    status_code=400,
+                    detail="No face detected with sufficient confidence",
+                )
+            if detection.multiple_faces:
+                outcome = "failure"
+                raise HTTPException(
+                    status_code=400,
+                    detail="Exactly one face is required for enrollment",
+                )
 
-    Success Criteria:
-    - Face detected with confidence >= 0.7
-    - Quality score >= 0.5
-    - Returns 64-char SHA-256 hex hash
-    """
-    # TODO: Implement face enrollment
-    raise HTTPException(status_code=501, detail="Not implemented")
+            embedding = extract_face_embedding(image, detection)
+            template_hash = generate_face_hash(embedding)
+            quality = assess_face_quality(image, detection)
+            if quality.score < settings.face_quality_threshold:
+                outcome = "failure"
+                raise HTTPException(
+                    status_code=400,
+                    detail="Face image quality is below the enrollment threshold",
+                )
+
+            outcome = "success"
+            set_span_attributes(
+                **{
+                    "operation.outcome": outcome,
+                    "operation.latency_ms": (time.perf_counter() - started) * 1000.0,
+                }
+            )
+            return FaceEnrollResponse(
+                enrollment_successful=True,
+                face_template_hash=template_hash,
+                quality_score=quality.score,
+                details={
+                    "face_detected": True,
+                    "face_detection_confidence": round(
+                        float(detection.confidence), 6
+                    ),
+                    "image_quality": quality.label,
+                    "quality_components": quality.components,
+                },
+            )
+        except InvalidImageError as exception:
+            outcome = "invalid_input"
+            raise HTTPException(status_code=400, detail=str(exception)) from exception
+        except NoFaceError as exception:
+            outcome = "no_face"
+            raise HTTPException(status_code=400, detail="No face detected") from exception
+        except (ModelUnavailableError, EmbeddingModelUnavailableError) as exception:
+            raise _face_processing_unavailable(exception) from exception
+        except (
+            FaceDetectionError,
+            FaceEmbeddingError,
+            InvalidTemplateEmbeddingError,
+        ) as exception:
+            raise _face_processing_unavailable(exception) from exception
+        finally:
+            embedding = None
+            image = None
+            record_face_outcome(
+                "enroll", outcome, time.perf_counter() - started
+            )
 
 
-# =============================================================================
-# FACE VERIFICATION ENDPOINT (REQUIRED - 4 points in public tests)
-# =============================================================================
+def _verify_image(
+    image_value: str, reference_hash: str
+) -> tuple[FaceVerifyResponse, str]:
+    validate_template_hash(reference_hash)
+    image = None
+    embedding = None
+    try:
+        image = decode_base64_image(image_value)
+        detection = detect_face(image)
+        if not detection.detected:
+            _set_detection_span(detection, score=0.0, passed=False)
+            return (
+                FaceVerifyResponse(
+                    match_passed=False,
+                    match_score=0.0,
+                    match_threshold=settings.face_match_threshold,
+                    face_detected=False,
+                    current_template_hash="",
+                ),
+                "no_face",
+            )
+        if detection.multiple_faces:
+            _set_detection_span(detection, score=0.0, passed=False)
+            return (
+                FaceVerifyResponse(
+                    match_passed=False,
+                    match_score=0.0,
+                    match_threshold=settings.face_match_threshold,
+                    face_detected=True,
+                    current_template_hash="",
+                ),
+                "failure",
+            )
+
+        embedding = extract_face_embedding(image, detection)
+        current_hash = generate_face_hash(embedding)
+        comparison = compare_templates(reference_hash, current_hash)
+        response = FaceVerifyResponse(
+            match_passed=comparison.match_passed,
+            match_score=comparison.match_score,
+            match_threshold=settings.face_match_threshold,
+            face_detected=True,
+            current_template_hash=current_hash,
+        )
+        _set_detection_span(
+            detection,
+            score=response.match_score,
+            passed=response.match_passed,
+        )
+        return response, "success" if response.match_passed else "failure"
+    except NoFaceError:
+        negative = FaceDetectionResult(False, 0.0, None, None, 0, False)
+        _set_detection_span(negative, score=0.0, passed=False)
+        return (
+            FaceVerifyResponse(
+                match_passed=False,
+                match_score=0.0,
+                match_threshold=settings.face_match_threshold,
+                face_detected=False,
+                current_template_hash="",
+            ),
+            "no_face",
+        )
+    finally:
+        embedding = None
+        image = None
+
+
+def _verification_endpoint(
+    image_value: str,
+    reference_hash: str,
+    *,
+    operation: str,
+) -> FaceVerifyResponse:
+    started = time.perf_counter()
+    outcome = "error"
+    with operation_span(f"face_{operation}"):
+        try:
+            response, outcome = _verify_image(image_value, reference_hash)
+            set_span_attributes(
+                **{
+                    "operation.outcome": outcome,
+                    "operation.latency_ms": (time.perf_counter() - started) * 1000.0,
+                }
+            )
+            return response
+        except (InvalidImageError, InvalidTemplateHashError) as exception:
+            outcome = "invalid_input"
+            raise HTTPException(status_code=400, detail=str(exception)) from exception
+        except (ModelUnavailableError, EmbeddingModelUnavailableError) as exception:
+            raise _face_processing_unavailable(exception) from exception
+        except (
+            FaceDetectionError,
+            FaceEmbeddingError,
+            InvalidTemplateEmbeddingError,
+        ) as exception:
+            raise _face_processing_unavailable(exception) from exception
+        finally:
+            record_face_outcome(operation, outcome, time.perf_counter() - started)
+
 
 @app.post("/face/verify", response_model=FaceVerifyResponse)
-async def verify_face(request: FaceVerifyRequest):
-    """
-    Verify a face against an enrolled template.
-
-    TODO: Implement the following:
-    1. Decode base64 image to numpy array
-    2. Detect face using MediaPipe FaceDetection
-    3. If no face detected, return with face_detected=False
-    4. Extract face features/embedding
-    5. Generate SHA-256 hash of current face
-    6. Compare hashes or embeddings (choose your approach)
-    7. Calculate match_score (0.0 to 1.0)
-    8. match_passed = (match_score >= 0.70)
-
-    Note: Hash comparison alone gives binary match. For continuous
-    scores, consider perceptual hashing or embedding similarity.
-    """
-    # TODO: Implement face verification
-    raise HTTPException(status_code=501, detail="Not implemented")
+def verify_face(request: FaceVerifyRequest) -> FaceVerifyResponse:
+    return _verification_endpoint(
+        request.image,
+        request.reference_template_hash,
+        operation="verify",
+    )
 
 
-@app.post("/face/match")
-async def match_face(request: FaceVerifyRequest):
-    """
-    Legacy face matching endpoint. Redirects to /face/verify.
-    Kept for backwards compatibility.
-    """
-    return await verify_face(request)
+@app.post("/face/match", response_model=FaceMatchResponse)
+def match_face(request: FaceMatchRequest) -> FaceMatchResponse:
+    verified = _verification_endpoint(
+        request.image,
+        request.resolved_reference_hash,
+        operation="match",
+    )
+    return FaceMatchResponse(
+        match_passed=verified.match_passed,
+        match_score=verified.match_score,
+        face_embedding_hash=verified.current_template_hash,
+        current_template_hash=verified.current_template_hash,
+        match_threshold=verified.match_threshold,
+        face_detected=verified.face_detected,
+    )
 
 
-# =============================================================================
-# LIVENESS DETECTION ENDPOINT (REQUIRED - partial; BONUS for advanced)
-# =============================================================================
+def _empty_liveness_details(
+    confidence: float = 0.0, **extra: Any
+) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "face_detection_confidence": round(float(confidence), 6),
+        "face_mesh_complete": False,
+        "landmark_count": 0,
+        "depth_detected": False,
+        "depth_quality": "poor",
+        "depth_score": 0.0,
+        "mesh_plausibility_score": 0.0,
+        "texture_analysis_score": 0.0,
+        "color_distribution_score": 0.0,
+        "challenge_evidence_score": 0.0,
+        "challenge_integrity_score": 0.0,
+        "threshold": settings.liveness_threshold,
+    }
+    details.update(extra)
+    return details
+
 
 @app.post("/liveness/check", response_model=LivenessResponse)
-async def check_liveness(request: LivenessRequest):
-    """
-    Perform liveness detection on submitted image.
+def check_liveness(request: LivenessRequest) -> LivenessResponse:
+    started = time.perf_counter()
+    outcome = "error"
+    image = None
+    embedding = None
+    with operation_span("liveness_check"):
+        try:
+            image = decode_base64_image(request.challenge_response)
+            detection = detect_face(image)
+            if not detection.detected:
+                outcome = "no_face"
+                set_span_attributes(
+                    **{
+                        "face.detected": False,
+                        "liveness.score": 0.0,
+                        "liveness.passed": False,
+                        "liveness.challenge_type": request.challenge_type,
+                    }
+                )
+                return LivenessResponse(
+                    liveness_passed=False,
+                    liveness_score=0.0,
+                    liveness_threshold=settings.liveness_threshold,
+                    challenge_type=request.challenge_type,
+                    face_embedding_hash="",
+                    details=_empty_liveness_details(),
+                )
+            if detection.multiple_faces:
+                outcome = "failed"
+                return LivenessResponse(
+                    liveness_passed=False,
+                    liveness_score=0.0,
+                    liveness_threshold=settings.liveness_threshold,
+                    challenge_type=request.challenge_type,
+                    face_embedding_hash="",
+                    details=_empty_liveness_details(
+                        detection.confidence,
+                        multiple_faces=True,
+                    ),
+                )
 
-    TODO: Implement the following:
-    1. Decode base64 image to numpy array
-    2. Detect face using MediaPipe FaceDetection
-    3. If no face detected, return with liveness_passed=False
-    4. Analyze face for liveness signals:
+            embedding = extract_face_embedding(image, detection)
+            template_hash = generate_face_hash(embedding)
+            analysis = assess_liveness(
+                image,
+                detection.confidence,
+                detection.bbox,
+                request.challenge_type,
+                settings.liveness_threshold,
+            )
+            outcome = "passed" if analysis.liveness_passed else "failed"
+            set_span_attributes(
+                **{
+                    "face.detected": True,
+                    "face.confidence": float(detection.confidence),
+                    "face.count": int(detection.face_count),
+                    "liveness.score": float(analysis.liveness_score),
+                    "liveness.passed": bool(analysis.liveness_passed),
+                    "liveness.challenge_type": request.challenge_type,
+                    "operation.outcome": outcome,
+                    "operation.latency_ms": (time.perf_counter() - started) * 1000.0,
+                }
+            )
+            return LivenessResponse(
+                liveness_passed=analysis.liveness_passed,
+                liveness_score=analysis.liveness_score,
+                liveness_threshold=settings.liveness_threshold,
+                challenge_type=request.challenge_type,
+                face_embedding_hash=template_hash,
+                details=analysis.details,
+            )
+        except InvalidImageError as exception:
+            outcome = "error"
+            raise HTTPException(status_code=400, detail=str(exception)) from exception
+        except NoFaceError:
+            outcome = "no_face"
+            return LivenessResponse(
+                liveness_passed=False,
+                liveness_score=0.0,
+                liveness_threshold=settings.liveness_threshold,
+                challenge_type=request.challenge_type,
+                face_embedding_hash="",
+                details=_empty_liveness_details(),
+            )
+        except (
+            ModelUnavailableError,
+            EmbeddingModelUnavailableError,
+            LivenessUnavailableError,
+        ) as exception:
+            raise _face_processing_unavailable(exception) from exception
+        except (
+            FaceDetectionError,
+            FaceEmbeddingError,
+            InvalidTemplateEmbeddingError,
+        ) as exception:
+            raise _face_processing_unavailable(exception) from exception
+        finally:
+            embedding = None
+            image = None
+            record_liveness_outcome(request.challenge_type, outcome)
 
-    REQUIRED (for partial credit):
-    - Basic face detection confidence
-    - Image quality assessment
-    - Face size validation
-
-    BONUS (for extra credit - see API-SPECIFICATION.md):
-    - MediaPipe Face Mesh 3D analysis (468 landmarks)
-    - Depth cue analysis (nose_tip_z coordinate)
-    - Face mesh completeness check
-    - Challenge-response detection (blink, head movement)
-
-    Challenge Types:
-    - "passive": No user action required (depth/texture analysis)
-    - "blink": Detect eye blink (compare eye aspect ratios)
-    - "head_turn": Detect head rotation (face mesh landmarks)
-
-    5. Calculate liveness_score (0.0 to 1.0)
-    6. liveness_passed = (liveness_score >= 0.60)
-    7. Generate face embedding hash
-
-    Depth Analysis Hints (BONUS):
-    - Use MediaPipe FaceMesh to get 3D landmarks
-    - nose_tip_z (landmark 1, z-coordinate) indicates depth
-    - Real faces: |nose_tip_z| > 0.03 (significant depth)
-    - Flat images: |nose_tip_z| < 0.01 (minimal depth)
-    """
-    # TODO: Implement liveness detection
-    raise HTTPException(status_code=501, detail="Not implemented")
-
-
-# =============================================================================
-# RISK ASSESSMENT ENDPOINT (REQUIRED - 3 points in public tests)
-# =============================================================================
 
 @app.post("/risk/assess", response_model=RiskAssessResponse)
-async def assess_risk(request: RiskAssessRequest):
-    """
-    Perform multi-signal risk assessment.
-
-    TODO: Implement the following:
-    1. Collect all available signals from request
-    2. Calculate individual signal scores (0.0 = safe, 1.0 = risky)
-    3. Apply weighted fusion:
-       - Liveness: 25%
-       - Face match: 25%
-       - Device attestation: 20%
-       - Network/VPN: 15%
-       - Geolocation: 15%
-    4. Calculate combined risk_score
-    5. Determine risk_level:
-       - LOW: risk_score < 0.3
-       - MEDIUM: 0.3 <= risk_score < 0.5
-       - HIGH: 0.5 <= risk_score < 0.7
-       - CRITICAL: risk_score >= 0.7
-    6. pass_threshold = (risk_score < 0.50)
-    7. Generate recommendations for low-scoring signals
-
-    Signal Analysis:
-    - Liveness: Invert score (low liveness = high risk)
-    - Face match: Invert score (low match = high risk)
-    - Device: Check signature validity, public key format
-    - Network: Detect VPN/proxy (private IPs, Tor exit nodes)
-    - Geolocation: Check accuracy, validate coordinates
-
-    VPN/Proxy Detection Hints:
-    - Private IP ranges: 10.x.x.x, 172.16-31.x.x, 192.168.x.x
-    - Check user_agent for VPN indicators
-    - High geolocation accuracy (< 10m) might be spoofed
-    - Very low accuracy (> 5000m) indicates issues
-    """
-    # TODO: Implement risk assessment
-    raise HTTPException(status_code=501, detail="Not implemented")
+def assess_risk(request: RiskAssessRequest) -> RiskAssessResponse:
+    started = time.perf_counter()
+    with operation_span("risk_assess"):
+        assessment = calculate_risk(
+            request.model_dump(),
+            risk_threshold=settings.risk_threshold,
+        )
+        set_span_attributes(
+            **{
+                "risk.score": assessment.risk_score,
+                "risk.level": assessment.risk_level,
+                "operation.outcome": (
+                    "passed" if assessment.pass_threshold else "failed"
+                ),
+                "operation.latency_ms": (time.perf_counter() - started) * 1000.0,
+            }
+        )
+        record_risk_outcome(assessment.risk_level, assessment.pass_threshold)
+        return RiskAssessResponse(**assessment.as_dict())
 
 
-# =============================================================================
-# HELPER FUNCTIONS (Implement these to support your endpoints)
-# =============================================================================
-
-def decode_base64_image(base64_string: str):
-    """
-    Decode a base64 encoded image to a numpy array.
-
-    TODO: Implement using:
-    - base64.b64decode()
-    - PIL.Image.open(BytesIO(...))
-    - numpy.array()
-
-    Handle errors gracefully (invalid base64, corrupt image, etc.)
-    """
-    pass
+@app.post("/device/attest", response_model=DeviceAttestResponse)
+def attest_device(request: DeviceAttestRequest) -> DeviceAttestResponse:
+    started = time.perf_counter()
+    with operation_span("device_attest"):
+        result = verify_device_attestation(request.model_dump())
+        set_span_attributes(
+            **{
+                "operation.outcome": (
+                    "success" if result.attestation_passed else "failure"
+                ),
+                "operation.latency_ms": (time.perf_counter() - started) * 1000.0,
+            }
+        )
+        return DeviceAttestResponse(**result.as_dict())
 
 
-def detect_face(image_array):
-    """
-    Detect faces in an image using MediaPipe.
-
-    TODO: Implement using:
-    - mediapipe.solutions.face_detection.FaceDetection
-    - Return detection results with confidence scores
-
-    Consider setting min_detection_confidence=0.5
-    """
-    pass
+# Direct exposition is required by module4-observability/prometheus.yml.
+setup_metrics(app, enabled=settings.metrics_enabled)
+configure_telemetry(
+    app,
+    service_name=settings.service_name,
+    endpoint=settings.otel_exporter_otlp_endpoint,
+    enabled=settings.telemetry_enabled,
+)
 
 
-def extract_face_embedding(image_array, detection):
-    """
-    Extract face embedding/features for hashing.
-
-    TODO: Choose your approach:
-    - Simple: Crop face region, resize to standard size, flatten
-    - Advanced: Use MediaPipe Face Mesh landmarks
-    - Even more advanced: Use face recognition model (dlib, etc.)
-
-    Return numpy array that can be hashed.
-    """
-    pass
-
-
-def generate_face_hash(embedding) -> str:
-    """
-    Generate SHA-256 hash of face embedding.
-
-    TODO: Implement using:
-    - hashlib.sha256()
-    - embedding.tobytes() or embedding.tostring()
-    - Return 64-character hex string
-    """
-    pass
-
-
-def analyze_face_mesh(image_array):
-    """
-    Analyze face using MediaPipe Face Mesh (BONUS).
-
-    TODO: Implement using:
-    - mediapipe.solutions.face_mesh.FaceMesh
-    - Extract 468 landmarks
-    - Calculate depth from nose_tip_z (landmark index 1)
-    - Check mesh completeness
-
-    Return dict with:
-    - face_mesh_complete: bool
-    - landmark_count: int
-    - nose_tip_z: float
-    - depth_quality: "good" | "moderate" | "poor"
-    """
-    pass
-
-
-def detect_blink(face_mesh_landmarks):
-    """
-    Detect eye blink from face mesh landmarks (BONUS).
-
-    TODO: Implement using:
-    - Eye landmark indices (see MediaPipe docs)
-    - Calculate Eye Aspect Ratio (EAR)
-    - EAR < threshold indicates closed eye
-    """
-    pass
-
-
-def detect_vpn_proxy(ip_address: str, user_agent: str) -> tuple:
-    """
-    Detect VPN/proxy usage.
-
-    TODO: Check for:
-    - Private IP ranges (10.x, 172.16-31.x, 192.168.x)
-    - Localhost (127.x, ::1)
-    - VPN keywords in user_agent
-    - Known proxy headers (not available here, but could extend)
-
-    Return (is_vpn: bool, confidence: float)
-    """
-    pass
-
-
-# =============================================================================
-# PRIVACY REQUIREMENTS (IMPORTANT!)
-# =============================================================================
-"""
-Your implementation MUST follow these privacy requirements:
-
-1. NO RAW IMAGES STORED
-   - Process images in-memory only
-   - Do not write images to disk
-   - Do not send images to external APIs
-
-2. HASH-ONLY STORAGE
-   - Store only SHA-256 hashes (64 hex characters)
-   - Hashes are one-way - cannot reconstruct face
-   - Different faces must produce different hashes
-
-3. EPHEMERAL PROCESSING
-   - Clear image data after processing
-   - No caching of raw biometric data
-   - Use Python's memory management (del, gc.collect)
-
-4. CONSENT TRACKING
-   - Require camera_consent=True for enrollment
-   - Log consent in audit trail (backend responsibility)
-
-5. RESPONSE HYGIENE
-   - Never include base64 image data in responses
-   - Only return hashes, scores, and metadata
-"""
+__all__ = [
+    "app",
+    "health_check",
+    "root",
+    "enroll_face",
+    "verify_face",
+    "match_face",
+    "check_liveness",
+    "assess_risk",
+    "attest_device",
+    "decode_base64_image",
+    "detect_face",
+    "extract_face_embedding",
+    "generate_face_hash",
+    "analyze_face_mesh",
+    "detect_blink",
+    "detect_vpn_proxy",
+]
