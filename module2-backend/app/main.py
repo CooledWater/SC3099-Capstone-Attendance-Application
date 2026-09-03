@@ -7,6 +7,8 @@ Students must implement all endpoints according to the API specification.
 See: docs/API-SPECIFICATION.md for complete endpoint documentation.
 """
 
+import html
+
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,13 +18,14 @@ from sqlalchemy.orm import Session
 from app.database import engine, Base, get_db
 from app import models
 from app.models import User
-from app.schemas import UserRegister, UserLogin, RefreshTokenRequest
+from app.schemas import UserRegister, UserLogin, RefreshTokenRequest, UserUpdate
 from app.auth import (
     hash_password,
     verify_password,
     create_access_token,
     create_refresh_token,
-    get_current_user
+    get_current_user,
+    require_roles
 )
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
@@ -70,12 +73,6 @@ def register_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
-        )
-
-    if len(user_data.password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password must be at least 8 characters"
         )
 
     new_user = User(
@@ -221,8 +218,76 @@ def get_me(current_user: User = Depends(get_current_user)):
         "role": current_user.role,
         "is_active": current_user.is_active,
         "camera_consent": current_user.camera_consent,
-        "geolocation_consent": current_user.geolocation_consent
+        "geolocation_consent": current_user.geolocation_consent,
+        "face_enrolled": current_user.face_enrolled
     }
+
+
+@app.put("/api/v1/users/me")
+def update_me(
+    update_data: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    updates = update_data.model_dump(exclude_unset=True)
+
+    if "full_name" in updates and updates["full_name"] is not None:
+        # XSS prevention: HTML-escape user-provided content before storing.
+        updates["full_name"] = html.escape(updates["full_name"])
+
+    for field, value in updates.items():
+        setattr(current_user, field, value)
+
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "role": current_user.role,
+        "is_active": current_user.is_active,
+        "camera_consent": current_user.camera_consent,
+        "geolocation_consent": current_user.geolocation_consent,
+        "face_enrolled": current_user.face_enrolled
+    }
+
+
+@app.patch("/api/v1/admin/users/{user_id}/deactivate")
+def deactivate_user(
+    user_id: str,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    user.is_active = False
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "is_active": user.is_active,
+        "message": "User deactivated successfully"
+    }
+
+
+@app.get("/api/v1/audit/")
+def list_audit_logs(
+    current_user: User = Depends(require_roles("admin"))
+):
+    # Placeholder only: audit_logs persistence is not implemented yet (Week 3+).
+    # This exists solely to gate the route to admins for RBAC testing.
+    return {"items": [], "total": 0}
+
+
 # =============================================================================
 # TODO: Implement the following endpoints
 # =============================================================================
@@ -277,7 +342,6 @@ def get_me(current_user: User = Depends(get_current_user)):
 # -----------------------------------------------------------------------------
 # Admin Endpoints (admin.py) - Required for automated testing
 # -----------------------------------------------------------------------------
-# PATCH /admin/users/{user_id}/deactivate - Deactivate user (admin only)
 # PATCH /admin/users/{user_id}/activate - Activate user (admin only)
 # POST /admin/users/bulk - Bulk create users (admin only)
 # PATCH /admin/sessions/{session_id}/status - Update session status (admin only)
