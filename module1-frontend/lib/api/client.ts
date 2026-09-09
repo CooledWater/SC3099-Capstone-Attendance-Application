@@ -2,6 +2,7 @@ import type { AuthTokens } from '@/types/api';
 
 const configuredBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 export const API_BASE = configuredBase.replace(/\/$/, '');
+// Kept only to remove refresh tokens stored by older frontend versions.
 const REFRESH_KEY = 'saiv_refresh_token';
 let accessToken = '';
 
@@ -10,7 +11,6 @@ export class ApiError extends Error {
 }
 
 export function setAccessToken(token: string) { accessToken = token; }
-export function storeRefreshToken(token: string) { sessionStorage.setItem(REFRESH_KEY, token); }
 export function clearTokens() { accessToken = ''; sessionStorage.removeItem(REFRESH_KEY); }
 
 async function parseError(response: Response) {
@@ -20,18 +20,15 @@ async function parseError(response: Response) {
 }
 
 export async function refreshAccessToken() {
-  const refreshToken = sessionStorage.getItem(REFRESH_KEY);
-  if (!refreshToken) return false;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 3000);
   try {
     const response = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      method: 'POST', credentials: 'include', signal: controller.signal,
     });
     if (!response.ok) { clearTokens(); return false; }
     const tokens = await response.json() as AuthTokens;
-    setAccessToken(tokens.access_token); storeRefreshToken(tokens.refresh_token);
+    setAccessToken(tokens.access_token);
     return true;
   } catch {
     clearTokens();
@@ -44,7 +41,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}, ret
   const timeout = window.setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
-      ...options, signal: controller.signal,
+      ...options, credentials: 'include', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(accessToken && { Authorization: `Bearer ${accessToken}` }), ...options.headers },
     });
     if (response.status === 401 && retry401 && await refreshAccessToken()) return apiRequest<T>(path, options, false);

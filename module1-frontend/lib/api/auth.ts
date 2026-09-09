@@ -1,9 +1,9 @@
-import { apiRequest, clearTokens, setAccessToken, storeRefreshToken } from './client';
+import { apiRequest, clearTokens, setAccessToken } from './client';
 import type { LoginResponse, User } from '@/types/api';
 
 export async function login(email: string, password: string) {
   const result = await apiRequest<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
-  setAccessToken(result.access_token); storeRefreshToken(result.refresh_token);
+  setAccessToken(result.access_token);
   return result.user;
 }
 
@@ -19,4 +19,3 @@ export async function logout() {
 export const getMe = () => apiRequest<User>('/users/me');
 export const updateConsent = (camera: boolean, geolocation: boolean) =>
   apiRequest<User>('/users/me', { method: 'PUT', body: JSON.stringify({ camera_consent: camera, geolocation_consent: geolocation }) });
-

@@ -10,9 +10,10 @@ See: docs/API-SPECIFICATION.md for complete endpoint documentation.
 import html
 import json
 import math
+import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi import Body, FastAPI, Depends, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy import text
@@ -61,6 +62,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+REFRESH_COOKIE_NAME = "saiv_refresh_token"
+REFRESH_COOKIE_PATH = "/api/v1/auth"
+REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60
+REFRESH_COOKIE_SECURE = os.getenv("REFRESH_COOKIE_SECURE", "false").lower() == "true"
+
+
+def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=REFRESH_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=REFRESH_COOKIE_SECURE,
+        samesite="lax",
+        path=REFRESH_COOKIE_PATH
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        httponly=True,
+        secure=REFRESH_COOKIE_SECURE,
+        samesite="lax",
+        path=REFRESH_COOKIE_PATH
+    )
 
 
 @app.get("/health")
@@ -114,6 +142,7 @@ def register_user(
 @app.post("/auth/login", include_in_schema=False)
 def login_user(
     login_data: UserLogin,
+    response: Response,
     db: Session = Depends(get_db)
 ):
     user = db.query(User).filter(
@@ -150,6 +179,7 @@ def login_user(
         user_id=user.id,
         role=user.role
     )
+    _set_refresh_cookie(response, refresh_token)
 
     return {
         "access_token": access_token,
@@ -169,12 +199,28 @@ def login_user(
 @app.post("/api/v1/auth/refresh")
 @app.post("/auth/refresh", include_in_schema=False)
 def refresh_access_token(
-    token_data: RefreshTokenRequest,
+    request: Request,
+    response: Response,
+    token_data: RefreshTokenRequest | None = Body(default=None),
     db: Session = Depends(get_db)
 ):
+    # JSON-body support remains for the published API contract and non-browser
+    # clients. Browser clients use the HttpOnly cookie and send no token body.
+    refresh_token = (
+        token_data.refresh_token
+        if token_data is not None
+        else request.cookies.get(REFRESH_COOKIE_NAME)
+    )
+
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token is required"
+        )
+
     try:
         payload = jwt.decode(
-            token_data.refresh_token,
+            refresh_token,
             JWT_SECRET,
             algorithms=[ALGORITHM]
         )
@@ -216,12 +262,21 @@ def refresh_access_token(
         user_id=user.id,
         role=user.role
     )
+    _set_refresh_cookie(response, new_refresh_token)
 
     return {
         "access_token": new_access_token,
         "refresh_token": new_refresh_token,
         "token_type": "bearer"
     }
+
+
+@app.post("/api/v1/auth/logout")
+@app.post("/auth/logout", include_in_schema=False)
+def logout_user(response: Response):
+    """End the browser session by expiring its HttpOnly refresh cookie."""
+    _clear_refresh_cookie(response)
+    return {"message": "Logged out successfully"}
     
 @app.get("/api/v1/users/me")
 @app.get("/auth/me", include_in_schema=False)

@@ -6,7 +6,7 @@ redis==5.0.1
 httpx==0.26.0
 
 # Face recognition & CV
-mediapipe==0.10.21
+mediapipe==0.10.18
 opencv-contrib-python==4.11.0.86
 numpy==1.26.4
 pillow==10.4.0
