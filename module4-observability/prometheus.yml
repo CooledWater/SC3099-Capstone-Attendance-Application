@@ -3,16 +3,16 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'saiv-backend'
+  - job_name: "saiv-backend"
     static_configs:
-      - targets: ['backend:8000']
-    metrics_path: '/metrics'
+      - targets: ["backend:8000"]
+    metrics_path: "/metrics"
 
-  - job_name: 'saiv-face-recognition'
+  - job_name: "saiv-face-recognition"
     static_configs:
-      - targets: ['face-recognition:8001']
-    metrics_path: '/metrics'
+      - targets: ["face-recognition:8001"]
+    metrics_path: "/metrics"
 
-  - job_name: 'prometheus'
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
