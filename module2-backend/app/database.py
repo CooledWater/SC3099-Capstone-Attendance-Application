@@ -12,7 +12,13 @@ if not DATABASE_URL:
 
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True
+    # pool_pre_ping issues an extra round trip (a throwaway "ping" query) on
+    # every connection checkout, on top of the request's real query. Against
+    # a remote DB where each round trip already costs hundreds of ms, that
+    # doubles latency for single-query endpoints. pool_recycle proactively
+    # retires connections before Supabase's pooler would otherwise drop them
+    # silently, without paying a ping on every request.
+    pool_recycle=280
 )
 
 SessionLocal = sessionmaker(

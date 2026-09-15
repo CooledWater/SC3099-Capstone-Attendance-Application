@@ -11,17 +11,18 @@ import html
 import json
 import math
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Body, FastAPI, Depends, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from sqlalchemy import text
+from sqlalchemy import exists, func, text
 from sqlalchemy.orm import Session
 
 from app.database import engine, Base, get_db
 from app import models
-from app.models import User, Course, Enrollment, Session as SessionModel, CheckIn
+from app.models import User, Course, Enrollment, Session as SessionModel, CheckIn, Device
 from app.schemas import (
     UserRegister,
     UserLogin,
@@ -33,7 +34,15 @@ from app.schemas import (
     SessionCreate,
     SessionUpdate,
     SessionStatusUpdate,
-    CheckInCreate
+    CheckInCreate,
+    FaceEnrollRequest,
+    DeviceCreate,
+    DeviceUpdate
+)
+from app.face_service import (
+    face_service,
+    FaceServiceValidationError,
+    FaceServiceUnavailableError,
 )
 from app.auth import (
     hash_password,
@@ -323,6 +332,58 @@ def update_me(
     }
 
 
+@app.post("/api/v1/users/me/face/enroll")
+def enroll_my_face(
+    payload: FaceEnrollRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Enroll the caller's face via Module 3 and store only the template hash.
+
+    See docs/API-SPECIFICATION.md "POST /users/me/face/enroll". The raw image
+    is forwarded to the face service and never persisted; on success only
+    ``face_embedding_hash`` (the returned template hash) and ``face_enrolled``
+    are written to the user row.
+    """
+    if not current_user.camera_consent:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Camera consent is required before face enrollment"
+        )
+
+    image = payload.image.strip()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="image is required"
+        )
+
+    try:
+        result = face_service.enroll_face(current_user.id, image, True)
+    except FaceServiceValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc)
+        )
+    except FaceServiceUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Face recognition service unavailable"
+        )
+
+    current_user.face_embedding_hash = result.face_template_hash
+    current_user.face_enrolled = True
+    db.commit()
+    db.refresh(current_user)
+
+    return {
+        "success": True,
+        "message": "Face enrolled successfully",
+        "face_enrolled": True,
+        "quality_score": result.quality_score
+    }
+
+
 @app.patch("/api/v1/admin/users/{user_id}/deactivate")
 def deactivate_user(
     user_id: str,
@@ -358,13 +419,21 @@ def list_audit_logs(
     return {"items": [], "total": 0}
 
 
-def _serialize_course(db: Session, course: Course) -> dict:
+def _serialize_course(
+    db: Session, course: Course, instructor_names: dict | None = None
+) -> dict:
     instructor_name = None
 
     if course.instructor_id:
-        instructor = db.query(User).filter(User.id == course.instructor_id).first()
-        if instructor:
-            instructor_name = instructor.full_name
+        if instructor_names is not None:
+            # Batch-resolved by the caller (list endpoint) - no per-row query.
+            instructor_name = instructor_names.get(course.instructor_id)
+        else:
+            instructor = db.query(User).filter(
+                User.id == course.instructor_id
+            ).first()
+            if instructor:
+                instructor_name = instructor.full_name
 
     return {
         "id": course.id,
@@ -420,12 +489,38 @@ def list_courses(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
-    query = db.query(Course).filter(Course.is_active == is_active)
-    total = query.count()
-    courses = query.offset(offset).limit(limit).all()
+    # Single round trip: page of courses, each course's instructor name
+    # (LEFT JOIN instead of a separate batch SELECT), and the total
+    # matching count (COUNT(*) OVER() window column instead of a separate
+    # query.count()) all come back together.
+    rows = (
+        db.query(Course, User.full_name, func.count().over().label("total_count"))
+        .outerjoin(User, Course.instructor_id == User.id)
+        .filter(Course.is_active == is_active)
+        .order_by(Course.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    if rows:
+        total = rows[0][2]
+    else:
+        # COUNT(*) OVER() only appears on returned rows, so an out-of-range
+        # offset (or a genuinely empty result set) leaves no row to read it
+        # from - fall back to a plain count() only in that rare case.
+        total = db.query(Course).filter(Course.is_active == is_active).count()
+
+    instructor_names = {
+        course.instructor_id: full_name
+        for course, full_name, _ in rows
+        if course.instructor_id and full_name is not None
+    }
 
     return {
-        "items": [_serialize_course(db, course) for course in courses],
+        "items": [
+            _serialize_course(db, course, instructor_names) for course, _, _ in rows
+        ],
         "total": total,
         "limit": limit,
         "offset": offset
@@ -969,16 +1064,28 @@ def _haversine_distance_meters(
 
 
 def _assess_checkin_geofence(
-    student_lat: float, student_lon: float, venue: dict
+    student_lat: float,
+    student_lon: float,
+    venue: dict,
+    accuracy: float | None = None,
 ) -> dict:
-    """Compute distance/risk/status from the geolocation signal only.
+    """Compute the venue-distance portion of the check-in risk decision.
 
-    Per API-SPECIFICATION.md's Check-in Status Logic table: risk_score is
-    compared against the effective risk threshold for approved/flagged,
-    independent of that - "GPS > 2x geofence" is a critical signal that
-    forces rejection regardless of the computed score. No other signals
-    (liveness/face/device/network) are computed this round, so geolocation
-    is the sole driver of risk_score here.
+    This owns exactly the signals Module 2 alone can compute (the face
+    service never sees the venue), per docs/prd.md sections F-GEO-1..4 and
+    the API-SPECIFICATION.md Check-in Status Logic table:
+
+    * ``distance_from_venue_meters`` - Haversine great-circle distance from
+      the effective venue coordinates (F-GEO-1).
+    * Within ``geofence_radius_meters``: no geo risk contribution.
+      Beyond the radius but within 2x: a ``geo_out_of_bounds`` signal that
+      pushes the check-in toward ``flagged`` (F-GEO-2).
+    * Beyond 2x the radius: ``hard_reject`` is set - this rejection cannot
+      be overridden by any other signal (F-GEO-2 / status logic table).
+    * Poor GPS accuracy raises ``geo_accuracy_low`` (F-GEO-4).
+
+    ``hard_reject`` and ``risk_score`` are returned for the caller to fuse
+    with the biometric signals; ``status`` is advisory only.
 
     If venue latitude/longitude/radius can't be resolved (course has no
     venue configured), the geofence can't be evaluated at all: distance
@@ -990,6 +1097,7 @@ def _assess_checkin_geofence(
             "distance_from_venue_meters": None,
             "risk_score": 0.0,
             "risk_factors": [],
+            "hard_reject": False,
             "status": "approved"
         }
 
@@ -1019,6 +1127,23 @@ def _assess_checkin_geofence(
             "weight": round(risk_score, 4)
         })
 
+    # F-GEO-4: "Poor GPS accuracy raises geo_accuracy_low." No doc or test
+    # defines the numeric threshold or its risk weight, so the only
+    # non-arbitrary rule available is derived from the one documented
+    # distance value in play: the accuracy circle is "low" once it is
+    # larger than the geofence itself (the fix is too uncertain to trust
+    # for the geofence decision). It is recorded as an informational
+    # signal with weight 0.0 - it does not by itself move the risk score
+    # or the accept/reject outcome. Any risk from GPS accuracy that DOES
+    # affect the score comes from the face service's /risk/assess
+    # geolocation signal, which docs/API-SPECIFICATION.md does quantify.
+    if accuracy is not None and accuracy > 0 and accuracy > radius > 0:
+        risk_factors.append({
+            "type": "geo_accuracy_low",
+            "severity": "medium",
+            "weight": 0.0
+        })
+
     effective_threshold = venue["risk_threshold"] if venue["risk_threshold"] is not None else 0.5
 
     if exceeds_hard_limit:
@@ -1032,26 +1157,150 @@ def _assess_checkin_geofence(
         "distance_from_venue_meters": round(distance, 2),
         "risk_score": round(risk_score, 4),
         "risk_factors": risk_factors,
+        "hard_reject": exceeds_hard_limit,
         "status": checkin_status
     }
 
 
-def _serialize_checkin(checkin: CheckIn) -> dict:
-    risk_factors = json.loads(checkin.risk_factors) if checkin.risk_factors else []
+def _severity_for_weight(weight: float) -> str:
+    """Map a 0-1 risk contribution to the documented severity buckets."""
+    if weight >= 0.7:
+        return "critical"
+    if weight >= 0.5:
+        return "high"
+    if weight >= 0.3:
+        return "medium"
+    return "low"
+
+
+def _run_biometric_verification(
+    session: SessionModel, user: User, checkin_data: CheckInCreate
+) -> dict:
+    """Call Module 3 for the biometric signals this session requires.
+
+    Module 1 currently sends a single base64 frame in
+    ``liveness_challenge_response`` and no separate face-match image or
+    ``challenge_type`` (see the cross-module contract gap noted in the PR
+    description). From Module 2 the only correct options are therefore:
+
+    * liveness: call ``/liveness/check`` with that frame and the default
+      ``passive`` challenge, only when the session sets
+      ``require_liveness_check`` AND a frame was actually sent.
+    * face match: reuse the same frame against the user's stored
+      ``face_embedding_hash`` via ``/face/verify``, only when the session
+      sets ``require_face_match`` AND the user has an enrolled template.
+
+    When a required check cannot be performed (no frame, no enrolled
+    template, or the service is unreachable) the result is "not performed"
+    - the column stays ``None`` and the check-in is NOT rejected on that
+    basis. A pass is never fabricated.
+    """
+    image = (checkin_data.liveness_challenge_response or "").strip() or None
+
+    liveness = None
+    if session.require_liveness_check and image:
+        liveness = face_service.check_liveness(image, "passive")
+
+    face_match = None
+    if session.require_face_match and image and user.face_embedding_hash:
+        face_match = face_service.verify_face(image, user.face_embedding_hash)
+
+    # Ask the face service to convert whatever biometric scores we have
+    # into a weighted risk score (architecture.md 5.1: "the face service
+    # owns signal-to-risk conversion ... the backend owns the decision").
+    module3_risk = None
+    liveness_score = liveness.score if liveness else None
+    face_score = face_match.score if face_match else None
+    if liveness_score is not None or face_score is not None:
+        signals: dict = {}
+        if liveness_score is not None:
+            signals["liveness_score"] = liveness_score
+        if face_score is not None:
+            signals["face_match_score"] = face_score
+        signals["geolocation"] = {
+            "latitude": checkin_data.latitude,
+            "longitude": checkin_data.longitude,
+            "accuracy": (
+                checkin_data.location_accuracy_meters
+                if checkin_data.location_accuracy_meters is not None
+                else 0.0
+            ),
+        }
+        module3_risk = face_service.assess_risk(signals)
+
+    # Persist the current-frame template hash when the service returned one
+    # (face-match response first, else the liveness response).
+    face_embedding_hash = None
+    if face_match and face_match.face_embedding_hash:
+        face_embedding_hash = face_match.face_embedding_hash
+    elif liveness and liveness.face_embedding_hash:
+        face_embedding_hash = liveness.face_embedding_hash
 
     return {
-        "id": checkin.id,
-        "session_id": checkin.session_id,
-        "student_id": checkin.student_id,
-        "status": checkin.status,
-        "checked_in_at": checkin.checked_in_at,
-        "latitude": checkin.latitude,
-        "longitude": checkin.longitude,
-        "distance_from_venue_meters": checkin.distance_from_venue_meters,
-        "liveness_passed": checkin.liveness_passed,
-        "liveness_score": checkin.liveness_score,
-        "risk_score": checkin.risk_score,
-        "risk_factors": risk_factors
+        "liveness": liveness,
+        "face_match": face_match,
+        "module3_risk": module3_risk,
+        "face_embedding_hash": face_embedding_hash,
+    }
+
+
+def _combine_checkin_assessment(
+    geo_assessment: dict, bio: dict, effective_threshold: float
+) -> dict:
+    """Fuse the geofence and biometric signals into the final decision.
+
+    * Combined risk = ``max`` of the venue-distance risk (Module 2's own)
+      and the face service's ``/risk/assess`` score. The two are
+      independent views - the face service never sees the venue and Module
+      2 never sees the biometric internals - and no doc specifies a
+      weighting between them, so the stronger signal wins rather than being
+      diluted. When no biometric check ran this is exactly the Week 4
+      geofence-only score.
+    * Hard rejections that no score can override (architecture.md 5.1 /
+      prd.md status table): GPS beyond 2x the geofence, or a liveness check
+      that was performed and failed.
+    * Otherwise: ``flagged`` at/above the effective threshold, else
+      ``approved``.
+    """
+    risk_values = [geo_assessment["risk_score"]]
+    risk_factors = list(geo_assessment["risk_factors"])
+
+    liveness = bio["liveness"]
+    face_match = bio["face_match"]
+    module3_risk = bio["module3_risk"]
+
+    if module3_risk is not None:
+        risk_values.append(module3_risk.risk_score)
+
+    if liveness is not None and liveness.passed is False:
+        risk_factors.append({
+            "type": "liveness_failed",
+            "severity": "high",
+            "weight": round(1.0 - (liveness.score or 0.0), 4),
+        })
+    if face_match is not None and face_match.passed is False:
+        weight = round(1.0 - (face_match.score or 0.0), 4)
+        risk_factors.append({
+            "type": "face_match_failed",
+            "severity": _severity_for_weight(weight),
+            "weight": weight,
+        })
+
+    combined_risk = round(max(0.0, min(1.0, max(risk_values))), 4)
+
+    if geo_assessment["hard_reject"]:
+        checkin_status = "rejected"
+    elif liveness is not None and liveness.passed is False:
+        checkin_status = "rejected"
+    elif combined_risk >= effective_threshold:
+        checkin_status = "flagged"
+    else:
+        checkin_status = "approved"
+
+    return {
+        "status": checkin_status,
+        "risk_score": combined_risk,
+        "risk_factors": risk_factors,
     }
 
 
@@ -1061,15 +1310,38 @@ def create_checkin(
     current_user: User = Depends(require_roles("student")),
     db: Session = Depends(get_db)
 ):
-    session = db.query(SessionModel).filter(
-        SessionModel.id == checkin_data.session_id
-    ).first()
+    # Session, its course, and the enrollment/duplicate-checkin flags all in
+    # one round trip: each network round trip to the (remote) database costs
+    # far more than the extra correlated-subquery work, so folding the
+    # membership check into the same query as the session/course lookup
+    # (instead of a second round trip once the session is known) is a real
+    # latency win here, not just a query-count nicety.
+    enrollment_exists = (
+        exists()
+        .where(Enrollment.student_id == current_user.id)
+        .where(Enrollment.course_id == SessionModel.course_id)
+        .where(Enrollment.is_active == True)  # noqa: E712
+    )
+    duplicate_exists = (
+        exists()
+        .where(CheckIn.session_id == SessionModel.id)
+        .where(CheckIn.student_id == current_user.id)
+    )
 
-    if not session:
+    row = (
+        db.query(SessionModel, Course, enrollment_exists, duplicate_exists)
+        .outerjoin(Course, SessionModel.course_id == Course.id)
+        .filter(SessionModel.id == checkin_data.session_id)
+        .first()
+    )
+
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found"
         )
+
+    session, course, has_active_enrollment, has_duplicate_checkin = row
 
     if session.status != "active":
         raise HTTPException(
@@ -1085,63 +1357,98 @@ def create_checkin(
             detail="Check-in window is closed"
         )
 
-    enrollment = db.query(Enrollment).filter(
-        Enrollment.student_id == current_user.id,
-        Enrollment.course_id == session.course_id,
-        Enrollment.is_active == True
-    ).first()
-
-    if not enrollment:
+    if not has_active_enrollment:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Student is not enrolled in this course"
         )
 
-    existing = db.query(CheckIn).filter(
-        CheckIn.session_id == checkin_data.session_id,
-        CheckIn.student_id == current_user.id
-    ).first()
-
-    if existing:
+    if has_duplicate_checkin:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Already checked in to this session"
         )
 
-    # Geofence-only decision logic for this round: liveness, face match,
-    # device trust, and network signals are not computed yet (Week 5+),
-    # so geolocation is the sole risk signal. device_fingerprint is
-    # accepted (required by the frontend contract) but not yet linked to
-    # a device record, since the devices table doesn't exist and device
-    # management is out of scope this round.
-    course = db.query(Course).filter(Course.id == session.course_id).first()
+    # Decision inputs: (1) the venue-distance geofence, which only Module 2
+    # can compute, and (2) the biometric signals the session requires,
+    # obtained from Module 3 via app.face_service. device trust / network
+    # heuristics and the risk_signals table remain out of scope this round;
+    # device_fingerprint is accepted per the frontend contract but not yet
+    # linked to a device record.
     venue = _effective_venue(session, course)
-    assessment = _assess_checkin_geofence(
-        checkin_data.latitude, checkin_data.longitude, venue
+    geo_assessment = _assess_checkin_geofence(
+        checkin_data.latitude,
+        checkin_data.longitude,
+        venue,
+        accuracy=checkin_data.location_accuracy_meters,
+    )
+    biometrics = _run_biometric_verification(session, current_user, checkin_data)
+
+    effective_threshold = (
+        venue["risk_threshold"] if venue["risk_threshold"] is not None else 0.5
+    )
+    assessment = _combine_checkin_assessment(
+        geo_assessment, biometrics, effective_threshold
     )
 
+    liveness = biometrics["liveness"]
+    face_match = biometrics["face_match"]
+
+    checkin_id = str(uuid.uuid4())
+    checkin_status = assessment["status"]
+    checkin_risk_factors = assessment["risk_factors"]
+
     new_checkin = CheckIn(
+        id=checkin_id,
         session_id=checkin_data.session_id,
         student_id=current_user.id,
-        status=assessment["status"],
+        status=checkin_status,
         checked_in_at=now,
-        verified_at=now if assessment["status"] == "approved" else None,
+        verified_at=now if checkin_status == "approved" else None,
         latitude=checkin_data.latitude,
         longitude=checkin_data.longitude,
         location_accuracy_meters=checkin_data.location_accuracy_meters,
-        distance_from_venue_meters=assessment["distance_from_venue_meters"],
+        distance_from_venue_meters=geo_assessment["distance_from_venue_meters"],
+        liveness_passed=liveness.passed if liveness else None,
+        liveness_score=liveness.score if liveness else None,
+        liveness_challenge_type=liveness.challenge_type if liveness else None,
+        face_match_passed=face_match.passed if face_match else None,
+        face_match_score=face_match.score if face_match else None,
+        face_embedding_hash=biometrics["face_embedding_hash"],
         risk_score=assessment["risk_score"],
         risk_factors=(
-            json.dumps(assessment["risk_factors"])
-            if assessment["risk_factors"] else None
+            json.dumps(checkin_risk_factors) if checkin_risk_factors else None
         )
     )
 
     db.add(new_checkin)
     db.commit()
-    db.refresh(new_checkin)
 
-    return _serialize_checkin(new_checkin)
+    # Every field below was already known in Python before the insert (no
+    # server-side defaults or triggers on this table), so the response is
+    # built from those local values instead of re-reading new_checkin's
+    # attributes post-commit. The session's default expire-on-commit
+    # behaviour would otherwise make that first post-commit attribute
+    # access trigger an implicit reload identical in cost to the
+    # db.refresh() this replaces - so building from locals is what actually
+    # avoids the round trip, not merely deleting the refresh call.
+    return {
+        "id": checkin_id,
+        "session_id": checkin_data.session_id,
+        "student_id": current_user.id,
+        "status": checkin_status,
+        "checked_in_at": now,
+        "latitude": checkin_data.latitude,
+        "longitude": checkin_data.longitude,
+        "distance_from_venue_meters": geo_assessment["distance_from_venue_meters"],
+        "liveness_passed": liveness.passed if liveness else None,
+        "liveness_score": liveness.score if liveness else None,
+        "liveness_challenge_type": liveness.challenge_type if liveness else None,
+        "face_match_passed": face_match.passed if face_match else None,
+        "face_match_score": face_match.score if face_match else None,
+        "risk_score": assessment["risk_score"],
+        "risk_factors": checkin_risk_factors if checkin_risk_factors else []
+    }
 
 
 @app.get("/api/v1/checkins/my-checkins")
@@ -1192,21 +1499,30 @@ def list_session_checkins(
     current_user: User = Depends(require_roles("instructor", "ta", "admin")),
     db: Session = Depends(get_db)
 ):
-    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    # Single round trip: session existence, its check-ins, and each
+    # check-in's student are all resolved via one LEFT JOIN chain rooted at
+    # sessions. A nonexistent session yields zero rows (404 below); an
+    # existing session with zero check-ins yields exactly one row with
+    # CheckIn/User both None (falls through to an empty list, same as
+    # before).
+    rows = (
+        db.query(SessionModel.id, CheckIn, User)
+        .outerjoin(CheckIn, CheckIn.session_id == SessionModel.id)
+        .outerjoin(User, User.id == CheckIn.student_id)
+        .filter(SessionModel.id == session_id)
+        .all()
+    )
 
-    if not session:
+    if not rows:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found"
         )
 
-    checkins = db.query(CheckIn).filter(CheckIn.session_id == session_id).all()
-
     results = []
 
-    for checkin in checkins:
-        student = db.query(User).filter(User.id == checkin.student_id).first()
-        if not student:
+    for _, checkin, student in rows:
+        if checkin is None or student is None:
             continue
 
         risk_factors = json.loads(checkin.risk_factors) if checkin.risk_factors else []
@@ -1225,6 +1541,158 @@ def list_session_checkins(
         })
 
     return results
+
+
+def _serialize_device(device: Device) -> dict:
+    return {
+        "id": device.id,
+        "user_id": device.user_id,
+        "device_fingerprint": device.device_fingerprint,
+        "device_name": device.device_name,
+        "platform": device.platform,
+        "browser": device.browser,
+        "is_trusted": device.is_trusted,
+        "trust_score": device.trust_score,
+        "is_active": device.is_active,
+        "first_seen_at": device.first_seen_at,
+        "last_seen_at": device.last_seen_at,
+        "total_checkins": device.total_checkins
+    }
+
+
+@app.post("/api/v1/devices/", status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/devices/register", status_code=status.HTTP_201_CREATED, include_in_schema=False)
+def register_device(
+    device_data: DeviceCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(Device).filter(
+        Device.device_fingerprint == device_data.device_fingerprint
+    ).first()
+
+    if existing:
+        if existing.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Device fingerprint already registered to another user"
+            )
+
+        # Re-registration from the device's owner (e.g. re-login on the same
+        # browser) - refresh metadata and reactivate instead of erroring.
+        existing.device_name = device_data.device_name or existing.device_name
+        existing.platform = device_data.platform or existing.platform
+        existing.browser = device_data.browser or existing.browser
+        existing.os_version = device_data.os_version or existing.os_version
+        existing.app_version = device_data.app_version or existing.app_version
+        existing.public_key = device_data.public_key or existing.public_key
+        existing.is_active = True
+        existing.last_seen_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(existing)
+
+        return _serialize_device(existing)
+
+    now = datetime.utcnow()
+    new_device = Device(
+        user_id=current_user.id,
+        device_fingerprint=device_data.device_fingerprint,
+        device_name=device_data.device_name,
+        platform=device_data.platform,
+        browser=device_data.browser,
+        os_version=device_data.os_version,
+        app_version=device_data.app_version,
+        public_key=device_data.public_key,
+        first_seen_at=now,
+        last_seen_at=now
+    )
+
+    db.add(new_device)
+    db.commit()
+    db.refresh(new_device)
+
+    return _serialize_device(new_device)
+
+
+@app.get("/api/v1/devices/my-devices")
+def list_my_devices(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    devices = db.query(Device).filter(
+        Device.user_id == current_user.id
+    ).all()
+
+    return [_serialize_device(device) for device in devices]
+
+
+@app.patch("/api/v1/devices/{device_id}")
+def update_device(
+    device_id: str,
+    device_data: DeviceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    device = db.query(Device).filter(Device.id == device_id).first()
+
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found"
+        )
+
+    if device.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+
+    if device_data.is_trusted is not None:
+        if current_user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admins can change device trust status"
+            )
+        device.is_trusted = device_data.is_trusted
+        device.trust_score = "high" if device_data.is_trusted else "low"
+
+    if device_data.device_name is not None:
+        device.device_name = device_data.device_name
+
+    if device_data.is_active is not None:
+        device.is_active = device_data.is_active
+
+    db.commit()
+    db.refresh(device)
+
+    return _serialize_device(device)
+
+
+@app.delete("/api/v1/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_device(
+    device_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    device = db.query(Device).filter(Device.id == device_id).first()
+
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found"
+        )
+
+    if device.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+
+    db.delete(device)
+    db.commit()
+
+    return None
 
 
 # =============================================================================

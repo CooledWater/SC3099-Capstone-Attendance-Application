@@ -85,3 +85,19 @@ class CheckInCreate(BaseModel):
     device_fingerprint: str
     liveness_challenge_response: Optional[str] = None
     qr_code: Optional[str] = None
+class FaceEnrollRequest(BaseModel):
+    # Base64-encoded face image (PNG/JPEG), no data URL prefix. See
+    # docs/API-SPECIFICATION.md "POST /users/me/face/enroll".
+    image: str = Field(min_length=1)
+class DeviceCreate(BaseModel):
+    device_fingerprint: str = Field(min_length=1, max_length=64)
+    device_name: Optional[str] = None
+    platform: Optional[Literal["ios", "android", "web", "desktop"]] = None
+    browser: Optional[str] = None
+    os_version: Optional[str] = None
+    app_version: Optional[str] = None
+    public_key: Optional[str] = None
+class DeviceUpdate(BaseModel):
+    device_name: Optional[str] = None
+    is_trusted: Optional[bool] = None
+    is_active: Optional[bool] = None

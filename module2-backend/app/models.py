@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     Index,
     Float,
+    Integer,
     Text,
     ForeignKey,
 )
@@ -419,3 +420,78 @@ Index(
     CheckIn.student_id,
     unique=True
 )
+
+
+class Device(Base):
+    """A user's registered device, per DATABASE-SCHEMA.md's devices table.
+
+    ``public_key`` is documented as NOT NULL there (device-binding attestation
+    is a later feature), but no current client sends one, so it's kept
+    nullable here - registration must not fail for callers that only send
+    fingerprint/name/platform/browser.
+    """
+
+    __tablename__ = "devices"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True
+    )
+
+    device_fingerprint = Column(
+        String(64),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    device_name = Column(String(255), nullable=True)
+    platform = Column(String(50), nullable=True)
+    browser = Column(String(100), nullable=True)
+    os_version = Column(String(50), nullable=True)
+    app_version = Column(String(50), nullable=True)
+
+    public_key = Column(Text, nullable=True)
+    public_key_created_at = Column(DateTime, nullable=True)
+    public_key_expires_at = Column(DateTime, nullable=True)
+
+    attestation_passed = Column(Boolean, nullable=False, default=False)
+    last_attestation_at = Column(DateTime, nullable=True)
+
+    is_trusted = Column(Boolean, nullable=False, default=False, index=True)
+    trust_score = Column(String(20), nullable=False, default="low")
+    is_emulator = Column(Boolean, nullable=False, default=False)
+    is_rooted_jailbroken = Column(Boolean, nullable=False, default=False)
+
+    first_seen_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow
+    )
+
+    last_seen_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
+
+    total_checkins = Column(Integer, nullable=False, default=0)
+
+    is_active = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        index=True
+    )
+
+    revoked_at = Column(DateTime, nullable=True)
+    revocation_reason = Column(Text, nullable=True)
