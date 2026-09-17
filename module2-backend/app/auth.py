@@ -7,7 +7,7 @@ from jose import jwt, JWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, get_read_db
 from app.models import User
 
 
@@ -122,13 +122,21 @@ def get_current_user(
     return user
 
 
-def require_roles(*roles: str):
+def get_read_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_read_db),
+):
+    # Reuse every existing token/account check; only the session binding differs.
+    return get_current_user(credentials, db)
+
+
+def require_roles(*roles: str, read_only: bool = False):
     """Dependency factory enforcing role-based access control.
 
     Usage: current_user: User = Depends(require_roles("admin"))
     """
     def dependency(
-        current_user: User = Depends(get_current_user)
+        current_user: User = Depends(get_read_current_user if read_only else get_current_user)
     ) -> User:
         if current_user.role not in roles:
             raise HTTPException(

@@ -1946,3 +1946,12 @@ if face_result.get("enrollment_successful"):
     user.face_enrolled = True
     db.commit()
 ```
+
+### Optional motion verification extension
+
+Session create/update accepts `require_motion_check` (default false). When true,
+check-in requires a server-issued `motion_verification_id`; omitting biometric
+fields cannot bypass this policy. Existing image-based contracts remain valid
+for sessions without this requirement. See
+[Motion verification](../new-documentations/MOTION-VERIFICATION.md) for the
+challenge, sequence-upload, expiry, limits, and response contracts.

@@ -296,3 +296,17 @@ Validate schema with public tests:
 ```bash
 pytest tests/public/test_privacy_basic.py -v
 ```
+
+### Optional motion metadata tables
+
+`session_motion_policies`: `session_id` VARCHAR(36) primary key, cascading FK to
+sessions; `required` BOOLEAN NOT NULL (false by default).
+
+`motion_challenges`: `id` VARCHAR(36) primary key; `user_id` and `session_id`
+VARCHAR(36) NOT NULL cascading FKs; `reference_hash` VARCHAR(64) NOT NULL;
+`expires_at` TIMESTAMP NOT NULL; `state` VARCHAR(16) NOT NULL; `result` TEXT NULL
+containing only scalar verification outcomes. Index user_id and expires_at.
+States are issued, processing, verified, failed, consumed. Expired records are
+pruned on challenge creation. No images, embeddings, or landmarks are stored.
+These are additive tables created by existing startup metadata creation; no
+existing column migration is needed.

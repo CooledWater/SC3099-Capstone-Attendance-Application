@@ -27,6 +27,15 @@ SessionLocal = sessionmaker(
     bind=engine
 )
 
+# Share the existing pool, but remove implicit BEGIN/ROLLBACK network trips
+# for explicitly read-only handlers. Connection isolation is restored on return.
+# Never use this factory for writes or atomic multi-statement operations.
+ReadSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine.execution_options(isolation_level="AUTOCOMMIT"),
+)
+
 Base = declarative_base()
 
 def get_db():
@@ -35,4 +44,9 @@ def get_db():
         yield db
     finally:
         db.close()
-        
+
+
+def get_read_db():
+    """DBAPI-autocommit session for read-only handlers and their authentication."""
+    with ReadSessionLocal() as db:
+        yield db

@@ -3,6 +3,7 @@ export type User = {
   email: string;
   full_name: string;
   role: 'student' | 'ta' | 'instructor' | 'admin';
+  face_enrolled?: boolean;
   camera_consent?: boolean;
   geolocation_consent?: boolean;
 };
@@ -20,6 +21,9 @@ export type Session = {
   checkin_opens_at: string;
   checkin_closes_at: string;
   venue_name?: string;
+  require_motion_check?: boolean;
+  require_liveness_check?: boolean;
+  require_face_match?: boolean;
 };
 
 export type CheckInRequest = {
@@ -29,6 +33,7 @@ export type CheckInRequest = {
   location_accuracy_meters: number;
   device_fingerprint: string;
   liveness_challenge_response?: string;
+  motion_verification_id?: string;
 };
 
 export type CheckIn = {
@@ -37,6 +42,6 @@ export type CheckIn = {
   status: 'pending' | 'approved' | 'flagged' | 'rejected';
   checked_in_at: string;
   risk_score: number;
-  liveness_passed?: boolean;
+  liveness_passed?: boolean | null;
 };
 

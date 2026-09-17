@@ -646,3 +646,17 @@ __all__ = [
     "detect_blink",
     "detect_vpn_proxy",
 ]
+
+
+# Separate contract preserves all single-image clients.
+from .motion import SequenceRequest, analyze_sequence
+
+
+@app.post('/liveness/sequence')
+def verify_sequence(payload: SequenceRequest):
+    try:
+        return analyze_sequence(payload, _verify_image)
+    except (InvalidImageError, ValueError):
+        raise HTTPException(400, 'Invalid sequence images')
+    except (FaceDetectionError, FaceEmbeddingError, LivenessUnavailableError, RuntimeError, ImportError):
+        raise HTTPException(503, 'Face models are unavailable')

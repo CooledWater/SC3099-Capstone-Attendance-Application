@@ -36,15 +36,15 @@ export async function refreshAccessToken() {
   } finally { window.clearTimeout(timeout); }
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}, retry401 = true): Promise<T> {
+export async function apiRequest<T>(path: string, options: RequestInit = {}, retry401 = true, timeoutMs = 15000): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       ...options, credentials: 'include', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(accessToken && { Authorization: `Bearer ${accessToken}` }), ...options.headers },
     });
-    if (response.status === 401 && retry401 && await refreshAccessToken()) return apiRequest<T>(path, options, false);
+    if (response.status === 401 && retry401 && await refreshAccessToken()) return apiRequest<T>(path, options, false, timeoutMs);
     if (!response.ok) throw new ApiError(await parseError(response), response.status);
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;

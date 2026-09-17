@@ -16,11 +16,14 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Body, FastAPI, Depends, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import exists, func, text
 from sqlalchemy.orm import Session
 
-from app.database import engine, Base, get_db
+from app.database import engine, Base, get_db, get_read_db
 from app import models
 from app.models import User, Course, Enrollment, Session as SessionModel, CheckIn, Device
 from app.schemas import (
@@ -55,6 +58,8 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
+from app import motion
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -62,6 +67,16 @@ app = FastAPI(
     description="Secure Attendance & Identity Verification System",
     version="1.0.0"
 )
+
+app.include_router(motion.router)
+app.add_middleware(motion.MotionBodyLimit)
+
+@app.exception_handler(RequestValidationError)
+async def safe_motion_validation(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith('/api/v1/motion/'):
+        return JSONResponse(status_code=422, content={'detail': 'Invalid motion sequence. Capture again.'})
+    return await request_validation_exception_handler(request, exc)
+
 
 # CORS middleware - configure appropriately for your frontend
 app.add_middleware(
@@ -810,6 +825,7 @@ def _serialize_session(db: Session, session: SessionModel) -> dict:
         "venue_longitude": venue["longitude"],
         "venue_name": venue["name"],
         "geofence_radius_meters": venue["radius_meters"],
+        "require_motion_check": motion.required(db, session.id),
         "require_liveness_check": session.require_liveness_check,
         "require_face_match": session.require_face_match,
         "risk_threshold": venue["risk_threshold"],
@@ -907,6 +923,9 @@ def create_session(
     )
 
     db.add(new_session)
+    db.flush()
+    if session_data.require_motion_check:
+        db.add(motion.MotionPolicy(session_id=new_session.id, required=True))
     db.commit()
     db.refresh(new_session)
 
@@ -999,6 +1018,14 @@ def update_session(
     for field in ("scheduled_start", "scheduled_end", "checkin_opens_at", "checkin_closes_at"):
         if updates.get(field) is not None:
             updates[field] = _to_naive_utc(updates[field])
+
+    motion_required = updates.pop("require_motion_check", None)
+    if motion_required is not None:
+        policy = db.get(motion.MotionPolicy, session.id)
+        if policy is None:
+            policy = motion.MotionPolicy(session_id=session.id)
+            db.add(policy)
+        policy.required = motion_required
 
     new_status = updates.pop("status", None)
 
@@ -1329,8 +1356,9 @@ def create_checkin(
     )
 
     row = (
-        db.query(SessionModel, Course, enrollment_exists, duplicate_exists)
+        db.query(SessionModel, Course, enrollment_exists, duplicate_exists, motion.MotionPolicy.required)
         .outerjoin(Course, SessionModel.course_id == Course.id)
+        .outerjoin(motion.MotionPolicy, motion.MotionPolicy.session_id == SessionModel.id)
         .filter(SessionModel.id == checkin_data.session_id)
         .first()
     )
@@ -1341,7 +1369,7 @@ def create_checkin(
             detail="Session not found"
         )
 
-    session, course, has_active_enrollment, has_duplicate_checkin = row
+    session, course, has_active_enrollment, has_duplicate_checkin, requires_motion = row
 
     if session.status != "active":
         raise HTTPException(
@@ -1382,7 +1410,12 @@ def create_checkin(
         venue,
         accuracy=checkin_data.location_accuracy_meters,
     )
-    biometrics = _run_biometric_verification(session, current_user, checkin_data)
+    if checkin_data.motion_verification_id:
+        biometrics = motion.consume(db, current_user, session.id, checkin_data.motion_verification_id)
+    elif requires_motion:
+        raise HTTPException(400, "Complete the motion challenge before checking in")
+    else:
+        biometrics = _run_biometric_verification(session, current_user, checkin_data)
 
     effective_threshold = (
         venue["risk_threshold"] if venue["risk_threshold"] is not None else 0.5
@@ -1421,6 +1454,8 @@ def create_checkin(
         )
     )
 
+    # Commit expires ORM instances, including the authenticated user.
+    student_id = current_user.id
     db.add(new_checkin)
     db.commit()
 
@@ -1435,7 +1470,7 @@ def create_checkin(
     return {
         "id": checkin_id,
         "session_id": checkin_data.session_id,
-        "student_id": current_user.id,
+        "student_id": student_id,
         "status": checkin_status,
         "checked_in_at": now,
         "latitude": checkin_data.latitude,
@@ -1496,8 +1531,8 @@ def list_my_checkins(
 @app.get("/api/v1/checkins/session/{session_id}")
 def list_session_checkins(
     session_id: str,
-    current_user: User = Depends(require_roles("instructor", "ta", "admin")),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(require_roles("instructor", "ta", "admin", read_only=True)),
+    db: Session = Depends(get_read_db)
 ):
     # Single round trip: session existence, its check-ins, and each
     # check-in's student are all resolved via one LEFT JOIN chain rooted at

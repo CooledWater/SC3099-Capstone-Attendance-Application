@@ -56,6 +56,7 @@ class SessionCreate(BaseModel):
     venue_longitude: Optional[float] = None
     venue_name: Optional[str] = None
     geofence_radius_meters: Optional[float] = None
+    require_motion_check: bool = False
     require_liveness_check: bool = True
     require_face_match: bool = False
     risk_threshold: Optional[float] = None
@@ -72,6 +73,7 @@ class SessionUpdate(BaseModel):
     venue_longitude: Optional[float] = None
     venue_name: Optional[str] = None
     geofence_radius_meters: Optional[float] = None
+    require_motion_check: Optional[bool] = None
     require_liveness_check: Optional[bool] = None
     require_face_match: Optional[bool] = None
     risk_threshold: Optional[float] = None
@@ -83,6 +85,7 @@ class CheckInCreate(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     location_accuracy_meters: Optional[float] = None
     device_fingerprint: str
+    motion_verification_id: Optional[str] = Field(default=None, max_length=36)
     liveness_challenge_response: Optional[str] = None
     qr_code: Optional[str] = None
 class FaceEnrollRequest(BaseModel):
