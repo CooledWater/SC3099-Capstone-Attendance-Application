@@ -7,12 +7,15 @@ Students must implement all endpoints according to the API specification.
 See: docs/API-SPECIFICATION.md for complete endpoint documentation.
 """
 
+import csv
 import html
+import io
 import json
 import math
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import Body, FastAPI, Depends, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +23,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import JSONResponse
 
-from sqlalchemy import exists, func, text
+from sqlalchemy import exists, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.database import engine, Base, get_db, get_read_db
@@ -58,7 +61,8 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import motion
+from app import audit, motion, prometheus_metrics, stats
+from app.audit import create_audit_log
 
 Base.metadata.create_all(bind=engine)
 
@@ -69,7 +73,12 @@ app = FastAPI(
 )
 
 app.include_router(motion.router)
+app.include_router(stats.router)
+app.include_router(audit.router)
+app.include_router(prometheus_metrics.router)
 app.add_middleware(motion.MotionBodyLimit)
+app.add_middleware(stats.MetricsMiddleware)
+app.add_middleware(audit.AuditContextMiddleware)
 
 @app.exception_handler(RequestValidationError)
 async def safe_motion_validation(request: Request, exc: RequestValidationError):
@@ -150,6 +159,11 @@ def register_user(
     )
 
     db.add(new_user)
+    db.flush()  # assigns new_user.id so the audit row can reference it
+    create_audit_log(
+        db, "user_created", new_user.id, new_user.id,
+        details={"role": new_user.role}
+    )
     db.commit()
     db.refresh(new_user)
 
@@ -174,6 +188,10 @@ def login_user(
     ).first()
 
     if not user:
+        create_audit_log(
+            db, "login_failed", success=False, commit=True,
+            details={"email": login_data.email[:255], "reason": "unknown_user"}
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
@@ -183,12 +201,20 @@ def login_user(
         login_data.password,
         user.hashed_password
     ):
+        create_audit_log(
+            db, "login_failed", user.id, success=False, commit=True,
+            details={"email": login_data.email[:255], "reason": "bad_password"}
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
         )
 
     if not user.is_active:
+        create_audit_log(
+            db, "login_failed", user.id, success=False, commit=True,
+            details={"email": login_data.email[:255], "reason": "account_inactive"}
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive"
@@ -205,7 +231,7 @@ def login_user(
     )
     _set_refresh_cookie(response, refresh_token)
 
-    return {
+    result = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
@@ -219,6 +245,9 @@ def login_user(
             "face_enrolled": user.face_enrolled
         }
     }
+    # Committing expires ``user``, so the response above is built first.
+    create_audit_log(db, "login_success", result["user"]["id"], commit=True)
+    return result
     
 @app.post("/api/v1/auth/refresh")
 @app.post("/auth/refresh", include_in_schema=False)
@@ -297,8 +326,26 @@ def refresh_access_token(
 
 @app.post("/api/v1/auth/logout")
 @app.post("/auth/logout", include_in_schema=False)
-def logout_user(response: Response):
+def logout_user(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db)
+):
     """End the browser session by expiring its HttpOnly refresh cookie."""
+    # Logout is unauthenticated, so the actor (if any) is read from whichever
+    # valid token the client presented; an anonymous logout logs nothing.
+    token = request.cookies.get(REFRESH_COOKIE_NAME)
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    if token:
+        try:
+            actor_id = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM]).get("user_id")
+        except JWTError:
+            actor_id = None
+        if actor_id:
+            create_audit_log(db, "logout", actor_id, commit=True)
+
     _clear_refresh_cookie(response)
     return {"message": "Logged out successfully"}
     
@@ -332,6 +379,10 @@ def update_me(
     for field, value in updates.items():
         setattr(current_user, field, value)
 
+    create_audit_log(
+        db, "user_updated", current_user.id, current_user.id,
+        details={"fields": sorted(updates)}
+    )
     db.commit()
     db.refresh(current_user)
 
@@ -388,6 +439,10 @@ def enroll_my_face(
 
     current_user.face_embedding_hash = result.face_template_hash
     current_user.face_enrolled = True
+    create_audit_log(
+        db, "face_enrolled", current_user.id, current_user.id,
+        details={"quality_score": result.quality_score}
+    )
     db.commit()
     db.refresh(current_user)
 
@@ -414,6 +469,10 @@ def deactivate_user(
         )
 
     user.is_active = False
+    create_audit_log(
+        db, "user_updated", current_user.id, user.id,
+        resource_type="user", details={"is_active": False}
+    )
     db.commit()
     db.refresh(user)
 
@@ -423,15 +482,6 @@ def deactivate_user(
         "is_active": user.is_active,
         "message": "User deactivated successfully"
     }
-
-
-@app.get("/api/v1/audit/")
-def list_audit_logs(
-    current_user: User = Depends(require_roles("admin"))
-):
-    # Placeholder only: audit_logs persistence is not implemented yet (Week 3+).
-    # This exists solely to gate the route to admins for RBAC testing.
-    return {"items": [], "total": 0}
 
 
 def _serialize_course(
@@ -601,7 +651,9 @@ def _serialize_enrollment(enrollment: Enrollment) -> dict:
     }
 
 
-def _create_enrollment(db: Session, student_id: str, course_id: str) -> Enrollment:
+def _create_enrollment(
+    db: Session, student_id: str, course_id: str, actor_id: str | None = None
+) -> Enrollment:
     student = db.query(User).filter(User.id == student_id).first()
 
     if not student:
@@ -624,6 +676,11 @@ def _create_enrollment(db: Session, student_id: str, course_id: str) -> Enrollme
     new_enrollment = Enrollment(student_id=student_id, course_id=course_id)
 
     db.add(new_enrollment)
+    db.flush()  # assigns new_enrollment.id so the audit row can reference it
+    create_audit_log(
+        db, "enrollment_added", actor_id, new_enrollment.id,
+        details={"student_id": student_id, "course_id": course_id}
+    )
     db.commit()
     db.refresh(new_enrollment)
 
@@ -653,7 +710,7 @@ def create_enrollment(
         )
 
     new_enrollment = _create_enrollment(
-        db, enrollment_data.student_id, enrollment_data.course_id
+        db, enrollment_data.student_id, enrollment_data.course_id, current_user.id
     )
 
     return _serialize_enrollment(new_enrollment)
@@ -676,7 +733,7 @@ def create_enrollment_admin(
         )
 
     new_enrollment = _create_enrollment(
-        db, enrollment_data.student_id, enrollment_data.course_id
+        db, enrollment_data.student_id, enrollment_data.course_id, current_user.id
     )
 
     return _serialize_enrollment(new_enrollment)
@@ -926,6 +983,10 @@ def create_session(
     db.flush()
     if session_data.require_motion_check:
         db.add(motion.MotionPolicy(session_id=new_session.id, required=True))
+    create_audit_log(
+        db, "session_created", current_user.id, new_session.id,
+        details={"course_id": new_session.course_id, "name": new_session.name}
+    )
     db.commit()
     db.refresh(new_session)
 
@@ -949,6 +1010,9 @@ def list_active_sessions(db: Session = Depends(get_db)):
 def list_sessions(
     status_filter: str | None = Query(default=None, alias="status"),
     course_id: str | None = None,
+    instructor_id: str | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(require_roles("instructor", "admin")),
@@ -963,12 +1027,32 @@ def list_sessions(
         query = query.filter(SessionModel.status == status_filter)
     if course_id:
         query = query.filter(SessionModel.course_id == course_id)
+    if instructor_id:
+        query = query.filter(SessionModel.instructor_id == instructor_id)
+    if start_date:
+        query = query.filter(SessionModel.scheduled_start >= _to_naive_utc(start_date))
+    if end_date:
+        query = query.filter(SessionModel.scheduled_start <= _to_naive_utc(end_date))
 
     total = query.count()
     sessions = query.offset(offset).limit(limit).all()
 
+    # One grouped query for the whole page (spec: checked_in_count per session).
+    checked_in_counts = dict(
+        db.query(CheckIn.session_id, func.count(CheckIn.id))
+        .filter(CheckIn.session_id.in_([session.id for session in sessions]))
+        .group_by(CheckIn.session_id)
+        .all()
+    ) if sessions else {}
+
     return {
-        "items": [_serialize_session_summary(db, session) for session in sessions],
+        "items": [
+            {
+                **_serialize_session_summary(db, session),
+                "checked_in_count": checked_in_counts.get(session.id, 0)
+            }
+            for session in sessions
+        ],
         "total": total,
         "limit": limit,
         "offset": offset
@@ -1035,6 +1119,10 @@ def update_session(
     if new_status:
         _apply_status_transition(session, new_status)
 
+    create_audit_log(
+        db, "session_updated", current_user.id, session.id,
+        details={"fields": sorted(update_data.model_fields_set)}
+    )
     db.commit()
     db.refresh(session)
 
@@ -1059,6 +1147,10 @@ def update_session_status_admin(
     old_status = session.status
     _apply_status_transition(session, status_data.status)
 
+    create_audit_log(
+        db, "session_updated", current_user.id, session.id,
+        details={"status": {"from": old_status, "to": status_data.status}}
+    )
     db.commit()
     db.refresh(session)
 
@@ -1457,7 +1549,21 @@ def create_checkin(
     # Commit expires ORM instances, including the authenticated user.
     student_id = current_user.id
     db.add(new_checkin)
+    audit_details = {
+        "session_id": checkin_data.session_id,
+        "risk_score": assessment["risk_score"],
+    }
+    create_audit_log(
+        db, "checkin_attempted", student_id, checkin_id,
+        details=audit_details, timestamp=now
+    )
+    create_audit_log(
+        db, f"checkin_{checkin_status}", student_id, checkin_id,
+        details=audit_details, success=checkin_status != "rejected",
+        timestamp=now + timedelta(microseconds=1)
+    )
     db.commit()
+    prometheus_metrics.record_checkin(checkin_status, assessment["risk_score"])
 
     # Every field below was already known in Python before the insert (no
     # server-side defaults or triggers on this table), so the response is
@@ -1564,18 +1670,165 @@ def list_session_checkins(
 
         results.append({
             "id": checkin.id,
+            "session_id": checkin.session_id,
             "student_id": checkin.student_id,
             "student_name": student.full_name,
             "student_email": student.email,
             "status": checkin.status,
             "checked_in_at": checkin.checked_in_at,
+            "latitude": checkin.latitude,
+            "longitude": checkin.longitude,
             "distance_from_venue_meters": checkin.distance_from_venue_meters,
             "risk_score": checkin.risk_score,
             "risk_factors": risk_factors,
-            "liveness_passed": checkin.liveness_passed
+            "liveness_passed": checkin.liveness_passed,
+            "liveness_score": checkin.liveness_score,
+            "face_match_score": checkin.face_match_score
         })
 
     return results
+
+
+CHECKIN_STATUSES = ("pending", "approved", "flagged", "rejected", "appealed")
+
+
+def _instructor_checkin_scope(user: User) -> list:
+    """WHERE conditions limiting an instructor to their own sessions/courses.
+
+    Same visibility rule as app/stats.py: a course's instructor, the session's
+    owner, or any instructor for a course with no instructor assigned. Admins
+    and TAs are unscoped (there is no TA<->course assignment model).
+    """
+    if user.role != "instructor":
+        return []
+    return [or_(
+        Course.instructor_id == user.id,
+        Course.instructor_id.is_(None),
+        SessionModel.instructor_id == user.id
+    )]
+
+
+def _checkin_listing(
+    db: Session, user: User, filters: list, limit: int, offset: int,
+    include_appeal: bool = False
+) -> dict:
+    query = (
+        db.query(CheckIn, User, SessionModel, Course)
+        .join(SessionModel, SessionModel.id == CheckIn.session_id)
+        .join(Course, Course.id == SessionModel.course_id)
+        .join(User, User.id == CheckIn.student_id)
+        .filter(*_instructor_checkin_scope(user), *filters)
+    )
+
+    total = query.count()
+    rows = (
+        query.order_by(CheckIn.checked_in_at.desc(), CheckIn.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items = []
+    for checkin, student, session, course in rows:
+        item = {
+            "id": checkin.id,
+            "session_id": checkin.session_id,
+            "session_name": session.name,
+            "course_code": course.code,
+            "student_id": checkin.student_id,
+            "student_name": student.full_name,
+            "student_email": student.email,
+            "status": checkin.status,
+            "checked_in_at": checkin.checked_in_at,
+            "latitude": checkin.latitude,
+            "longitude": checkin.longitude,
+            "distance_from_venue_meters": checkin.distance_from_venue_meters,
+            "risk_score": checkin.risk_score,
+            "risk_factors": json.loads(checkin.risk_factors) if checkin.risk_factors else [],
+            "liveness_passed": checkin.liveness_passed,
+            "liveness_score": checkin.liveness_score,
+            "face_match_score": checkin.face_match_score
+        }
+        if include_appeal:
+            item["appeal_reason"] = checkin.appeal_reason
+            item["appealed_at"] = checkin.appealed_at
+        items.append(item)
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/checkins/")
+def list_checkins(
+    session_id: str | None = None,
+    course_id: str | None = None,
+    student_id: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    min_risk_score: float | None = None,
+    max_risk_score: float | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(require_roles("instructor", "admin", read_only=True)),
+    db: Session = Depends(get_read_db)
+):
+    if status_filter is not None and status_filter not in CHECKIN_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown status '{status_filter}'"
+        )
+
+    start = _to_naive_utc(start_date) if start_date else None
+    end = _to_naive_utc(end_date) if end_date else None
+    if start and end and start > end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must not be after end_date"
+        )
+
+    filters = []
+    if session_id:
+        filters.append(CheckIn.session_id == session_id)
+    if course_id:
+        filters.append(SessionModel.course_id == course_id)
+    if student_id:
+        filters.append(CheckIn.student_id == student_id)
+    if status_filter:
+        filters.append(CheckIn.status == status_filter)
+    if min_risk_score is not None:
+        filters.append(CheckIn.risk_score >= min_risk_score)
+    if max_risk_score is not None:
+        filters.append(CheckIn.risk_score <= max_risk_score)
+    if start:
+        filters.append(CheckIn.checked_in_at >= start)
+    if end:
+        filters.append(CheckIn.checked_in_at <= end)
+
+    return _checkin_listing(
+        db, current_user, filters, max(1, min(limit, 100)), max(0, offset)
+    )
+
+
+@app.get("/api/v1/checkins/flagged")
+def list_flagged_checkins(
+    course_id: str | None = None,
+    session_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(require_roles("instructor", "ta", "admin", read_only=True)),
+    db: Session = Depends(get_read_db)
+):
+    # Review queue: only flagged or appealed check-ins ever appear here.
+    filters = [CheckIn.status.in_(("flagged", "appealed"))]
+    if course_id:
+        filters.append(SessionModel.course_id == course_id)
+    if session_id:
+        filters.append(CheckIn.session_id == session_id)
+
+    return _checkin_listing(
+        db, current_user, filters, max(1, min(limit, 100)), max(0, offset),
+        include_appeal=True
+    )
 
 
 def _serialize_device(device: Device) -> dict:
@@ -1644,6 +1897,11 @@ def register_device(
     )
 
     db.add(new_device)
+    db.flush()  # assigns new_device.id so the audit row can reference it
+    create_audit_log(
+        db, "device_registered", current_user.id, new_device.id,
+        device_id=new_device.id
+    )
     db.commit()
     db.refresh(new_device)
 
@@ -1660,6 +1918,47 @@ def list_my_devices(
     ).all()
 
     return [_serialize_device(device) for device in devices]
+
+
+@app.get("/api/v1/devices/")
+def list_all_devices(
+    user_id: str | None = None,
+    is_active: bool | None = None,
+    is_trusted: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(require_roles("admin", read_only=True)),
+    db: Session = Depends(get_read_db)
+):
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    query = db.query(Device, User.email).outerjoin(User, User.id == Device.user_id)
+
+    if user_id:
+        query = query.filter(Device.user_id == user_id)
+    if is_active is not None:
+        query = query.filter(Device.is_active == is_active)
+    if is_trusted is not None:
+        query = query.filter(Device.is_trusted == is_trusted)
+
+    total = query.count()
+    rows = (
+        query.order_by(Device.first_seen_at.desc(), Device.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "items": [
+            {**_serialize_device(device), "user_email": email}
+            for device, email in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
 
 
 @app.patch("/api/v1/devices/{device_id}")
@@ -1728,6 +2027,141 @@ def delete_device(
     db.commit()
 
     return None
+
+
+def _csv_safe(value) -> str:
+    """Stop spreadsheet apps evaluating user-controlled text as a formula."""
+    text_value = "" if value is None else str(value)
+    if text_value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text_value
+    return text_value
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    return value.isoformat() + "Z" if value else None
+
+
+@app.get("/api/v1/export/session/{session_id}")
+def export_session_attendance(
+    session_id: str,
+    export_format: Literal["csv", "json"] = Query(default="csv", alias="format"),
+    current_user: User = Depends(require_roles("instructor", "admin")),
+    db: Session = Depends(get_db)
+):
+    row = (
+        db.query(SessionModel, Course)
+        .join(Course, Course.id == SessionModel.course_id)
+        .filter(SessionModel.id == session_id)
+        .first()
+    )
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+
+    session, course = row
+    actor_id = current_user.id
+
+    # Same visibility rule as the stats endpoints (see _instructor_checkin_scope).
+    if current_user.role == "instructor" and not (
+        session.instructor_id == actor_id
+        or course.instructor_id in (None, actor_id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+
+    total_enrolled = db.query(Enrollment).filter(
+        Enrollment.course_id == session.course_id,
+        Enrollment.is_active == True  # noqa: E712
+    ).count()
+
+    checkins = (
+        db.query(CheckIn, User)
+        .join(User, User.id == CheckIn.student_id)
+        .filter(CheckIn.session_id == session.id)
+        .order_by(CheckIn.checked_in_at, CheckIn.id)
+        .all()
+    )
+
+    session_date = session.scheduled_start.date().isoformat()
+    records = [
+        {
+            "student_id": checkin.student_id,
+            "student_name": student.full_name,
+            "student_email": student.email,
+            "session_date": session_date,
+            "session_name": session.name,
+            "status": checkin.status,
+            "checked_in_at": _utc_iso(checkin.checked_in_at),
+            "risk_score": checkin.risk_score
+        }
+        for checkin, student in checkins
+    ]
+
+    by_status = {name: 0 for name in CHECKIN_STATUSES}
+    for checkin, _ in checkins:
+        by_status[checkin.status] = by_status.get(checkin.status, 0) + 1
+
+    checked_in = len(records)
+    result = {
+        "session_id": session.id,
+        "session_name": session.name,
+        "course_id": course.id,
+        "course_code": course.code,
+        "session_date": session_date,
+        "summary": {
+            "total_enrolled": total_enrolled,
+            "checked_in_count": checked_in,
+            "approved_count": by_status["approved"],
+            "flagged_count": by_status["flagged"],
+            "rejected_count": by_status["rejected"],
+            "pending_count": by_status["pending"],
+            "appealed_count": by_status["appealed"],
+            # Same definition as GET /stats/sessions/{id}.
+            "attendance_rate": (
+                round(min(1.0, checked_in / total_enrolled), 4) if total_enrolled else 0.0
+            )
+        },
+        "records": records
+    }
+
+    if export_format == "csv":
+        columns = [
+            "student_id", "student_name", "student_email", "session_date",
+            "session_name", "status", "checked_in_at", "risk_score"
+        ]
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(columns)
+        for record in records:
+            writer.writerow([_csv_safe(record[column]) for column in columns])
+        response = Response(
+            content=buffer.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="session-{result["session_id"]}.csv"'
+            }
+        )
+    else:
+        response = result
+
+    # Everything above is already plain Python, so the commit's expiry of ORM
+    # instances costs nothing here.
+    create_audit_log(
+        db, "data_exported", actor_id, result["session_id"],
+        resource_type="session", commit=True,
+        details={
+            "export_type": "session_attendance",
+            "format": export_format,
+            "records": checked_in
+        }
+    )
+
+    return response
 
 
 # =============================================================================
