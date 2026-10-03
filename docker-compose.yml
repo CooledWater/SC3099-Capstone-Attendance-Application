@@ -140,7 +140,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./module4-observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./module4-observability/grafana/provisioning/datasources.yml:/etc/grafana/provisioning/datasources/saiv.yml:ro
+      - ./module4-observability/grafana/provisioning/dashboards.yml:/etc/grafana/provisioning/dashboards/saiv.yml:ro
     depends_on:
       - prometheus
     networks:

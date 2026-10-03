@@ -1,16 +1,41 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export type GeoPoint = { latitude: number; longitude: number; accuracy: number };
 export type GeolocationState = 'idle' | 'requesting' | 'ready' | 'denied' | 'unavailable' | 'timeout' | 'unsupported';
 export type BrowserPermissionState = PermissionState | 'checking' | 'unsupported';
 
+function integrationTestPoint(): GeoPoint | undefined {
+  const raw = process.env.NEXT_PUBLIC_INTEGRATION_TEST_GEOLOCATION;
+  if (!raw) return undefined;
+
+  const [latitude, longitude, accuracy] = raw.split(',').map(Number);
+  if (
+    !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+    !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
+    !Number.isFinite(accuracy) || accuracy < 0
+  ) return undefined;
+
+  return { latitude, longitude, accuracy };
+}
+
 export function useGeolocation() {
+  const syntheticPoint = useMemo(integrationTestPoint, []);
   const [state, setState] = useState<GeolocationState>('idle');
   const [point, setPoint] = useState<GeoPoint>();
   const [permissionState, setPermissionState] = useState<BrowserPermissionState>('checking');
   const request = useCallback(async () => {
+    if (syntheticPoint) {
+      setState('requesting');
+      setPoint(undefined);
+      await Promise.resolve();
+      setPermissionState('granted');
+      setPoint(syntheticPoint);
+      setState('ready');
+      return;
+    }
+
     if (!navigator.geolocation || !window.isSecureContext) { setState('unsupported'); return; }
 
     if (navigator.permissions?.query) {
@@ -33,10 +58,11 @@ export function useGeolocation() {
     }, {
       enableHighAccuracy: true, timeout: 12000, maximumAge: 0,
     });
-  }, []);
+  }, [syntheticPoint]);
   const reset = useCallback(() => { setState('idle'); setPoint(undefined); }, []);
 
   useEffect(() => {
+    if (syntheticPoint) { setPermissionState('granted'); return; }
     if (!navigator.permissions?.query) { setPermissionState('unsupported'); return; }
 
     let active = true;
@@ -68,7 +94,7 @@ export function useGeolocation() {
       active = false;
       permission?.removeEventListener('change', applyPermission);
     };
-  }, []);
+  }, [syntheticPoint]);
 
   return { state, point, permissionState, request, reset };
 }
