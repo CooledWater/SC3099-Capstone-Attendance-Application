@@ -57,7 +57,7 @@ def create_access_token(user_id: str, role: str) -> str:
     )
 
 
-def create_refresh_token(user_id: str, role: str) -> str:
+def create_refresh_token(user_id: str, role: str, session_app: str = "saiv") -> str:
     expire = datetime.utcnow() + timedelta(
         days=REFRESH_TOKEN_EXPIRE_DAYS
     )
@@ -66,6 +66,7 @@ def create_refresh_token(user_id: str, role: str) -> str:
         "user_id": user_id,
         "role": role,
         "type": "refresh",
+        "session_app": session_app,
         "exp": expire
     }
 

@@ -1,23 +1,29 @@
 import { useEffect, useState } from "react";
-import { api, clearAccessToken, getAccessToken, type CurrentUser } from "@/lib/api";
+import { api, clearAccessToken, type CurrentUser } from "@/lib/api";
 
 export function useAuth() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!getAccessToken()) {
-      setLoading(false);
-      return;
-    }
+    let cancelled = false;
     api
-      .me()
-      .then(setUser)
-      .catch(() => {
-        clearAccessToken();
-        setUser(null);
+      .restoreSession()
+      .then((session) => {
+        if (!cancelled) setUser(session);
       })
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!cancelled) {
+          clearAccessToken();
+          setUser(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return { session: user, user, loading };

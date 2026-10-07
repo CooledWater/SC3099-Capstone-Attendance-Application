@@ -88,30 +88,32 @@ app.add_middleware(
 )
 
 REFRESH_COOKIE_NAME = "saiv_refresh_token"
+DASHBOARD_COOKIE_NAME = "saiv_dashboard_refresh_token"
+DASHBOARD_COOKIE_PATH = "/api/v1/auth/dashboard"
 REFRESH_COOKIE_PATH = "/api/v1/auth"
 REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60
 REFRESH_COOKIE_SECURE = os.getenv("REFRESH_COOKIE_SECURE", "false").lower() == "true"
 
 
-def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+def _set_refresh_cookie(response: Response, refresh_token: str, dashboard: bool = False) -> None:
     response.set_cookie(
-        key=REFRESH_COOKIE_NAME,
+        key=DASHBOARD_COOKIE_NAME if dashboard else REFRESH_COOKIE_NAME,
         value=refresh_token,
         max_age=REFRESH_COOKIE_MAX_AGE,
         httponly=True,
         secure=REFRESH_COOKIE_SECURE,
         samesite="lax",
-        path=REFRESH_COOKIE_PATH
+        path=DASHBOARD_COOKIE_PATH if dashboard else REFRESH_COOKIE_PATH
     )
 
 
-def _clear_refresh_cookie(response: Response) -> None:
+def _clear_refresh_cookie(response: Response, dashboard: bool = False) -> None:
     response.delete_cookie(
-        key=REFRESH_COOKIE_NAME,
+        key=DASHBOARD_COOKIE_NAME if dashboard else REFRESH_COOKIE_NAME,
         httponly=True,
         secure=REFRESH_COOKIE_SECURE,
         samesite="lax",
-        path=REFRESH_COOKIE_PATH
+        path=DASHBOARD_COOKIE_PATH if dashboard else REFRESH_COOKIE_PATH
     )
 
 
@@ -163,10 +165,12 @@ def register_user(
 
 
 @app.post("/api/v1/auth/login")
+@app.post("/api/v1/auth/dashboard/login")
 @app.post("/auth/login", include_in_schema=False)
 def login_user(
     login_data: UserLogin,
     response: Response,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     user = db.query(User).filter(
@@ -199,11 +203,13 @@ def login_user(
         role=user.role
     )
     
+    dashboard = request.url.path == "/api/v1/auth/dashboard/login"
     refresh_token = create_refresh_token(
         user_id=user.id,
-        role=user.role
+        role=user.role,
+        session_app="dashboard" if dashboard else "saiv",
     )
-    _set_refresh_cookie(response, refresh_token)
+    _set_refresh_cookie(response, refresh_token, dashboard=dashboard)
 
     return {
         "access_token": access_token,
@@ -221,6 +227,8 @@ def login_user(
     }
     
 @app.post("/api/v1/auth/refresh")
+@app.post("/api/v1/auth/dashboard/refresh")
+@app.post("/api/v1/auth/dashboard/student-session")
 @app.post("/auth/refresh", include_in_schema=False)
 def refresh_access_token(
     request: Request,
@@ -230,10 +238,14 @@ def refresh_access_token(
 ):
     # JSON-body support remains for the published API contract and non-browser
     # clients. Browser clients use the HttpOnly cookie and send no token body.
+    dashboard = request.url.path.startswith("/api/v1/auth/dashboard/")
+    student_bridge = request.url.path.endswith("/dashboard/student-session")
+    # The one-way bridge reads SAIV's cookie; ordinary dashboard refresh never
+    # falls back to it. Dashboard endpoints accept cookies only, not body tokens.
     refresh_token = (
         token_data.refresh_token
-        if token_data is not None
-        else request.cookies.get(REFRESH_COOKIE_NAME)
+        if token_data is not None and not dashboard
+        else request.cookies.get(DASHBOARD_COOKIE_NAME if dashboard and not student_bridge else REFRESH_COOKIE_NAME)
     )
 
     if not refresh_token:
@@ -254,6 +266,12 @@ def refresh_access_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
             )
+
+        expected_app = "dashboard" if dashboard and not student_bridge else "saiv"
+        # Existing unscoped cookies belong to SAIV. Never migrate them as staff
+        # dashboard sessions or accept dashboard tokens in SAIV's refresh flow.
+        if payload.get("session_app", "saiv") != expected_app:
+            raise HTTPException(status_code=401, detail="Invalid session for this app")
 
         user_id = payload.get("user_id")
 
@@ -277,6 +295,9 @@ def refresh_access_token(
             detail="User not found or inactive"
         )
 
+    if student_bridge and user.role != "student":
+        raise HTTPException(status_code=403, detail="Automatic dashboard sign-in is for students only")
+
     new_access_token = create_access_token(
         user_id=user.id,
         role=user.role
@@ -284,9 +305,10 @@ def refresh_access_token(
 
     new_refresh_token = create_refresh_token(
         user_id=user.id,
-        role=user.role
+        role=user.role,
+        session_app="dashboard" if dashboard else "saiv",
     )
-    _set_refresh_cookie(response, new_refresh_token)
+    _set_refresh_cookie(response, new_refresh_token, dashboard=dashboard)
 
     return {
         "access_token": new_access_token,
@@ -296,10 +318,11 @@ def refresh_access_token(
 
 
 @app.post("/api/v1/auth/logout")
+@app.post("/api/v1/auth/dashboard/logout")
 @app.post("/auth/logout", include_in_schema=False)
-def logout_user(response: Response):
+def logout_user(response: Response, request: Request):
     """End the browser session by expiring its HttpOnly refresh cookie."""
-    _clear_refresh_cookie(response)
+    _clear_refresh_cookie(response, dashboard=request.url.path == "/api/v1/auth/dashboard/logout")
     return {"message": "Logged out successfully"}
     
 @app.get("/api/v1/users/me")
