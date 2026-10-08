@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    event,
     Column,
     String,
     Boolean,
@@ -495,3 +496,87 @@ class Device(Base):
 
     revoked_at = Column(DateTime, nullable=True)
     revocation_reason = Column(Text, nullable=True)
+
+
+# Every action DATABASE-SCHEMA.md / API-SPECIFICATION.md define, plus the two
+# compliance events (data_exported, security_violation) the PRD adds.
+AUDIT_ACTIONS = (
+    "login_success",
+    "login_failed",
+    "logout",
+    "user_created",
+    "user_updated",
+    "checkin_attempted",
+    "checkin_approved",
+    "checkin_flagged",
+    "checkin_rejected",
+    "checkin_appealed",
+    "checkin_reviewed",
+    "session_created",
+    "session_updated",
+    "session_deleted",
+    "enrollment_added",
+    "enrollment_removed",
+    "device_registered",
+    "face_enrolled",
+    "data_exported",
+    "security_violation",
+)
+
+
+class AuditLog(Base):
+    """Immutable audit trail row, per DATABASE-SCHEMA.md's audit_logs table.
+
+    Deliberately has NO ``updated_at``, and the ORM listeners below refuse any
+    UPDATE/DELETE issued through a mapped instance: rows are append-only.
+    ``details`` is a JSON document stored as TEXT.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True
+    )
+
+    action = Column(
+        Enum(*AUDIT_ACTIONS, name="audit_action"),
+        nullable=False,
+        index=True
+    )
+
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(String(36), nullable=True)
+    ip_address = Column(String(45), nullable=True, index=True)
+    user_agent = Column(String(500), nullable=True)
+    device_id = Column(String(36), nullable=True)
+    details = Column(Text, nullable=True)
+    success = Column(Boolean, nullable=False, default=True)
+
+    timestamp = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        index=True
+    )
+
+
+Index("ix_audit_logs_resource", AuditLog.resource_type, AuditLog.resource_id)
+
+
+@event.listens_for(AuditLog, "before_update")
+def _audit_log_is_immutable_on_update(mapper, connection, target):
+    raise RuntimeError("audit_logs rows are immutable")
+
+
+@event.listens_for(AuditLog, "before_delete")
+def _audit_log_is_immutable_on_delete(mapper, connection, target):
+    raise RuntimeError("audit_logs rows are immutable")
