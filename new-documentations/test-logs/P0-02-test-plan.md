@@ -1,4 +1,4 @@
-# Four-module integration test plan
+# P0-02 — Happy path: four-module integration test plan
 
 Prepared: 03 October 2026. **Status: plan only; the application and tests have not been run for this document.**
 
@@ -6,7 +6,7 @@ Prepared: 03 October 2026. **Status: plan only; the application and tests have n
 
 Verify that a student can register, log in, enroll their face, complete live verification, and successfully check in to a lecture, and that the resulting attendance survives database reads and appears in Module 4. A successful test must demonstrate real module calls and persisted data, rather than only a success message.
 
-The requested `new-documentations/list-of-features-02OCT.md` is currently located at [../list-of-features-02OCT.md](../list-of-features-02OCT.md). This plan uses that inventory, the active implementations in all four module directories, [database schema](../docs/DATABASE-SCHEMA.md), [API specification](../docs/API-SPECIFICATION.md), [integration guide](../docs/INTEGRATION-GUIDE.md), and [motion verification contracts](MOTION-VERIFICATION.md). Older examples in the integration guide describe Streamlit/direct database access; the current M4 app is React/Vite and reads attendance through M2.
+The requested `new-documentations/list-of-features-02OCT.md` is currently located at [../list-of-features-02OCT.md](../list-of-features-02OCT.md). This plan uses that inventory, the active implementations in all four module directories, [database schema](../../docs/DATABASE-SCHEMA.md), [API specification](../../docs/API-SPECIFICATION.md), [integration guide](../../docs/INTEGRATION-GUIDE.md), and [motion verification contracts](../MOTION-VERIFICATION.md). Older examples in the integration guide describe Streamlit/direct database access; the current M4 app is React/Vite and reads attendance through M2.
 
 ### Connections under test
 
@@ -97,7 +97,7 @@ Expect HTTP 201 and record `COURSE_ID`. Verify the course through `GET /api/v1/c
 
 Maintain an evidence sheet containing `RUN_ID`, student/instructor/course/session IDs, enrollment ID, challenge/verification ID, check-in ID, step results, request timings, and any defect. Capture browser screenshots and sanitized response summaries. Keep passwords, tokens/cookies, raw photos/frames, embeddings, and landmarks out of shared evidence and exported HAR files. Observe biometric payload structure locally without saving their contents.
 
-## IT-01 — Register, log in, and successfully check in to a lecture
+## P0-02 — Register, log in, and successfully check in to a lecture
 
 **Priority:** first happy-path case. **Expected outcome:** exactly one `approved` attendance record with passing liveness and face matching, committed to PostgreSQL and visible in both M4 student and staff views. Use mandatory motion so a geofence-only fallback cannot masquerade as successful M3 integration.
 
@@ -333,7 +333,7 @@ Take the pre-run baseline during preparation; this step checks it retrospectivel
 
 ## Acceptance, recording, and repeatability
 
-IT-01 passes only when registration/login, real M3 enrollment/sequence verification, approved attendance, independent PostgreSQL read-back, both M4 attendance views, monitoring delivery, and persistence checks meet the expectations above. HTTP 201 by itself is not acceptance: flagged/rejected attendance and null biometric outcomes fail this case. Track functional and observability results separately, and report every required blocked/failed portion in the overall result.
+P0-02 passes only when registration/login, real M3 enrollment/sequence verification, approved attendance, independent PostgreSQL read-back, both M4 attendance views, monitoring delivery, and persistence checks meet the expectations above. HTTP 201 by itself is not acceptance: flagged/rejected attendance and null biometric outcomes fail this case. Track functional and observability results separately, and report every required blocked/failed portion in the overall result.
 
 For each step record **PASS / FAIL / BLOCKED**, actual versus expected results, sanitized request status/timing, relevant IDs, and a defect reference. For a failure, identify the first failing boundary (browser → M2, M2 → M3, M2 → database, M4 → M2, or telemetry export/scrape). Continue independent checks where possible without changing policy to conceal the failure. Record any successful retry as a new attempt and retain the initial failure.
 
@@ -341,7 +341,7 @@ After evidence is collected, close the lecture using the authorized session stat
 
 ### Existing automated checks to run alongside manual integration
 
-Run HTTP tests against the isolated running services, using a Python environment with [test dependencies](../requirements-test.txt):
+Run HTTP tests against the isolated running services, using a Python environment with [test dependencies](../../requirements-test.txt):
 
 ```bash
 TEST_BACKEND_URL=http://localhost:8000 TEST_FACE_URL=http://localhost:8001 \
@@ -350,34 +350,6 @@ python3 -m pytest tests/public/test_integration.py \
   new-tests/test_auth_cookie.py -v
 ```
 
-Relevant supplementary files are [backend motion contracts](../new-tests/test_motion_backend.py), [sequence logic](../new-tests/test_motion_sequence.py), [native face processing](../new-tests/test_face_module3.py), and [native static-photo rejection](../new-tests/test_motion_native.py). Run backend and M3 tests in their appropriate environments separately because both Python packages are named `app`; backend motion cases use a subprocess and mocked M3 transport. They do not prove real browser/native-service/PostgreSQL integration. The native rejection smoke test does not prove a live user can pass two-blink verification.
+Relevant supplementary files are [backend motion contracts](../../new-tests/test_motion_backend.py), [sequence logic](../../new-tests/test_motion_sequence.py), [native face processing](../../new-tests/test_face_module3.py), and [native static-photo rejection](../../new-tests/test_motion_native.py). Run backend and M3 tests in their appropriate environments separately because both Python packages are named `app`; backend motion cases use a subprocess and mocked M3 transport. They do not prove real browser/native-service/PostgreSQL integration. The native rejection smoke test does not prove a live user can pass two-blink verification.
 
-The existing public happy-path test disables liveness, sends no biometric evidence, and accepts several attendance statuses; it cannot replace IT-01. The public frontend/dashboard tests validate API shapes without browser execution, so they cannot detect CORS or UI flow failures. Record test skips and known unsupported specification routes explicitly. Broader API/security/observability tests can supplement the additional cases below, but no existing test result is asserted by this plan.
-
-## Other integration test cases — brief backlog
-
-- **IT-02 — Photo check-in:** For a session without mandatory motion, select the photo alternative; verify M2 calls M3 passive liveness, face verification, and risk assessment as applicable, then persists and displays the result.
-- **IT-03 — Authentication failures:** Exercise duplicate registration, invalid fields, incorrect credentials, expired/invalid tokens, and inactive accounts; confirm errors reach both clients without unauthorized data changes.
-- **IT-04 — Refresh and logout:** Verify M1 cookie restoration/one-time 401 retry and both apps' sign-out state; expose M4's missing token refresh and the absence of server-side access-token revocation.
-- **IT-05 — Role and data isolation:** Use actual student/TA/instructor/admin accounts to check read/write permissions, personal-history isolation, instructor course scope, and admin layout previews; record current TA session-list and staff ownership gaps.
-- **IT-06 — Session lifecycle and time boundaries:** Test scheduled/active/closed/cancelled states, opening/closing instants, activation, and timezone handling across M4 creation, M1 discovery, M2 eligibility, and SQL.
-- **IT-07 — Enrollment eligibility:** Test missing/inactive enrollment and inactive courses; ensure session visibility is not mistaken for permission and document current course-active enforcement behavior.
-- **IT-08 — Venue inheritance and geofencing:** Exercise course defaults, session overrides, exact radius/twice-radius boundaries, missing venue configuration, poor accuracy, and out-of-range coordinates; compare decision, distance, and saved risk factors.
-- **IT-09 — Consent and browser permissions:** Deny/revoke camera or location permissions, withdraw stored consent, and retry; verify capture gates, enrollment/motion enforcement, and the legacy photo API consent gap.
-- **IT-10 — Enrollment rejection and recovery:** Submit no-face, multiple-face, blurred, low-quality, malformed, and oversized images; verify M3 errors map through M2 without persisting a successful enrollment.
-- **IT-11 — Failed liveness or identity:** Test insufficient blinks, incomplete reopening, a different person's face, multiple faces, and abrupt movement; ensure no usable proof is issued and attendance is not approved through required motion.
-- **IT-12 — Sequence contract limits:** Exercise frame-count/body limits, duplicate/reordered timestamps, excessive gaps, short/long capture, and invalid images; verify bounded errors without biometric reflection or database leakage.
-- **IT-13 — Challenge lifetime and replacement:** Expire, resubmit, cancel/restart, replace, or re-enroll during a challenge; verify stale evidence cannot be used and a fresh eligible attempt can succeed.
-- **IT-14 — Proof ownership and reuse:** Try another student/session's verification ID, failed/unverified IDs, and reused consumed proof; confirm rejection without extra attendance or unintended challenge changes.
-- **IT-15 — Duplicate and concurrent attendance:** Submit twice and race independent requests for the same student/session; verify one record, a useful error rather than an unhandled database exception, and consistent proof consumption.
-- **IT-16 — Database transaction failures:** Inject an attendance insert/commit failure and verify proof consumption rolls back, no partial attendance remains, and later reads show a consistent state.
-- **IT-17 — M3 outage and malformed responses:** Interrupt enrollment/sequence/photo calls; required motion/enrollment must not fabricate success, while the legacy photo path's geofence-only fallback must be documented and its biometric fields remain NULL.
-- **IT-18 — Browser interruption and retry:** Hide the tab, stop/revoke camera access, switch sessions, or retake evidence mid-flow; verify stale frames/proof cannot silently complete the wrong lecture.
-- **IT-19 — Offline operation:** Verify sanitized, unexpired session-cache reads, expired-cache removal, and disabled real submission; confirm there is no attendance queue or background write from the inactive prototype.
-- **IT-20 — Dashboard refresh and transformation:** Check polling after new attendance, sorting/course/session/status filters, risk scaling, timezone display, pending/rejected status mapping, course average risk, and trends spanning multiple dates.
-- **IT-21 — CSV consistency:** Export filtered/session attendance and compare IDs, status, risk units, quoting, and timestamps with M2/SQL; expose missing identity, biometric, location, and room fields rather than treating fallback values as real data.
-- **IT-22 — Large datasets and load:** Exceed 100 sessions/courses/personal records, run concurrent students, and measure authentication, enrollment, sequence, final submission, and dashboard read latency separately; expose pagination truncation and PostgreSQL locking problems.
-- **IT-23 — Device API persistence:** Exercise registration/re-registration, ownership conflicts, inventory, trust updates, revocation, and deletion; verify database reads and explicitly track that check-in device binding/attestation is not connected.
-- **IT-24 — Monitoring failures and privacy:** Stop/restart Prometheus or the collector, disable telemetry, and inspect bounded labels/logs/storage; verify attendance independence, recovery, and absence of raw biometrics/credentials in telemetry.
-- **IT-25 — Browser deployment contracts:** Check credentialed CORS/preflight and API base URLs for both apps, localhost/HTTPS permissions, and a mobile browser deployment; ensure host/container URLs are not confused.
-- **IT-26 — Incomplete feature acceptance:** Track audit persistence, M2 metrics/JSON metrics, retention/deletion, risk-signal records, staff assignments, reviews/appeals, QR attendance, and device attestation integration as explicit gaps until implemented; do not count placeholders or stored columns as completed workflows.
+The existing public happy-path test disables liveness, sends no biometric evidence, and accepts several attendance statuses; it cannot replace P0-02. The public frontend/dashboard tests validate API shapes without browser execution, so they cannot detect CORS or UI flow failures. Record test skips and known unsupported specification routes explicitly. Broader API/security/observability tests can supplement the additional cases below, but no existing test result is asserted by this plan.  

@@ -5,7 +5,35 @@ from .liveness import blink_metrics, assess_liveness
 from .config import settings
 from .detection import detect_face
 from .liveness import LivenessUnavailableError
+from pathlib import Path
+import hashlib
 import time
+
+
+LANDMARKER_MODEL = Path(__file__).resolve().parent / 'assets' / 'face_landmarker.task'
+LANDMARKER_SHA256 = '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff'
+
+
+def _create_landmarker():
+    """Use M1's pinned eye model; never download or substitute another model."""
+    try:
+        model_bytes = LANDMARKER_MODEL.read_bytes()
+        if hashlib.sha256(model_bytes).hexdigest() != LANDMARKER_SHA256:
+            raise LivenessUnavailableError('Sequence landmark model is unavailable')
+        import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+        options = vision.FaceLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_buffer=model_bytes),
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=2,
+            min_face_detection_confidence=.5,
+            min_face_presence_confidence=.5,
+            min_tracking_confidence=.5,
+        )
+        return mp, vision.FaceLandmarker.create_from_options(options)
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        raise LivenessUnavailableError('Sequence landmark model is unavailable') from exc
 
 
 class Frame(BaseModel):
@@ -51,10 +79,6 @@ class BlinkCounter:
 
 
 def analyze_sequence(request, verify_image):
-    try:
-        import mediapipe as mp
-    except ImportError as exc:
-        raise LivenessUnavailableError("MediaPipe unavailable") from exc
     started = time.monotonic()
     counter = BlinkCounter()
     matches = []
@@ -64,18 +88,24 @@ def analyze_sequence(request, verify_image):
         return {'passed': passed, 'blink_count': counter.count,
                 'liveness_score': min(passive_scores, default=0.0),
                 'face_match_score': min(matches, default=0.0)}
-    # A fresh tracker per request avoids mixing different students' sequences.
-    with mp.solutions.face_mesh.FaceMesh(static_image_mode=False, max_num_faces=2,
-            refine_landmarks=False, min_detection_confidence=.5, min_tracking_confidence=.5) as mesh:
+    # A fresh tracker per request avoids mixing students or timestamp histories.
+    mp, detector = _create_landmarker()
+    with detector as landmarker:
         for index, frame in enumerate(request.frames):
             if time.monotonic()-started > 40:
                 raise LivenessUnavailableError("Sequence processing timed out")
             image = decode_base64_image(frame.image, max_dimension=640)
-            output = mesh.process(image)
-            faces = output.multi_face_landmarks or []
+            try:
+                output = landmarker.detect_for_video(
+                    mp.Image(image_format=mp.ImageFormat.SRGB, data=image),
+                    frame.timestamp_ms,
+                )
+            except (RuntimeError, ValueError) as exc:
+                raise LivenessUnavailableError('Sequence landmark processing is unavailable') from exc
+            faces = output.face_landmarks or []
             if len(faces) != 1:
                 return result()
-            landmarks = faces[0].landmark
+            landmarks = faces[0]
             nose = landmarks[1]
             if previous and ((nose.x-previous[0])**2+(nose.y-previous[1])**2)**.5 > .15:
                 return result()

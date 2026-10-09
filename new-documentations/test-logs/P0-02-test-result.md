@@ -1,4 +1,6 @@
-# Integration test results
+# P0-02 — Happy path: execution record
+
+Documentation IDs updated on 09 October 2026. Historical fixture names, run IDs, defect IDs, timestamps, and recorded outcomes are unchanged.
 
 Run started: 2026-10-03 01:31 UTC.
 
@@ -6,11 +8,11 @@ Run completed: 2026-10-03 02:58 UTC, including browser sign-out.
 
 Code revision: `048c53b1ce7b296b0da3c7ed9b7f8a54e7cc20f2`. Run ID: `20261003-0131`.
 
-Plan: [integration-test-plan.md](integration-test-plan.md). IT-01 passed after the retained failed attempts and environment repairs below. Every coordinate in this report is a synthetic fixture value; it does not represent or imply the user's physical location. No physical location was collected or inferred, and physical GPS is not claimed.
+Plan: [P0-02-test-plan.md](P0-02-test-plan.md). P0-02 passed after the retained failed attempts and environment repairs below. Every coordinate in this report is a synthetic fixture value; it does not represent or imply the user's physical location. No physical location was collected or inferred, and physical GPS is not claimed.
 
 ## Execution policy
 
-- Run IT-01 in order, retaining failed attempts and recording setup adjustments.
+- Run P0-02 in order, retaining failed attempts and recording setup adjustments.
 - Use dedicated test data/database; preserve existing volumes and records.
 - Operator runs browsers, API requests, SQL checks, and log inspection. Request the user's participation for real webcam evidence.
 - Do not save passwords, tokens, raw photos/frames, embeddings, or landmarks in this report.
@@ -35,7 +37,7 @@ Plan: [integration-test-plan.md](integration-test-plan.md). IT-01 passed after t
 | Grafana datasource provisioning | FAIL, resolved for retry | Grafana's API initially returned an empty datasource list because Compose mounted `datasources.yml` and `dashboards.yml` at `/etc/grafana/provisioning/` rather than the subdirectories Grafana scans. Corrected the two explicit mount targets and recreated only Grafana. Startup logged insertion of default datasource `Prometheus` (`PBFA97CFB590B2093`); Grafana's authenticated datasource proxy then returned the same M3 samples as direct Prometheus queries. Initial failure retained. |
 | Monitoring baseline | PASS with known M2 gap | After M3 startup: Prometheus targets `prometheus` and `saiv-face-recognition` UP. `saiv-backend` remains DOWN because `/metrics` → 404, the known unsupported route. Baseline taken before biometric enrollment. |
 
-## IT-01 progress
+## P0-02 progress
 
 | Step | Test | Result | Evidence |
 | --- | --- | --- | --- |
@@ -90,4 +92,4 @@ Plan: [integration-test-plan.md](integration-test-plan.md). IT-01 passed after t
 | Frontend builds | PASS | M1 optimized Next.js build compiled, linted, and type-checked successfully with the opt-in location fixture. M4 Vite build passed after the router-shell repair (175 modules, 511 ms). |
 | Final static/configuration checks | PASS | `git diff --check` returned no errors. `docker compose config -q` passed with only the known obsolete-version warning. |
 
-Supplementary tests do not replace the live IT-01 case. IT-02–IT-26 remain NOT RUN.
+Supplementary tests do not replace the live P0-02 case. At completion of this run, all other cases in the then-current list remained NOT RUN. The current evaluation-focused list also contains later additions; this historical run does not establish their results.

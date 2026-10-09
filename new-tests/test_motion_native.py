@@ -3,6 +3,7 @@ import base64
 from io import BytesIO
 from pathlib import Path
 import sys
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -27,3 +28,21 @@ def test_real_model_rejects_static_photo_sequence():
         assert response.json()['passed'] is False
         assert response.json()['blink_count'] == 0
         assert encoded[:100] not in response.text
+
+
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_sequence_model_failure_returns_unavailable(monkeypatch, tmp_path, corrupt):
+    from app import motion
+    model = tmp_path / 'face_landmarker.task'
+    if corrupt:
+        model.write_bytes(b'not a valid model')
+    monkeypatch.setattr(motion, 'LANDMARKER_MODEL', model)
+    with TestClient(app) as client:
+        response = client.post('/liveness/sequence', json={
+            'reference_template_hash': 'a'*64,
+            'frames': [{'image': 'aGVsbG8=', 'timestamp_ms': i*80} for i in range(20)],
+        })
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Face models are unavailable'}
+    assert 'aGVsbG8=' not in response.text
+    assert str(model) not in response.text

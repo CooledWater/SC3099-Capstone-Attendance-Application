@@ -40,16 +40,18 @@ def test_sequence_combines_motion_identity_and_passive(monkeypatch, failure):
     from motion_test_face_app import motion
     samples = [.3]*3 + [.1]*2 + [.3]*4 + [.1]*2 + [.3]*9
     request = SequenceRequest(frames=[{'image':'aGVsbG8=', 'timestamp_ms':i*80} for i in range(len(samples))], reference_template_hash='a'*64)
-    class Mesh:
-        def __init__(self, **kwargs): self.index = -1
+    class Landmarker:
+        def __init__(self): self.index = -1
         def __enter__(self): return self
         def __exit__(self, *args): pass
-        def process(self, image):
+        def detect_for_video(self, image, timestamp):
             self.index += 1
-            face = N(landmark=[N(x=.5,y=.5,z=0)]*468)
+            assert timestamp == request.frames[self.index].timestamp_ms
+            face = [N(x=.5,y=.5,z=0)]*478
             faces = [face,face] if failure == 'multiple_faces' and self.index == 5 else [face]
-            return N(multi_face_landmarks=faces)
-    monkeypatch.setitem(sys.modules, 'mediapipe', N(solutions=N(face_mesh=N(FaceMesh=Mesh))))
+            return N(face_landmarks=faces)
+    mp = N(Image=lambda **kwargs: kwargs['data'], ImageFormat=N(SRGB='RGB'))
+    monkeypatch.setattr(motion, '_create_landmarker', lambda: (mp, Landmarker()))
     monkeypatch.setattr(motion, 'decode_base64_image', lambda *args, **kwargs: np.zeros((40,40,3)))
     ears = iter(samples)
     monkeypatch.setattr(motion, 'blink_metrics', lambda points: {'eye_aspect_ratio':next(ears)})
