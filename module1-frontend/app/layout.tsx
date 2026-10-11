@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   manifest: '/manifest.webmanifest',
   applicationName: 'SAIV Student',
   appleWebApp: { capable: true, title: 'SAIV Student', statusBarStyle: 'default' },
-  icons: { icon: '/icon.svg', apple: '/icon.svg' },
+  icons: { icon: '/icon.svg', apple: { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' } },
 }
 
 export const viewport: Viewport = {

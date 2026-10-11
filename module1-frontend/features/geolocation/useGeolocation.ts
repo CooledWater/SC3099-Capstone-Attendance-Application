@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export type GeoPoint = { latitude: number; longitude: number; accuracy: number };
 export type GeolocationState = 'idle' | 'requesting' | 'ready' | 'denied' | 'unavailable' | 'timeout' | 'unsupported';
@@ -21,15 +21,19 @@ function integrationTestPoint(): GeoPoint | undefined {
 }
 
 export function useGeolocation() {
+  const requestId = useRef(0);
   const syntheticPoint = useMemo(integrationTestPoint, []);
   const [state, setState] = useState<GeolocationState>('idle');
   const [point, setPoint] = useState<GeoPoint>();
   const [permissionState, setPermissionState] = useState<BrowserPermissionState>('checking');
   const request = useCallback(async () => {
+    const id = ++requestId.current;
+    setPoint(undefined);
     if (syntheticPoint) {
       setState('requesting');
       setPoint(undefined);
       await Promise.resolve();
+      if (id !== requestId.current) return;
       setPermissionState('granted');
       setPoint(syntheticPoint);
       setState('ready');
@@ -41,25 +45,32 @@ export function useGeolocation() {
     if (navigator.permissions?.query) {
       try {
         const permission = await navigator.permissions.query({ name: 'geolocation' });
+        if (id !== requestId.current) return;
         setPermissionState(permission.state);
         if (permission.state === 'denied') { setState('denied'); return; }
       } catch {
+        if (id !== requestId.current) return;
         setPermissionState('unsupported');
       }
     }
 
-    setState('requesting'); setPoint(undefined);
+    if (id !== requestId.current) return;
+    setState('requesting');
     navigator.geolocation.getCurrentPosition(({ coords }) => {
+      if (id !== requestId.current) return;
       setPermissionState('granted');
       setPoint({ latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy }); setState('ready');
     }, error => {
+      if (id !== requestId.current) return;
       if (error.code === error.PERMISSION_DENIED) setPermissionState('denied');
       setState(error.code === error.PERMISSION_DENIED ? 'denied' : error.code === error.TIMEOUT ? 'timeout' : 'unavailable');
     }, {
       enableHighAccuracy: true, timeout: 12000, maximumAge: 0,
     });
   }, [syntheticPoint]);
-  const reset = useCallback(() => { setState('idle'); setPoint(undefined); }, []);
+  const reset = useCallback(() => { requestId.current += 1; setState('idle'); setPoint(undefined); }, []);
+
+  useEffect(() => () => { requestId.current += 1; }, []);
 
   useEffect(() => {
     if (syntheticPoint) { setPermissionState('granted'); return; }
@@ -71,9 +82,11 @@ export function useGeolocation() {
       if (!active || !permission) return;
       setPermissionState(permission.state);
       if (permission.state === 'denied') {
+        requestId.current += 1;
         setPoint(undefined);
         setState('denied');
       } else if (permission.state === 'prompt') {
+        requestId.current += 1;
         setPoint(undefined);
         setState('idle');
       } else {

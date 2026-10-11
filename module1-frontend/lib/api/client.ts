@@ -19,19 +19,30 @@ async function parseError(response: Response) {
   return typeof detail === 'string' ? detail : 'The request could not be completed.';
 }
 
-export async function refreshAccessToken() {
+export function isConnectivityError(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof ApiError && error.status === 408);
+}
+
+export async function refreshAccessToken(throwOnUnavailable = false) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 3000);
   try {
     const response = await fetch(`${API_BASE}/auth/refresh`, {
       method: 'POST', credentials: 'include', signal: controller.signal,
     });
-    if (!response.ok) { clearTokens(); return false; }
+    if (!response.ok) {
+      clearTokens();
+      if (throwOnUnavailable && response.status !== 401 && response.status !== 403) {
+        throw new ApiError('Could not restore your session.', response.status);
+      }
+      return false;
+    }
     const tokens = await response.json() as AuthTokens;
     setAccessToken(tokens.access_token);
     return true;
-  } catch {
+  } catch (error) {
     clearTokens();
+    if (throwOnUnavailable) throw error;
     return false;
   } finally { window.clearTimeout(timeout); }
 }

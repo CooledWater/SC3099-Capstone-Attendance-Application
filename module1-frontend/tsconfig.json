@@ -3,6 +3,7 @@
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
+    "types": ["node", "react", "react-dom"],
     "strict": true,
     "noEmit": true,
     "esModuleInterop": true,
@@ -22,5 +23,5 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "app/page 2.tsx"]
+  "exclude": ["node_modules", "public"]
 }

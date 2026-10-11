@@ -1,5 +1,6 @@
 'use client';
 
+import { AppLogo } from '@/components/AppLogo';
 import { FormEvent, useState } from 'react';
 import { login, register } from '@/lib/api/auth';
 import type { User } from '@/types/api';
@@ -22,14 +23,15 @@ export function AuthCard({ onAuthenticated, onDemo }: { onAuthenticated: (user: 
   }
 
   return <main className="auth-shell">
-    <section className="auth-brand" aria-label="SAIV introduction">
-      <div className="brand-mark">S</div><span className="eyebrow">SAIV STUDENT</span>
+    <section className="auth-brand" aria-label="CCDS introduction">
+      <AppLogo size={104}/><span className="eyebrow">CCDS STUDENT</span>
       <h1>Attendance you can trust.</h1>
       <p>Secure identity and presence verification, designed with your privacy in mind.</p>
       <ul><li>Biometric frames are processed for verification, not retained on this device.</li><li>Your precise location is collected only when you check in.</li><li>Every request is reviewed by the attendance service.</li></ul>
     </section>
     <section className="auth-panel">
       <div className="auth-card">
+        <div className="auth-logo"><AppLogo size={72}/><b>CCDS Attendance</b></div>
         <span className="eyebrow">WELCOME</span><h2>{mode === 'login' ? 'Sign in to your account' : 'Create your student account'}</h2>
         <div className="tabs" role="tablist" aria-label="Authentication mode">
           {(['login', 'register'] as const).map(value => <button role="tab" aria-selected={mode === value} key={value} onClick={() => { setMode(value); setMessage(''); }} className={mode === value ? 'active' : ''}>{value === 'login' ? 'Sign in' : 'Register'}</button>)}

@@ -1,13 +1,23 @@
 import type { Session } from '@/types/api';
 
 const DATABASE_NAME = 'saiv-offline';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const SESSION_STORE = 'session-snapshots';
 const ACTIVE_SESSIONS_KEY = 'active-sessions';
 const SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
+const OWNER_KEY = 'saiv-offline-owner';
+
+// This account identifier enables read-only viewing; it never authenticates.
+export function getOfflineAccount(): string | null {
+  try { return localStorage.getItem(OWNER_KEY); } catch { return null; }
+}
+
+export function setOfflineAccount(userId: string): void {
+  try { localStorage.setItem(OWNER_KEY, userId); } catch { /* Offline storage is optional. */ }
+}
 
 type SessionSnapshot = {
-  key: typeof ACTIVE_SESSIONS_KEY;
+  key: string;
   cachedAt: number;
   sessions: Session[];
 };
@@ -28,6 +38,8 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(SESSION_STORE)) {
         request.result.createObjectStore(SESSION_STORE, { keyPath: 'key' });
+      } else {
+        request.transaction!.objectStore(SESSION_STORE).clear();
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -50,14 +62,15 @@ function sanitizeSession(session: Session): Session {
   };
 }
 
-export async function cacheActiveSessions(sessions: Session[]): Promise<void> {
+export async function cacheActiveSessions(userId: string, sessions: Session[]): Promise<void> {
   const database = await openDatabase();
 
   try {
+    if (getOfflineAccount() !== userId) return;
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(SESSION_STORE, 'readwrite');
       transaction.objectStore(SESSION_STORE).put({
-        key: ACTIVE_SESSIONS_KEY,
+        key: `${ACTIVE_SESSIONS_KEY}:${userId}`,
         cachedAt: Date.now(),
         sessions: sessions.map(sanitizeSession),
       } satisfies SessionSnapshot);
@@ -70,18 +83,18 @@ export async function cacheActiveSessions(sessions: Session[]): Promise<void> {
   }
 }
 
-export async function getCachedActiveSessions(): Promise<CachedActiveSessions | null> {
+export async function getCachedActiveSessions(userId: string): Promise<CachedActiveSessions | null> {
   const database = await openDatabase();
 
   try {
     const snapshot = await new Promise<SessionSnapshot | undefined>((resolve, reject) => {
       const transaction = database.transaction(SESSION_STORE, 'readonly');
-      const request = transaction.objectStore(SESSION_STORE).get(ACTIVE_SESSIONS_KEY);
+      const request = transaction.objectStore(SESSION_STORE).get(`${ACTIVE_SESSIONS_KEY}:${userId}`);
       request.onsuccess = () => resolve(request.result as SessionSnapshot | undefined);
       request.onerror = () => reject(request.error ?? new Error('Could not read cached sessions'));
     });
 
-    if (!snapshot || Date.now() - snapshot.cachedAt > SNAPSHOT_MAX_AGE_MS) return null;
+    if (!snapshot || snapshot.cachedAt > Date.now() || Date.now() - snapshot.cachedAt > SNAPSHOT_MAX_AGE_MS) return null;
 
     const now = Date.now();
     return {
@@ -94,4 +107,18 @@ export async function getCachedActiveSessions(): Promise<CachedActiveSessions | 
   } finally {
     database.close();
   }
+}
+
+export async function clearOfflineSessions(): Promise<void> {
+  try { localStorage.removeItem(OWNER_KEY); } catch { /* Storage may be disabled. */ }
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(SESSION_STORE, 'readwrite');
+      transaction.objectStore(SESSION_STORE).clear();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  } finally { database.close(); }
 }
