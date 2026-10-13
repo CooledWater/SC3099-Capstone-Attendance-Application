@@ -26,6 +26,8 @@ export type SessionRow = {
   status: "scheduled" | "active" | "closed" | "cancelled";
   starts_at: string;
   ends_at: string;
+  actual_start?: string | null;
+  actual_end?: string | null;
   checkin_opens_at: string;
   checkin_closes_at: string;
   room: string;
@@ -65,6 +67,8 @@ type ApiSession = {
   course_name?: string | null;
   scheduled_start: string;
   scheduled_end: string;
+  actual_start?: string | null;
+  actual_end?: string | null;
   checkin_opens_at: string;
   checkin_closes_at: string;
   venue_name?: string | null;
@@ -89,6 +93,8 @@ function toSessionRow(s: ApiSession): SessionRow {
     status: s.status,
     starts_at: s.scheduled_start,
     ends_at: s.scheduled_end,
+    actual_start: s.actual_start ?? null,
+    actual_end: s.actual_end ?? null,
     checkin_opens_at: s.checkin_opens_at,
     checkin_closes_at: s.checkin_closes_at,
     room: s.venue_name ?? "Not set",

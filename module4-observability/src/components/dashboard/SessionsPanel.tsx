@@ -65,6 +65,7 @@ export function SessionsPanel({
   const [saving, setSaving] = useState(false);
   const [savingSessionId, setSavingSessionId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [selectedCourseId, setSelectedCourseId] = useState("all");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null);
   const [form, setForm] = useState({
@@ -93,8 +94,12 @@ export function SessionsPanel({
   });
   const list = useMemo(() => {
     const all = (sessions.data ?? []) as SessionRow[];
-    return courseIds ? all.filter((s) => courseIds.has(s.course_id)) : all;
-  }, [sessions.data, courseIds]);
+    return all.filter(
+      (session) =>
+        (!courseIds || courseIds.has(session.course_id)) &&
+        (selectedCourseId === "all" || session.course_id === selectedCourseId),
+    );
+  }, [sessions.data, courseIds, selectedCourseId]);
 
   const editingSession = list.find((session) => session.id === editingSessionId) ?? null;
   const availableCourses = (courses.isSuccess ? courses.data : []).filter(
@@ -105,6 +110,51 @@ export function SessionsPanel({
     rows.forEach((r) => m.set(r.sessionId, [...(m.get(r.sessionId) ?? []), r]));
     return m;
   }, [rows]);
+  const sessionGroups = useMemo(() => {
+    const groups = [
+      {
+        status: "active",
+        title: "Active",
+        sessions: list.filter((session) => session.status === "active"),
+        timestamp: (session: SessionRow) => session.actual_start ?? session.starts_at,
+        direction: -1,
+      },
+      {
+        status: "scheduled",
+        title: "Scheduled",
+        sessions: list.filter((session) => session.status === "scheduled"),
+        timestamp: (session: SessionRow) => session.starts_at,
+        direction: 1,
+      },
+      {
+        status: "closed",
+        title: "Closed",
+        sessions: list.filter((session) => session.status === "closed"),
+        timestamp: (session: SessionRow) => session.actual_end ?? session.ends_at,
+        direction: -1,
+      },
+      {
+        status: "cancelled",
+        title: "Cancelled",
+        sessions: list.filter((session) => session.status === "cancelled"),
+        timestamp: (session: SessionRow) => session.starts_at,
+        direction: -1,
+      },
+    ];
+
+    return groups
+      .filter((group) => group.sessions.length > 0)
+      .map((group) => ({
+        ...group,
+        sessions: [...group.sessions].sort((a, b) => {
+          const aTime = parseApiDateTime(group.timestamp(a)).getTime();
+          const bTime = parseApiDateTime(group.timestamp(b)).getTime();
+          if (!Number.isFinite(aTime)) return Number.isFinite(bTime) ? 1 : 0;
+          if (!Number.isFinite(bTime)) return -1;
+          return (aTime - bTime) * group.direction;
+        }),
+      }));
+  }, [list]);
 
   async function createSession(e: React.FormEvent) {
     e.preventDefault();
@@ -431,162 +481,186 @@ export function SessionsPanel({
         </form>
       )}
 
-      <div className="divide-y divide-border">
+      <div className="border-b border-border px-5 py-4">
+        <label className="block max-w-xs text-xs text-muted-foreground">
+          Filter by course
+          <select
+            className={`${input} mt-1`}
+            value={selectedCourseId}
+            onChange={(event) => setSelectedCourseId(event.target.value)}
+          >
+            <option value="all">All courses</option>
+            {availableCourses.map((course) => (
+              <option key={course.id} value={course.id}>
+                {course.code} · {course.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="space-y-4 px-5 py-4">
         {sessions.isLoading && (
-          <p className="px-5 py-6 text-sm text-muted-foreground">Loading sessions…</p>
+          <p className="py-2 text-sm text-muted-foreground">Loading sessions…</p>
         )}
         {!sessions.isLoading && list.length === 0 && (
-          <p className="px-5 py-6 text-sm text-muted-foreground">
+          <p className="py-2 text-sm text-muted-foreground">
             {currentUserId && courses.isSuccess && availableCourses.length === 0
               ? "No courses are assigned to you."
               : "No sessions yet."}
           </p>
         )}
-        {list.map((s) => {
-          const sessionRows = bySession.get(s.id) ?? [];
-          const isOpen = expanded === s.id;
-          const canManage = currentUserId !== undefined && s.instructor_id === currentUserId;
-          return (
-            <div key={s.id} className="px-5 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">
-                    {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {formatSingaporeDateTime(s.starts_at)} SGT · {s.room}{" "}
-                    {s.status === "scheduled" && <> · {s.expected_attendance} enrolled</>}
-                    {s.status !== "scheduled" && (
-                      <button
-                        type="button"
-                        aria-expanded={isOpen}
-                        onClick={() => setExpanded(isOpen ? null : s.id)}
-                        className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {sessionRows.length} / {s.expected_attendance} checked in →
-                      </button>
-                    )}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[11px] ${
-                      s.is_active
-                        ? "bg-accent/10 text-accent"
-                        : s.status === "scheduled"
-                          ? "bg-primary/10 text-primary"
-                          : s.status === "cancelled"
-                            ? "bg-destructive/10 text-destructive"
-                            : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
-                  </span>
-                  {canManage && s.status === "scheduled" && (
-                    <button
-                      type="button"
-                      onClick={() => void activateSession(s)}
-                      disabled={savingSessionId !== null}
-                      className="rounded-full bg-gradient-to-r from-primary to-accent px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-60"
-                    >
-                      {savingSessionId === s.id ? "Activating…" : "Activate session"}
-                    </button>
-                  )}
-                  {canManage && (s.status === "scheduled" || s.status === "active") && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          type="button"
-                          aria-label={`More actions for ${s.name}`}
-                          disabled={savingSessionId !== null}
-                          className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-glass text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+        {!sessions.isLoading &&
+          list.length > 0 &&
+          sessionGroups.map((group) => (
+            <div key={group.status} className="space-y-2">
+              <h3 className="px-1 text-sm font-medium text-primary">{group.title}</h3>
+              {group.sessions.map((s) => {
+                const sessionRows = bySession.get(s.id) ?? [];
+                const isOpen = expanded === s.id;
+                const canManage = currentUserId !== undefined && s.instructor_id === currentUserId;
+                return (
+                  <div key={s.id} className="rounded-xl border border-border bg-card/40 px-5 py-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {formatSingaporeDateTime(s.starts_at)} SGT · {s.room}{" "}
+                          {s.status === "scheduled" && <> · {s.expected_attendance} enrolled</>}
+                          {s.status !== "scheduled" && (
+                            <button
+                              type="button"
+                              aria-expanded={isOpen}
+                              onClick={() => setExpanded(isOpen ? null : s.id)}
+                              className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              {sessionRows.length} / {s.expected_attendance} checked in →
+                            </button>
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] ${
+                            s.is_active
+                              ? "bg-accent/10 text-accent"
+                              : s.status === "scheduled"
+                                ? "bg-primary/10 text-primary"
+                                : s.status === "cancelled"
+                                  ? "bg-destructive/10 text-destructive"
+                                  : "bg-secondary text-muted-foreground"
+                          }`}
                         >
-                          <MoreHorizontal className="size-4" aria-hidden="true" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {s.status === "scheduled" && (
-                          <>
-                            <DropdownMenuItem onSelect={() => startEditing(s)}>
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onSelect={() => setDeleteTarget(s)}
-                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                            >
-                              Delete
-                            </DropdownMenuItem>
-                          </>
+                          {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
+                        </span>
+                        {canManage && s.status === "scheduled" && (
+                          <button
+                            type="button"
+                            onClick={() => void activateSession(s)}
+                            disabled={savingSessionId !== null}
+                            className="rounded-full bg-gradient-to-r from-primary to-accent px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-60"
+                          >
+                            {savingSessionId === s.id ? "Activating…" : "Activate session"}
+                          </button>
                         )}
-                        {s.status === "active" && (
-                          <DropdownMenuItem onSelect={() => void closeSession(s)}>
-                            {savingSessionId === s.id ? "Closing…" : "Close session"}
-                          </DropdownMenuItem>
+                        {canManage && (s.status === "scheduled" || s.status === "active") && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                aria-label={`More actions for ${s.name}`}
+                                disabled={savingSessionId !== null}
+                                className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-glass text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+                              >
+                                <MoreHorizontal className="size-4" aria-hidden="true" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {s.status === "scheduled" && (
+                                <>
+                                  <DropdownMenuItem onSelect={() => startEditing(s)}>
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onSelect={() => setDeleteTarget(s)}
+                                    className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                  >
+                                    Delete
+                                  </DropdownMenuItem>
+                                </>
+                              )}
+                              {s.status === "active" && (
+                                <DropdownMenuItem onSelect={() => void closeSession(s)}>
+                                  {savingSessionId === s.id ? "Closing…" : "Close session"}
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                  {s.status === "closed" && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        downloadCsv(
-                          `session-${s.courses?.code ?? "export"}`,
-                          checkInsToCsv(sessionRows),
-                        )
-                      }
-                      className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
-                    >
-                      Export session CSV
-                    </button>
-                  )}
-                </div>
-              </div>
+                        {s.status === "closed" && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadCsv(
+                                `session-${s.courses?.code ?? "export"}`,
+                                checkInsToCsv(sessionRows),
+                              )
+                            }
+                            className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
+                          >
+                            Export session CSV
+                          </button>
+                        )}
+                      </div>
+                    </div>
 
-              {isOpen && (
-                <div className="mt-3 overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full min-w-[520px] text-left text-sm">
-                    <thead>
-                      <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        <th className="px-4 py-2 font-medium">Student</th>
-                        <th className="px-4 py-2 font-medium">Checked in</th>
-                        <th className="px-4 py-2 font-medium">Status</th>
-                        <th className="px-4 py-2 text-right font-medium">Risk</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {sessionRows.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="px-4 py-4 text-xs text-muted-foreground">
-                            No check-ins for this session.
-                          </td>
-                        </tr>
-                      )}
-                      {sessionRows.map((r) => (
-                        <tr key={r.id}>
-                          <td className="px-4 py-2 text-foreground">{r.student}</td>
-                          <td className="px-4 py-2 text-muted-foreground">
-                            {formatSingaporeDateTime(r.time)} SGT
-                          </td>
-                          <td className="px-4 py-2">
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[11px] ${statusStyle[r.status]}`}
-                            >
-                              {statusText[r.status]}
-                            </span>
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                            {r.risk}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                    {isOpen && (
+                      <div className="mt-3 overflow-x-auto rounded-xl border border-border">
+                        <table className="w-full min-w-[520px] text-left text-sm">
+                          <thead>
+                            <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                              <th className="px-4 py-2 font-medium">Student</th>
+                              <th className="px-4 py-2 font-medium">Checked in</th>
+                              <th className="px-4 py-2 font-medium">Status</th>
+                              <th className="px-4 py-2 text-right font-medium">Risk</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {sessionRows.length === 0 && (
+                              <tr>
+                                <td colSpan={4} className="px-4 py-4 text-xs text-muted-foreground">
+                                  No check-ins for this session.
+                                </td>
+                              </tr>
+                            )}
+                            {sessionRows.map((r) => (
+                              <tr key={r.id}>
+                                <td className="px-4 py-2 text-foreground">{r.student}</td>
+                                <td className="px-4 py-2 text-muted-foreground">
+                                  {formatSingaporeDateTime(r.time)} SGT
+                                </td>
+                                <td className="px-4 py-2">
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[11px] ${statusStyle[r.status]}`}
+                                  >
+                                    {statusText[r.status]}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                                  {r.risk}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          ))}
       </div>
       <Dialog
         open={Boolean(editingSession)}
