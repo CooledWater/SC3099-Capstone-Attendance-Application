@@ -3,13 +3,17 @@ import type { CheckInRow } from "./AttendanceTable";
 const statusLabel: Record<CheckInRow["status"], string> = {
   approved: "checked in",
   flagged: "was flagged",
-  no_show: "did not attend",
+  rejected: "was rejected",
+  pending: "is pending review",
+  appealed: "was appealed",
 };
 
 const statusColor: Record<CheckInRow["status"], string> = {
   approved: "text-accent",
   flagged: "text-warning",
-  no_show: "text-destructive",
+  rejected: "text-destructive",
+  pending: "text-primary",
+  appealed: "text-warning",
 };
 
 export function LiveActivity({ rows }: { rows: CheckInRow[] }) {

@@ -7,18 +7,24 @@ export function CheckInsPanel({
   rows,
   loading,
   courseIds,
+  sessionRows,
 }: {
   rows: CheckInRow[];
   loading: boolean;
   courseIds?: Set<string>;
+  sessionRows?: SessionRow[];
 }) {
   const [sessionId, setSessionId] = useState("all");
-  const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions });
+  const sessions = useQuery({
+    queryKey: ["sessions"],
+    queryFn: fetchSessions,
+    enabled: sessionRows === undefined,
+  });
 
   const list = useMemo(() => {
-    const all = (sessions.data ?? []) as SessionRow[];
+    const all = sessionRows ?? sessions.data ?? [];
     return courseIds ? all.filter((s) => courseIds.has(s.course_id)) : all;
-  }, [sessions.data, courseIds]);
+  }, [sessions.data, sessionRows, courseIds]);
 
   const visible = sessionId === "all" ? rows : rows.filter((r) => r.sessionId === sessionId);
 

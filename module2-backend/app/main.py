@@ -1130,6 +1130,43 @@ def update_session(
 
     updates = update_data.model_dump(exclude_unset=True)
 
+    if "course_id" in updates:
+        target_course_id = updates["course_id"]
+        if not target_course_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="course_id must be a valid course ID",
+            )
+        if target_course_id != session.course_id:
+            if (
+                session.status != "scheduled"
+                or updates.get("status") not in (None, "scheduled")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A session's course can only be changed while it is scheduled",
+                )
+            if db.query(CheckIn.id).filter(CheckIn.session_id == session.id).first():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A session with check-ins cannot be moved to another course",
+                )
+
+            target_course = db.query(Course).filter(Course.id == target_course_id).first()
+            if not target_course:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Course not found",
+                )
+            if (
+                current_user.role != "admin"
+                and target_course.instructor_id != current_user.id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only move a session to a course you teach",
+                )
+
     for field in ("scheduled_start", "scheduled_end", "checkin_opens_at", "checkin_closes_at"):
         if updates.get(field) is not None:
             updates[field] = _to_naive_utc(updates[field])

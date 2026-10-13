@@ -10,7 +10,7 @@ import { CheckInsPanel } from "./CheckInsPanel";
 import { AuditLogs } from "./AuditLogs";
 import { MetricsPanel } from "./MetricsPanel";
 import { Tabs } from "./Tabs";
-import { fetchCheckIns, fetchSessions, toRows, trendOf } from "@/lib/attendance";
+import { fetchCheckIns, fetchCourses, fetchSessions, toRows, trendOf } from "@/lib/attendance";
 
 const tabs = [
   { id: "overview", label: "Overview" },
@@ -68,7 +68,7 @@ export function buildCourseStats(
     .sort((a, b) => a.code.localeCompare(b.code));
 }
 
-export function InstructorView() {
+export function InstructorView({ userId }: { userId: string }) {
   const [tab, setTab] = useState<Tab>("overview");
   const checkIns = useQuery({
     queryKey: ["check-ins"],
@@ -76,19 +76,39 @@ export function InstructorView() {
     refetchInterval: 30000,
   });
   const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions });
+  const courses = useQuery({ queryKey: ["courses"], queryFn: fetchCourses });
 
-  const rows = useMemo(() => toRows(checkIns.data ?? []), [checkIns.data]);
-  const visibleCourseIds = new Set((sessions.data ?? []).map((s) => s.course_id));
-  const mySessions = (sessions.data ?? []).filter((s) => visibleCourseIds.has(s.course_id));
+  const visibleCourseIds = useMemo(
+    () =>
+      new Set(
+        (courses.isSuccess ? courses.data : [])
+          .filter((course) => course.instructor_id === userId)
+          .map((course) => course.id),
+      ),
+    [courses.data, courses.isSuccess, userId],
+  );
+  const mySessions = useMemo(
+    () => (sessions.data ?? []).filter((session) => visibleCourseIds.has(session.course_id)),
+    [sessions.data, visibleCourseIds],
+  );
+  const visibleSessionIds = useMemo(
+    () => new Set(mySessions.map((session) => session.id)),
+    [mySessions],
+  );
+  const visibleCheckIns = useMemo(
+    () => (checkIns.data ?? []).filter((item) => visibleSessionIds.has(item.session_id)),
+    [checkIns.data, visibleSessionIds],
+  );
+  const rows = useMemo(() => toRows(visibleCheckIns), [visibleCheckIns]);
   const stats = useMemo(
-    () => buildCourseStats(checkIns.data ?? [], mySessions),
-    [checkIns.data, sessions.data],
+    () => buildCourseStats(visibleCheckIns, mySessions),
+    [visibleCheckIns, mySessions],
   );
 
   const expected = mySessions.reduce((n, s) => n + (s.expected_attendance ?? 0), 0);
   const approved = rows.filter((r) => r.status === "approved").length;
   const flagged = rows.filter((r) => r.status === "flagged").length;
-  const noShow = rows.filter((r) => r.status === "no_show").length;
+  const rejected = rows.filter((r) => r.status === "rejected").length;
   const rate = expected > 0 ? Math.round((rows.length / expected) * 100) : 0;
   const avgRisk = rows.length ? Math.round(rows.reduce((s, r) => s + r.risk, 0) / rows.length) : 0;
   const students = new Set(rows.map((r) => r.email)).size;
@@ -99,6 +119,12 @@ export function InstructorView() {
   return (
     <>
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
+
+      {courses.isError && (
+        <p className="mb-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+          Could not load course assignments, so instructor course data is hidden.
+        </p>
+      )}
 
       {tab === "overview" && (
         <>
@@ -127,7 +153,7 @@ export function InstructorView() {
             <KpiCard
               label="Average risk"
               value={String(avgRisk)}
-              note={`${noShow} no-shows recorded`}
+              note={`${rejected} rejected check-ins`}
               tone={avgRisk > 50 ? "danger" : "accent"}
               progress={avgRisk}
             />
@@ -139,7 +165,9 @@ export function InstructorView() {
         </>
       )}
 
-      {tab === "sessions" && <SessionsPanel rows={rows} canCreate courseIds={visibleCourseIds} />}
+      {tab === "sessions" && (
+        <SessionsPanel rows={rows} canCreate courseIds={visibleCourseIds} currentUserId={userId} />
+      )}
       {tab === "checkins" && (
         <CheckInsPanel rows={rows} loading={checkIns.isLoading} courseIds={visibleCourseIds} />
       )}

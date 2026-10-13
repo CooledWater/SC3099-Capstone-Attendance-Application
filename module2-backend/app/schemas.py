@@ -61,6 +61,7 @@ class SessionCreate(BaseModel):
     require_face_match: bool = False
     risk_threshold: Optional[float] = None
 class SessionUpdate(BaseModel):
+    course_id: Optional[str] = None
     name: Optional[str] = None
     session_type: Optional[str] = None
     description: Optional[str] = None

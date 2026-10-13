@@ -442,7 +442,7 @@ Get session details. **Requires auth.**
 ```
 
 #### POST /sessions/
-Create a new session. **Requires auth (instructor only).**
+Create a new session. **Requires auth (instructor or admin).**
 
 **Request:**
 ```json
@@ -467,7 +467,7 @@ Create a new session. **Requires auth (instructor only).**
 **Response:** `201 Created` - Returns created session object
 
 **Validation:**
-- `course_id` must be a course the instructor teaches
+- An instructor can create sessions only for a course they teach; an admin can create a session for any course
 - `scheduled_start` must be in the future
 - `scheduled_end` must be after `scheduled_start`
 - `checkin_closes_at` must be after `checkin_opens_at`
@@ -478,6 +478,7 @@ Update a session. **Requires auth (instructor only, must be session owner).**
 **Request:** (partial update - any subset of fields)
 ```json
 {
+  "course_id": "uuid",
   "status": "closed",
   "name": "Updated Session Name",
   "checkin_closes_at": "2024-01-15T14:45:00Z"
@@ -485,6 +486,10 @@ Update a session. **Requires auth (instructor only, must be session owner).**
 ```
 
 **Response:** `200 OK` - Returns updated session object
+
+Instructors may change `course_id` only to a course they teach, and only while the session
+is scheduled and has no check-ins. `total_enrolled` / expected attendance is derived from
+the course's active enrollments and is not an editable session field.
 
 **Status Transitions:**
 - `scheduled` → `active`: Opens check-in window

@@ -95,6 +95,12 @@ function Dashboard() {
             <p className="mt-1 text-sm text-muted-foreground">
               {copy.blurb} Signed in as {user?.email}
             </p>
+            {role === "admin" && viewAs !== "admin" && (
+              <p className="mt-2 max-w-2xl text-xs text-warning">
+                Role preview only: this changes the dashboard layout, not the signed-in account, API
+                permissions, or data scope.
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {role === "admin" && (
@@ -134,7 +140,7 @@ function Dashboard() {
         </div>
 
         {activeRole === "admin" && <AdminView />}
-        {activeRole === "instructor" && <InstructorView />}
+        {activeRole === "instructor" && user && <InstructorView userId={user.id} />}
         {activeRole === "ta" && user && <TaView userId={user.id} />}
         {activeRole === "student" && <StudentView />}
       </section>

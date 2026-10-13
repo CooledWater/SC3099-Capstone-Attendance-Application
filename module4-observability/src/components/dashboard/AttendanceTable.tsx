@@ -10,7 +10,7 @@ export type CheckInRow = {
   sessionId: string;
   room: string;
   time: string;
-  status: "approved" | "flagged" | "no_show";
+  status: "approved" | "flagged" | "rejected" | "pending" | "appealed";
   risk: number;
   liveness: number;
   faceMatch: number;
@@ -23,7 +23,9 @@ type SortKey = "student" | "course" | "time" | "status" | "risk";
 export const statusStyle: Record<CheckInRow["status"], string> = {
   approved: "bg-accent/10 text-accent",
   flagged: "bg-warning/10 text-warning",
-  no_show: "bg-destructive/10 text-destructive",
+  rejected: "bg-destructive/10 text-destructive",
+  pending: "bg-primary/10 text-primary",
+  appealed: "bg-warning/10 text-warning",
 };
 
 export function AttendanceTable({ rows, loading }: { rows: CheckInRow[]; loading: boolean }) {
@@ -62,7 +64,7 @@ export function AttendanceTable({ rows, loading }: { rows: CheckInRow[]; loading
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {(["all", "approved", "flagged", "no_show"] as const).map((f) => (
+          {(["all", "approved", "flagged", "pending", "appealed", "rejected"] as const).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}

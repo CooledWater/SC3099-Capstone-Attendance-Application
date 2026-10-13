@@ -1,33 +1,83 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchSessions, fetchCheckIns, toRows } from "@/lib/attendance";
+import {
+  fetchCheckInsForSessions,
+  fetchMyAssignedCourses,
+  fetchSessionsForCourses,
+  toRows,
+} from "@/lib/attendance";
 import { CheckInsPanel } from "./CheckInsPanel";
 
-/** The API has no course-staff mutation endpoint, so this is intentionally read-only. */
-export function TaView({ userId: _userId }: { userId: string }) {
-  const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions });
+export function TaView({ userId }: { userId: string }) {
+  const courses = useQuery({
+    queryKey: ["ta-assigned-courses", userId],
+    queryFn: fetchMyAssignedCourses,
+  });
+  const courseIds = useMemo(
+    () => (courses.isSuccess ? courses.data.map((course) => course.id) : []),
+    [courses.data, courses.isSuccess],
+  );
+  const sessions = useQuery({
+    queryKey: ["ta-sessions", userId, courseIds],
+    queryFn: () => fetchSessionsForCourses(courseIds),
+    enabled: courses.isSuccess,
+  });
   const checkIns = useQuery({
-    queryKey: ["check-ins"],
-    queryFn: fetchCheckIns,
+    queryKey: ["ta-check-ins", userId, sessions.data?.map((session) => session.id) ?? []],
+    queryFn: () => fetchCheckInsForSessions(sessions.data ?? []),
+    enabled: sessions.isSuccess,
     refetchInterval: 30000,
   });
-  const rows = toRows(checkIns.data ?? []);
+  const rows = useMemo(() => toRows(checkIns.data ?? []), [checkIns.data]);
+
   return (
-    <div className="space-y-4">
-      <div className="rounded-2xl border border-border bg-glass p-5">
+    <div className="rounded-2xl border border-border bg-glass p-5">
+      <div>
         <p className="font-display text-sm font-medium text-card-foreground">
           Teaching assistant console
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Sessions and check-ins are loaded from the SAIV API. Course-assignment management will
-          appear when your backend exposes it.
+          Sessions and attendance are limited to courses assigned to your TA account.
         </p>
       </div>
-      {sessions.isError || checkIns.isError ? (
-        <p className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
-          Your backend has not granted this account access to the required session data yet.
+      {courses.isLoading && (
+        <p className="mt-4 text-sm text-muted-foreground">Loading your assigned courses…</p>
+      )}
+      {courses.isError && (
+        <p className="mt-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+          Could not load your course assignments. The TA assignment API may not be available yet.
         </p>
-      ) : (
-        <CheckInsPanel rows={rows} loading={checkIns.isLoading} />
+      )}
+      {courses.isSuccess && courseIds.length === 0 && (
+        <p className="mt-4 text-sm text-muted-foreground">
+          No courses are currently assigned to your TA account.
+        </p>
+      )}
+      {courses.isSuccess && courseIds.length > 0 && sessions.isLoading && (
+        <p className="mt-4 text-sm text-muted-foreground">Loading sessions for your courses…</p>
+      )}
+      {sessions.isError && (
+        <p className="mt-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+          Could not load sessions for your assigned courses.
+        </p>
+      )}
+      {sessions.isSuccess && sessions.data.length === 0 && (
+        <p className="mt-4 text-sm text-muted-foreground">
+          No sessions are available for your assigned courses.
+        </p>
+      )}
+      {sessions.isSuccess && sessions.data.length > 0 && checkIns.isError && (
+        <p className="mt-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+          Could not load check-ins for your assigned sessions.
+        </p>
+      )}
+      {sessions.isSuccess && sessions.data.length > 0 && !checkIns.isError && (
+        <CheckInsPanel
+          rows={rows}
+          loading={checkIns.isLoading}
+          courseIds={new Set(courseIds)}
+          sessionRows={sessions.data}
+        />
       )}
     </div>
   );

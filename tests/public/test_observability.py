@@ -12,6 +12,38 @@ from datetime import datetime, timedelta, UTC
 import uuid
 
 
+def _create_scheduled_session(client, course_id, auth_headers):
+    now = datetime.now(UTC)
+    response = client.post(
+        "/api/v1/sessions/",
+        json={
+            "course_id": course_id,
+            "name": f"Course reassignment test {uuid.uuid4().hex[:8]}",
+            "session_type": "lecture",
+            "scheduled_start": (now + timedelta(hours=1)).isoformat(),
+            "scheduled_end": (now + timedelta(hours=2)).isoformat(),
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code in (200, 201)
+    return response.json()
+
+
+def _create_course(client, auth_headers_admin, instructor_id=None):
+    response = client.post(
+        "/api/v1/courses/",
+        json={
+            "code": f"CR{uuid.uuid4().hex[:6].upper()}",
+            "name": "Session reassignment test course",
+            "semester": "AY2024-25 Sem 1",
+            "instructor_id": instructor_id,
+        },
+        headers=auth_headers_admin,
+    )
+    assert response.status_code in (200, 201)
+    return response.json()
+
+
 class TestStatsEndpoints:
     """Test statistics endpoints (4 bonus points)"""
 
@@ -160,6 +192,119 @@ class TestSessionManagement:
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == update_data["name"]
+
+    def test_instructor_can_reassign_scheduled_session_to_their_course(
+        self,
+        client,
+        test_course,
+        test_instructor,
+        auth_headers_instructor,
+        auth_headers_admin,
+    ):
+        target_course = _create_course(
+            client, auth_headers_admin, instructor_id=test_instructor["id"]
+        )
+        session = _create_scheduled_session(
+            client, test_course["id"], auth_headers_instructor
+        )
+
+        response = client.patch(
+            f"/api/v1/sessions/{session['id']}",
+            json={"course_id": target_course["id"]},
+            headers=auth_headers_instructor,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["course_id"] == target_course["id"]
+
+    def test_instructor_cannot_reassign_session_to_course_they_do_not_teach(
+        self,
+        client,
+        test_course,
+        auth_headers_instructor,
+        auth_headers_admin,
+    ):
+        target_course = _create_course(client, auth_headers_admin)
+        session = _create_scheduled_session(
+            client, test_course["id"], auth_headers_instructor
+        )
+
+        response = client.patch(
+            f"/api/v1/sessions/{session['id']}",
+            json={"course_id": target_course["id"]},
+            headers=auth_headers_instructor,
+        )
+
+        assert response.status_code == 403
+
+    def test_course_reassignment_is_rejected_for_active_session(
+        self,
+        client,
+        test_session,
+        auth_headers_admin,
+        auth_headers_instructor,
+    ):
+        target_course = _create_course(
+            client,
+            auth_headers_admin,
+            instructor_id=test_session["instructor_id"],
+        )
+
+        response = client.patch(
+            f"/api/v1/sessions/{test_session['id']}",
+            json={"course_id": target_course["id"]},
+            headers=auth_headers_instructor,
+        )
+
+        assert response.status_code == 400
+
+    def test_course_reassignment_cannot_be_combined_with_activation(
+        self,
+        client,
+        test_course,
+        test_instructor,
+        auth_headers_admin,
+        auth_headers_instructor,
+    ):
+        target_course = _create_course(
+            client, auth_headers_admin, instructor_id=test_instructor["id"]
+        )
+        session = _create_scheduled_session(
+            client, test_course["id"], auth_headers_instructor
+        )
+
+        response = client.patch(
+            f"/api/v1/sessions/{session['id']}",
+            json={"course_id": target_course["id"], "status": "active"},
+            headers=auth_headers_instructor,
+        )
+
+        assert response.status_code == 400
+
+    def test_course_reassignment_rejects_null_course_id(
+        self, client, test_session, auth_headers_instructor
+    ):
+        response = client.patch(
+            f"/api/v1/sessions/{test_session['id']}",
+            json={"course_id": None},
+            headers=auth_headers_instructor,
+        )
+
+        assert response.status_code == 422
+
+    def test_course_reassignment_rejects_unknown_course_id(
+        self, client, test_course, auth_headers_instructor
+    ):
+        session = _create_scheduled_session(
+            client, test_course["id"], auth_headers_instructor
+        )
+        response = client.patch(
+            f"/api/v1/sessions/{session['id']}",
+            json={"course_id": str(uuid.uuid4())},
+            headers=auth_headers_instructor,
+        )
+
+        assert response.status_code == 404
 
 
 class TestEnrollmentManagement:

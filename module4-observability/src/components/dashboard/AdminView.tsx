@@ -43,7 +43,7 @@ export function AdminView() {
   const expected = allSessions.reduce((n, s) => n + (s.expected_attendance ?? 0), 0);
   const approved = rows.filter((r) => r.status === "approved").length;
   const flagged = rows.filter((r) => r.status === "flagged").length;
-  const noShow = rows.filter((r) => r.status === "no_show").length;
+  const rejected = rows.filter((r) => r.status === "rejected").length;
   const rate = expected > 0 ? Math.round((rows.length / expected) * 100) : 0;
   const success = rows.length ? Math.round((approved / rows.length) * 100) : 0;
   const students = new Set(rows.map((r) => r.email)).size;
@@ -80,7 +80,7 @@ export function AdminView() {
             <KpiCard
               label="Integrity signals"
               value={String(flagged)}
-              note={`${noShow} no-shows · avg risk ${avgRisk}`}
+              note={`${rejected} rejected · avg risk ${avgRisk}`}
               tone={flagged > 0 ? "danger" : "accent"}
               progress={rows.length ? (flagged / rows.length) * 100 : 0}
             />
