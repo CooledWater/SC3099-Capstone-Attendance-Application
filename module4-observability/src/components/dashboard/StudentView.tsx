@@ -4,6 +4,7 @@ import { KpiCard } from "./KpiCard";
 import { CourseHistory } from "./CourseHistory";
 import { LiveActivity } from "./LiveActivity";
 import { fetchActiveSessions, fetchMyCheckIns, fetchMyEnrollments, toRows } from "@/lib/attendance";
+import { formatSingaporeDateTime } from "@/lib/time";
 
 export function StudentView() {
   const q = useQuery({
@@ -113,10 +114,11 @@ export function StudentView() {
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Check-in closes{" "}
-                    {new Date(session.checkin_closes_at).toLocaleTimeString([], {
+                    {formatSingaporeDateTime(session.checkin_closes_at, {
                       hour: "2-digit",
                       minute: "2-digit",
-                    })}
+                    })}{" "}
+                    SGT
                   </p>
                 </li>
               ))}

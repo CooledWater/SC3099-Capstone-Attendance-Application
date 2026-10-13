@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
 import { submitCheckInAppeal } from "@/lib/attendance";
+import { formatSingaporeDateTime, parseApiDateTime } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -59,8 +60,7 @@ export function CourseHistory({ rows }: { rows: CheckInRow[] }) {
 
   function canAppeal(row: CheckInRow) {
     if (row.status !== "flagged" && row.status !== "rejected") return false;
-    const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(row.time);
-    const checkedInAt = Date.parse(hasTimezone ? row.time : `${row.time}Z`);
+    const checkedInAt = parseApiDateTime(row.time).getTime();
     const age = Date.now() - checkedInAt;
     return Number.isFinite(checkedInAt) && age >= 0 && age <= appealWindowMs;
   }
@@ -120,19 +120,18 @@ export function CourseHistory({ rows }: { rows: CheckInRow[] }) {
             </thead>
             <tbody>
               {filtered.map((r) => {
-                const d = new Date(r.time);
                 return (
                   <tr key={r.id} className="border-t border-border/60">
                     <td className="py-2.5 pr-3 text-foreground">{r.course}</td>
                     <td className="py-2.5 pr-3 text-muted-foreground">
-                      {d.toLocaleDateString(undefined, {
+                      {formatSingaporeDateTime(r.time, {
                         day: "2-digit",
                         month: "short",
                         year: "numeric",
-                      })}
-                      <span className="ml-2 text-foreground/70">
-                        {d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-                      </span>
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}{" "}
+                      SGT
                     </td>
                     <td className="py-2.5 pr-3 text-muted-foreground">{r.room}</td>
                     <td className="py-2.5">

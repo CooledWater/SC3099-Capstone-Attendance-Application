@@ -4,6 +4,12 @@ import { toast } from "sonner";
 import { X } from "lucide-react";
 import { api } from "@/lib/api";
 import {
+  formatSingaporeDateTime,
+  parseApiDateTime,
+  parseSingaporeDateTimeLocal,
+  toSingaporeDateTimeLocal,
+} from "@/lib/time";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -102,7 +108,11 @@ export function SessionsPanel({
     }
     setSaving(true);
     try {
-      const scheduledStart = new Date(form.starts_at);
+      const scheduledStart = parseSingaporeDateTimeLocal(form.starts_at);
+      if (!scheduledStart) {
+        toast.error("Enter a valid session start time.");
+        return;
+      }
       await api.request("/sessions/", {
         method: "POST",
         body: JSON.stringify({
@@ -130,16 +140,10 @@ export function SessionsPanel({
   }
 
   function startEditing(session: SessionRow) {
-    const localDateTime = (value: string) => {
-      const date = new Date(value);
-      return Number.isNaN(date.getTime())
-        ? ""
-        : new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-    };
     setEditForm({
       course_id: session.course_id,
       room: session.room === "Not set" ? "" : session.room,
-      starts_at: localDateTime(session.starts_at),
+      starts_at: toSingaporeDateTimeLocal(session.starts_at),
       geofence_lat: session.geofence_lat == null ? "" : String(session.geofence_lat),
       geofence_lng: session.geofence_lng == null ? "" : String(session.geofence_lng),
       geofence_radius_m: String(session.geofence_radius_m),
@@ -162,15 +166,17 @@ export function SessionsPanel({
       toast.error("Choose a course, room and start time for this scheduled session.");
       return;
     }
-    const scheduledStart = new Date(editForm.starts_at);
-    const previousStart = Date.parse(session.starts_at);
-    if (Number.isNaN(scheduledStart.getTime()) || !Number.isFinite(previousStart)) {
+    const scheduledStart = parseSingaporeDateTimeLocal(editForm.starts_at);
+    const previousStart = parseApiDateTime(session.starts_at).getTime();
+    if (!scheduledStart || !Number.isFinite(previousStart)) {
       toast.error("Enter a valid session start time.");
       return;
     }
     const shiftTime = (value: string) => {
-      const timestamp = Date.parse(value);
-      if (!Number.isFinite(timestamp)) throw new Error("Session timing data is invalid.");
+      const timestamp = parseApiDateTime(value).getTime();
+      if (!Number.isFinite(timestamp)) {
+        throw new Error("Session timing data is invalid.");
+      }
       return new Date(timestamp + scheduledStart.getTime() - previousStart).toISOString();
     };
 
@@ -333,7 +339,7 @@ export function SessionsPanel({
             />
           </label>
           <label className="text-xs text-muted-foreground">
-            Starts at
+            Starts at (Singapore time)
             <input
               type="datetime-local"
               className={`${input} mt-1`}
@@ -401,7 +407,7 @@ export function SessionsPanel({
                     {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
                   </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {new Date(s.starts_at).toLocaleString()} · {s.room} · expected{" "}
+                    {formatSingaporeDateTime(s.starts_at)} SGT · {s.room} · expected{" "}
                     {s.expected_attendance} enrolled · geofence{" "}
                     {s.geofence_lat != null && s.geofence_lng != null
                       ? `${s.geofence_lat.toFixed(4)}, ${s.geofence_lng.toFixed(4)} (${s.geofence_radius_m} m)`
@@ -507,7 +513,7 @@ export function SessionsPanel({
                     />
                   </label>
                   <label className="text-xs text-muted-foreground">
-                    Starts at
+                    Starts at (Singapore time)
                     <input
                       type="datetime-local"
                       className={`${input} mt-1`}
@@ -608,7 +614,7 @@ export function SessionsPanel({
                         <tr key={r.id}>
                           <td className="px-4 py-2 text-foreground">{r.student}</td>
                           <td className="px-4 py-2 text-muted-foreground">
-                            {new Date(r.time).toLocaleString()}
+                            {formatSingaporeDateTime(r.time)} SGT
                           </td>
                           <td className="px-4 py-2">
                             <span

@@ -1,5 +1,6 @@
 import { api } from "@/lib/api";
 import type { CheckInRow } from "@/components/dashboard/AttendanceTable";
+import { parseApiDateTime } from "@/lib/time";
 
 export type RawCheckIn = {
   id: string;
@@ -175,8 +176,12 @@ export function toRows(list: RawCheckIn[]): CheckInRow[] {
 export function trendOf(rows: CheckInRow[]): [string, number][] {
   const buckets = new Map<string, number>();
   rows.forEach((r) => {
-    const d = new Date(r.time);
-    const key = `${String(d.getHours()).padStart(2, "0")}:00`;
+    const hour = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Singapore",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).format(parseApiDateTime(r.time));
+    const key = `${hour}:00`;
     buckets.set(key, (buckets.get(key) ?? 0) + 1);
   });
   return [...buckets.entries()].sort((a, b) => a[0].localeCompare(b[0]));
@@ -218,7 +223,7 @@ export function checkInsToCsv(rows: CheckInRow[]) {
       r.id,
       r.email,
       r.sessionId,
-      new Date(r.time).toISOString(),
+      parseApiDateTime(r.time).toISOString(),
       statusText[r.status],
       String(r.risk),
       String(r.liveness),

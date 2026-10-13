@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { downloadCsv } from "@/lib/attendance";
+import { formatSingaporeDateTime } from "@/lib/time";
 
 type AuditRow = {
   id: string;
@@ -132,7 +133,7 @@ export function AuditLogs() {
             {visible.map((r) => (
               <tr key={r.id} className="transition-colors hover:bg-secondary/50">
                 <td className="px-5 py-3 text-muted-foreground">
-                  {new Date(r.occurred_at).toLocaleString()}
+                  {formatSingaporeDateTime(r.occurred_at)} SGT
                 </td>
                 <td className="px-5 py-3 text-muted-foreground">{r.event_type}</td>
                 <td className="px-5 py-3">

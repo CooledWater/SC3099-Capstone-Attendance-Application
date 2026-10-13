@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { checkInsToCsv, downloadCsv, statusText } from "@/lib/attendance";
+import { formatSingaporeDateTime } from "@/lib/time";
 
 export type CheckInRow = {
   id: string;
@@ -128,7 +129,7 @@ export function AttendanceTable({ rows, loading }: { rows: CheckInRow[]; loading
                   <span className="block text-xs">{r.room}</span>
                 </td>
                 <td className="px-5 py-3 text-muted-foreground">
-                  {new Date(r.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {formatSingaporeDateTime(r.time, { hour: "2-digit", minute: "2-digit" })} SGT
                 </td>
                 <td className="px-5 py-3">
                   <span className={`rounded-full px-2 py-0.5 text-[11px] ${statusStyle[r.status]}`}>

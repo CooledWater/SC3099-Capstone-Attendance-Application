@@ -1,4 +1,5 @@
 import type { CheckInRow } from "./AttendanceTable";
+import { formatSingaporeDateTime } from "@/lib/time";
 
 const statusLabel: Record<CheckInRow["status"], string> = {
   approved: "checked in",
@@ -38,7 +39,7 @@ export function LiveActivity({ rows }: { rows: CheckInRow[] }) {
                 {r.student} <span className={statusColor[r.status]}>{statusLabel[r.status]}</span>
               </p>
               <p className="text-xs text-muted-foreground">
-                {new Date(r.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ·{" "}
+                {formatSingaporeDateTime(r.time, { hour: "2-digit", minute: "2-digit" })} SGT ·{" "}
                 {r.course}
               </p>
             </div>

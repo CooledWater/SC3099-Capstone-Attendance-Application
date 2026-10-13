@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchSessions, type SessionRow } from "@/lib/attendance";
+import { formatSingaporeDateTime } from "@/lib/time";
 import { AttendanceTable, type CheckInRow } from "./AttendanceTable";
 
 export function CheckInsPanel({
@@ -48,12 +49,12 @@ export function CheckInsPanel({
             {list.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.courses?.code ?? "—"} · {s.room} ·{" "}
-                {new Date(s.starts_at).toLocaleString([], {
+                {formatSingaporeDateTime(s.starts_at, {
                   month: "short",
                   day: "numeric",
                   hour: "2-digit",
                   minute: "2-digit",
-                })}
+                })} SGT
               </option>
             ))}
           </select>
