@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { X } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import {
   formatSingaporeDateTime,
@@ -19,6 +19,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   checkInsToCsv,
   downloadCsv,
@@ -77,13 +91,12 @@ export function SessionsPanel({
       ),
     enabled: Boolean(editingSessionId && editForm.course_id),
   });
-
   const list = useMemo(() => {
     const all = (sessions.data ?? []) as SessionRow[];
     return courseIds ? all.filter((s) => courseIds.has(s.course_id)) : all;
   }, [sessions.data, courseIds]);
 
-  const active = list.filter((s) => s.is_active).length;
+  const editingSession = list.find((session) => session.id === editingSessionId) ?? null;
   const availableCourses = (courses.isSuccess ? courses.data : []).filter(
     (course) => !currentUserId || course.instructor_id === currentUserId,
   );
@@ -252,6 +265,38 @@ export function SessionsPanel({
     await qc.invalidateQueries({ queryKey: ["check-ins"] });
   }
 
+  async function closeSession(session: SessionRow) {
+    if (
+      !currentUserId ||
+      session.instructor_id !== currentUserId ||
+      session.status !== "active" ||
+      savingSessionId
+    ) {
+      return;
+    }
+    setSavingSessionId(session.id);
+    try {
+      const updated = await api.request<{ status: string }>(
+        `/sessions/${encodeURIComponent(session.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status: "closed" }),
+        },
+      );
+      if (updated.status !== "closed") {
+        throw new Error("The backend did not close this session.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not close session.");
+      return;
+    } finally {
+      setSavingSessionId(null);
+    }
+    toast.success("Session closed.");
+    await qc.invalidateQueries({ queryKey: ["sessions"] });
+    await qc.invalidateQueries({ queryKey: ["check-ins"] });
+  }
+
   async function deleteSession(session: SessionRow) {
     if (
       !currentUserId ||
@@ -284,6 +329,10 @@ export function SessionsPanel({
 
   const input =
     "w-full rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50";
+  const activeCount = list.filter((session) => session.status === "active").length;
+  const scheduledCount = list.filter((session) => session.status === "scheduled").length;
+  const closedCount = list.filter((session) => session.status === "closed").length;
+  const cancelledCount = list.filter((session) => session.status === "cancelled").length;
 
   return (
     <div className="mt-4 animate-rise rounded-2xl border border-border bg-glass">
@@ -291,13 +340,10 @@ export function SessionsPanel({
         <div>
           <p className="font-display text-sm font-medium text-card-foreground">Sessions</p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {list.length} total · {active} active · {list.length - active} inactive
+            {list.length} total · {activeCount} active · {scheduledCount} scheduled · {closedCount}{" "}
+            closed
+            {cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ""}
           </p>
-          {currentUserId && (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Only scheduled sessions can be deleted. Active sessions must be closed or cancelled.
-            </p>
-          )}
         </div>
         {canCreate && (!currentUserId || availableCourses.length > 0) && (
           <button
@@ -399,6 +445,7 @@ export function SessionsPanel({
         {list.map((s) => {
           const sessionRows = bySession.get(s.id) ?? [];
           const isOpen = expanded === s.id;
+          const canManage = currentUserId !== undefined && s.instructor_id === currentUserId;
           return (
             <div key={s.id} className="px-5 py-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -407,11 +454,18 @@ export function SessionsPanel({
                     {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
                   </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {formatSingaporeDateTime(s.starts_at)} SGT · {s.room} · expected{" "}
-                    {s.expected_attendance} enrolled · geofence{" "}
-                    {s.geofence_lat != null && s.geofence_lng != null
-                      ? `${s.geofence_lat.toFixed(4)}, ${s.geofence_lng.toFixed(4)} (${s.geofence_radius_m} m)`
-                      : "not set"}
+                    {formatSingaporeDateTime(s.starts_at)} SGT · {s.room}{" "}
+                    {s.status === "scheduled" && <> · {s.expected_attendance} enrolled</>}
+                    {s.status !== "scheduled" && (
+                      <button
+                        type="button"
+                        aria-expanded={isOpen}
+                        onClick={() => setExpanded(isOpen ? null : s.id)}
+                        className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {sessionRows.length} / {s.expected_attendance} checked in →
+                      </button>
+                    )}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -428,168 +482,66 @@ export function SessionsPanel({
                   >
                     {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
                   </span>
-                  {currentUserId &&
-                    s.instructor_id === currentUserId &&
-                    s.status === "scheduled" && (
-                      <>
-                        <button
-                          onClick={() =>
-                            editingSessionId === s.id ? setEditingSessionId(null) : startEditing(s)
-                          }
-                          disabled={savingSessionId === s.id}
-                          className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:opacity-60"
-                        >
-                          {editingSessionId === s.id ? "Cancel edit" : "Edit"}
-                        </button>
-                        <button
-                          onClick={() => void activateSession(s)}
-                          disabled={savingSessionId !== null}
-                          className="rounded-full bg-gradient-to-r from-primary to-accent px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-60"
-                        >
-                          {savingSessionId === s.id ? "Activating…" : "Activate"}
-                        </button>
+                  {canManage && s.status === "scheduled" && (
+                    <button
+                      type="button"
+                      onClick={() => void activateSession(s)}
+                      disabled={savingSessionId !== null}
+                      className="rounded-full bg-gradient-to-r from-primary to-accent px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-60"
+                    >
+                      {savingSessionId === s.id ? "Activating…" : "Activate session"}
+                    </button>
+                  )}
+                  {canManage && (s.status === "scheduled" || s.status === "active") && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <button
                           type="button"
-                          onClick={() => setDeleteTarget(s)}
+                          aria-label={`More actions for ${s.name}`}
                           disabled={savingSessionId !== null}
-                          aria-label={`Delete ${s.name}`}
-                          title="Delete scheduled session"
-                          className="inline-flex size-8 items-center justify-center rounded-full border border-destructive/30 text-destructive transition hover:bg-destructive/10 disabled:opacity-60"
+                          className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-glass text-muted-foreground transition hover:text-foreground disabled:opacity-60"
                         >
-                          <X className="size-4" aria-hidden="true" />
+                          <MoreHorizontal className="size-4" aria-hidden="true" />
                         </button>
-                      </>
-                    )}
-                  <button
-                    onClick={() => setExpanded(isOpen ? null : s.id)}
-                    className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
-                  >
-                    {sessionRows.length} check-ins {isOpen ? "▲" : "▼"}
-                  </button>
-                  <button
-                    onClick={() =>
-                      downloadCsv(
-                        `session-${s.courses?.code ?? "export"}`,
-                        checkInsToCsv(sessionRows),
-                      )
-                    }
-                    className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
-                  >
-                    Export CSV
-                  </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {s.status === "scheduled" && (
+                          <>
+                            <DropdownMenuItem onSelect={() => startEditing(s)}>
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() => setDeleteTarget(s)}
+                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                            >
+                              Delete
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        {s.status === "active" && (
+                          <DropdownMenuItem onSelect={() => void closeSession(s)}>
+                            {savingSessionId === s.id ? "Closing…" : "Close session"}
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                  {s.status === "closed" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadCsv(
+                          `session-${s.courses?.code ?? "export"}`,
+                          checkInsToCsv(sessionRows),
+                        )
+                      }
+                      className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
+                    >
+                      Export session CSV
+                    </button>
+                  )}
                 </div>
               </div>
-
-              {editingSessionId === s.id && (
-                <form
-                  onSubmit={(event) => void updateSession(event, s)}
-                  className="mt-4 grid gap-3 rounded-xl border border-border bg-background/40 p-4 sm:grid-cols-2 lg:grid-cols-4"
-                >
-                  <label className="text-xs text-muted-foreground">
-                    Course
-                    <select
-                      className={`${input} mt-1`}
-                      value={editForm.course_id}
-                      onChange={(event) =>
-                        setEditForm({ ...editForm, course_id: event.target.value })
-                      }
-                      required
-                    >
-                      <option value="">Select course</option>
-                      {availableCourses.map((course) => (
-                        <option key={course.id} value={course.id}>
-                          {course.code} · {course.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Room
-                    <input
-                      className={`${input} mt-1`}
-                      value={editForm.room}
-                      onChange={(event) => setEditForm({ ...editForm, room: event.target.value })}
-                      required
-                    />
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Starts at (Singapore time)
-                    <input
-                      type="datetime-local"
-                      className={`${input} mt-1`}
-                      value={editForm.starts_at}
-                      onChange={(event) =>
-                        setEditForm({ ...editForm, starts_at: event.target.value })
-                      }
-                      required
-                    />
-                  </label>
-                  <div className="rounded-lg border border-border bg-glass px-3 py-2">
-                    <p className="text-xs text-muted-foreground">Expected attendance</p>
-                    <p className="mt-1 text-sm text-foreground">
-                      {selectedCourseEnrollmentCount.isLoading
-                        ? "Loading…"
-                        : selectedCourseEnrollmentCount.isError
-                          ? "Unavailable"
-                          : `${selectedCourseEnrollmentCount.data?.total_enrolled ?? 0} active enrollments`}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">
-                      {selectedCourseEnrollmentCount.isError
-                        ? "Could not load this course’s enrollment count"
-                        : "Derived from the selected course"}
-                    </p>
-                  </div>
-                  <label className="text-xs text-muted-foreground">
-                    Geofence latitude
-                    <input
-                      type="number"
-                      step="any"
-                      min="-90"
-                      max="90"
-                      className={`${input} mt-1`}
-                      value={editForm.geofence_lat}
-                      onChange={(event) =>
-                        setEditForm({ ...editForm, geofence_lat: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Geofence longitude
-                    <input
-                      type="number"
-                      step="any"
-                      min="-180"
-                      max="180"
-                      className={`${input} mt-1`}
-                      value={editForm.geofence_lng}
-                      onChange={(event) =>
-                        setEditForm({ ...editForm, geofence_lng: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label className="text-xs text-muted-foreground">
-                    Radius (m)
-                    <input
-                      type="number"
-                      min="1"
-                      className={`${input} mt-1`}
-                      value={editForm.geofence_radius_m}
-                      onChange={(event) =>
-                        setEditForm({ ...editForm, geofence_radius_m: event.target.value })
-                      }
-                    />
-                  </label>
-                  <div className="flex items-end">
-                    <button
-                      type="submit"
-                      disabled={savingSessionId !== null}
-                      className="w-full rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-60"
-                    >
-                      {savingSessionId === s.id ? "Saving…" : "Save changes"}
-                    </button>
-                  </div>
-                </form>
-              )}
 
               {isOpen && (
                 <div className="mt-3 overflow-x-auto rounded-xl border border-border">
@@ -636,6 +588,134 @@ export function SessionsPanel({
           );
         })}
       </div>
+      <Dialog
+        open={Boolean(editingSession)}
+        onOpenChange={(isOpen) => {
+          if (!isOpen && savingSessionId === null) setEditingSessionId(null);
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto border-border bg-card text-card-foreground">
+          <DialogHeader>
+            <DialogTitle>Edit scheduled session</DialogTitle>
+          </DialogHeader>
+          {editingSession && (
+            <form
+              id="edit-session-form"
+              onSubmit={(event) => void updateSession(event, editingSession)}
+              className="grid gap-3 sm:grid-cols-2"
+            >
+              <label className="text-xs text-muted-foreground sm:col-span-2">
+                Course
+                <select
+                  className={`${input} mt-1`}
+                  value={editForm.course_id}
+                  onChange={(event) => setEditForm({ ...editForm, course_id: event.target.value })}
+                  required
+                >
+                  <option value="">Select course</option>
+                  {availableCourses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {course.code} · {course.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-muted-foreground sm:col-span-2">
+                Room
+                <input
+                  className={`${input} mt-1`}
+                  value={editForm.room}
+                  onChange={(event) => setEditForm({ ...editForm, room: event.target.value })}
+                  required
+                />
+              </label>
+              <label className="text-xs text-muted-foreground sm:col-span-2">
+                Starts at (Singapore time)
+                <input
+                  type="datetime-local"
+                  className={`${input} mt-1`}
+                  value={editForm.starts_at}
+                  onChange={(event) => setEditForm({ ...editForm, starts_at: event.target.value })}
+                  required
+                />
+              </label>
+              <div className="rounded-lg border border-border bg-glass px-3 py-2 sm:col-span-2">
+                <p className="text-xs text-muted-foreground">Expected attendance</p>
+                <p className="mt-1 text-sm text-foreground">
+                  {selectedCourseEnrollmentCount.isLoading
+                    ? "Loading…"
+                    : selectedCourseEnrollmentCount.isError
+                      ? "Unavailable"
+                      : `${selectedCourseEnrollmentCount.data?.total_enrolled ?? 0} active enrollments`}
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {selectedCourseEnrollmentCount.isError
+                    ? "Could not load this course’s enrollment count"
+                    : "Derived from the selected course"}
+                </p>
+              </div>
+              <label className="text-xs text-muted-foreground">
+                Geofence latitude
+                <input
+                  type="number"
+                  step="any"
+                  min="-90"
+                  max="90"
+                  className={`${input} mt-1`}
+                  value={editForm.geofence_lat}
+                  onChange={(event) =>
+                    setEditForm({ ...editForm, geofence_lat: event.target.value })
+                  }
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Geofence longitude
+                <input
+                  type="number"
+                  step="any"
+                  min="-180"
+                  max="180"
+                  className={`${input} mt-1`}
+                  value={editForm.geofence_lng}
+                  onChange={(event) =>
+                    setEditForm({ ...editForm, geofence_lng: event.target.value })
+                  }
+                />
+              </label>
+              <label className="text-xs text-muted-foreground sm:col-span-2">
+                Radius (m)
+                <input
+                  type="number"
+                  min="1"
+                  className={`${input} mt-1`}
+                  value={editForm.geofence_radius_m}
+                  onChange={(event) =>
+                    setEditForm({ ...editForm, geofence_radius_m: event.target.value })
+                  }
+                />
+              </label>
+            </form>
+          )}
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setEditingSessionId(null)}
+              disabled={savingSessionId !== null}
+              className="rounded-full border border-border bg-glass px-4 py-2 text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="edit-session-form"
+              disabled={savingSessionId !== null}
+              className="rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition hover:brightness-110 disabled:opacity-60"
+            >
+              {savingSessionId === editingSessionId ? "Saving…" : "Save changes"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(isOpen) => {
