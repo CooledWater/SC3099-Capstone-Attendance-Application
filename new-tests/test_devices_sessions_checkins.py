@@ -187,13 +187,74 @@ def test_module4_create_session_payload_with_null_venue_is_accepted(api, world):
     assert response.json()["status"] == "scheduled"
 
 
-def test_students_and_tas_cannot_list_or_create_sessions(api, world):
+def test_students_cannot_list_sessions_and_students_and_tas_cannot_create(api, world):
+    assert api.get("/api/v1/sessions/", headers=world["students"]["approved"]["headers"]).status_code == 403
     for who in (world["students"]["approved"], world["ta"]):
-        assert api.get("/api/v1/sessions/", headers=who["headers"]).status_code == 403
         assert api.post("/api/v1/sessions/", headers=who["headers"], json={}).status_code in (403, 422)
 
 
+def test_ta_can_list_sessions_filtered_by_course(api, world):
+    response = api.get("/api/v1/sessions/", params={"course_id": world["course_id"], "limit": 100},
+                       headers=world["ta"]["headers"])
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert {"items", "total", "limit", "offset"} <= set(data)
+    assert any(item["id"] == world["session"]["id"] for item in data["items"])
+    assert all(item["course_id"] == world["course_id"] for item in data["items"])
+    assert api.get("/api/v1/sessions/", headers=world["ta"]["headers"]).status_code == 200
+    assert api.get("/api/v1/sessions/").status_code in (401, 403)
+
+
 # --- Check-ins: per-session list (Module 4 fields) ---------------------------
+
+@pytest.mark.parametrize("actor", ["instructor", "admin"])
+def test_delete_scheduled_session_and_preserve_audit(api, world, actor):
+    session = _new_session(api, world["instructor"], world["course_id"])
+    headers = world[actor]["headers"]
+    response = api.delete(f"/api/v1/sessions/{session['id']}", headers=headers)
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    assert api.get(f"/api/v1/sessions/{session['id']}", headers=headers).status_code == 404
+    assert api.delete(f"/api/v1/sessions/{session['id']}", headers=headers).status_code == 404
+    audit = api.get("/api/v1/audit/", headers=world["admin"]["headers"], params={
+        "action": "session_deleted", "resource_id": session["id"],
+    })
+    assert audit.status_code == 200, audit.text
+    assert audit.json()["total"] == 1
+    assert audit.json()["items"][0]["user_id"] == world[actor]["id"]
+
+
+def test_delete_session_denies_other_instructor_student_ta_and_anonymous(api, world):
+    session = _new_session(api, world["instructor"], world["course_id"])
+    path = f"/api/v1/sessions/{session['id']}"
+    for actor in (world["other"], world["ta"], world["students"]["approved"]):
+        assert api.delete(path, headers=actor["headers"]).status_code == 403
+    assert api.delete(path).status_code in (401, 403)
+    assert api.get(path, headers=world["instructor"]["headers"]).status_code == 200
+
+
+@pytest.mark.parametrize("session_status", ["active", "closed", "cancelled"])
+def test_delete_session_rejects_non_scheduled(api, world, session_status):
+    session = _new_session(api, world["instructor"], world["course_id"])
+    path = f"/api/v1/sessions/{session['id']}"
+    changed = api.patch(f"/api/v1/admin/sessions/{session['id']}/status",
+                        headers=world["admin"]["headers"], json={"status": session_status})
+    assert changed.status_code == 200, changed.text
+    assert api.delete(path, headers=world["instructor"]["headers"]).status_code == 400
+    assert api.get(path, headers=world["instructor"]["headers"]).json()["status"] == session_status
+
+
+def test_delete_scheduled_session_with_checkins_is_conflict(api, world):
+    session = _new_session(api, world["instructor"], world["course_id"], activate_with=world["admin"])
+    checkin = _check_in(api, world["students"]["approved"], session["id"], 0)
+    assert checkin.status_code == 201, checkin.text
+    changed = api.patch(f"/api/v1/admin/sessions/{session['id']}/status",
+                        headers=world["admin"]["headers"], json={"status": "scheduled"})
+    assert changed.status_code == 200, changed.text
+    path = f"/api/v1/sessions/{session['id']}"
+    assert api.delete(path, headers=world["instructor"]["headers"]).status_code == 409
+    records = api.get(f"/api/v1/checkins/session/{session['id']}", headers=world["instructor"]["headers"])
+    assert records.status_code == 200 and len(records.json()) == 1
 
 def test_session_checkins_carry_the_fields_module4_reads(api, world):
     response = api.get(f"/api/v1/checkins/session/{world['session']['id']}", headers=world["ta"]["headers"])

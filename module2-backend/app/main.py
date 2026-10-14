@@ -1046,7 +1046,7 @@ def list_sessions(
     end_date: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(require_roles("instructor", "admin")),
+    current_user: User = Depends(require_roles("ta", "instructor", "admin")),
     db: Session = Depends(get_db)
 ):
     limit = max(1, min(limit, 100))
@@ -1195,6 +1195,47 @@ def update_session(
     db.refresh(session)
 
     return _serialize_session(db, session)
+
+
+@app.delete("/api/v1/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_session(
+    session_id: str,
+    current_user: User = Depends(require_roles("instructor", "admin")),
+    db: Session = Depends(get_db)
+):
+    # Lock the session so concurrent status changes cannot bypass these checks.
+    session = db.query(SessionModel).filter(
+        SessionModel.id == session_id
+    ).with_for_update().first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if current_user.role != "admin" and session.instructor_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    if session.status != "scheduled":
+        raise HTTPException(status_code=400, detail="Only scheduled sessions can be deleted")
+    if db.query(CheckIn.id).filter(CheckIn.session_id == session.id).first():
+        raise HTTPException(status_code=409, detail="A session with check-ins cannot be deleted")
+
+    try:
+        # Explicit cleanup also works on SQLite when FK cascades are disabled.
+        db.query(motion.MotionChallenge).filter(
+            motion.MotionChallenge.session_id == session.id
+        ).delete(synchronize_session=False)
+        db.query(motion.MotionPolicy).filter(
+            motion.MotionPolicy.session_id == session.id
+        ).delete(synchronize_session=False)
+        create_audit_log(
+            db, "session_deleted", current_user.id, session.id,
+            details={"name": session.name, "course_id": session.course_id, "status": session.status}
+        )
+        db.delete(session)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.patch("/api/v1/admin/sessions/{session_id}/status")
@@ -2256,7 +2297,6 @@ def export_session_attendance(
 # -----------------------------------------------------------------------------
 # Session Management Endpoints (sessions.py)
 # -----------------------------------------------------------------------------
-# DELETE /sessions/{id} - Delete session
 
 # -----------------------------------------------------------------------------
 # Check-in Endpoints (checkins.py)

@@ -347,6 +347,38 @@ export function SessionsPanel({
     await qc.invalidateQueries({ queryKey: ["check-ins"] });
   }
 
+  async function cancelSession(session: SessionRow) {
+    if (
+      !currentUserId ||
+      session.instructor_id !== currentUserId ||
+      (session.status !== "active" && session.status !== "closed") ||
+      savingSessionId
+    ) {
+      return;
+    }
+    setSavingSessionId(session.id);
+    try {
+      const updated = await api.request<{ status: string }>(
+        `/sessions/${encodeURIComponent(session.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status: "cancelled" }),
+        },
+      );
+      if (updated.status !== "cancelled") {
+        throw new Error("The backend did not cancel this session.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not cancel session.");
+      return;
+    } finally {
+      setSavingSessionId(null);
+    }
+    toast.success("Session cancelled.");
+    await qc.invalidateQueries({ queryKey: ["sessions"] });
+    await qc.invalidateQueries({ queryKey: ["check-ins"] });
+  }
+
   async function deleteSession(session: SessionRow) {
     if (
       !currentUserId ||
@@ -564,7 +596,8 @@ export function SessionsPanel({
                             {savingSessionId === s.id ? "Activating…" : "Activate session"}
                           </button>
                         )}
-                        {canManage && (s.status === "scheduled" || s.status === "active") && (
+                        {((canManage && (s.status === "scheduled" || s.status === "active")) ||
+                          s.status === "closed") && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <button
@@ -595,22 +628,28 @@ export function SessionsPanel({
                                   {savingSessionId === s.id ? "Closing…" : "Close session"}
                                 </DropdownMenuItem>
                               )}
+                              {s.status === "closed" && (
+                                <DropdownMenuItem
+                                  onSelect={() =>
+                                    downloadCsv(
+                                      `session-${s.courses?.code ?? "export"}`,
+                                      checkInsToCsv(sessionRows),
+                                    )
+                                  }
+                                >
+                                  Export session CSV
+                                </DropdownMenuItem>
+                              )}
+                              {canManage && (s.status === "active" || s.status === "closed") && (
+                                <DropdownMenuItem
+                                  onSelect={() => void cancelSession(s)}
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                >
+                                  {savingSessionId === s.id ? "Cancelling…" : "Cancel session"}
+                                </DropdownMenuItem>
+                              )}
                             </DropdownMenuContent>
                           </DropdownMenu>
-                        )}
-                        {s.status === "closed" && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              downloadCsv(
-                                `session-${s.courses?.code ?? "export"}`,
-                                checkInsToCsv(sessionRows),
-                              )
-                            }
-                            className="rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
-                          >
-                            Export session CSV
-                          </button>
                         )}
                       </div>
                     </div>

@@ -337,7 +337,7 @@ Soft-delete a course (sets is_active=false). **Requires auth (admin only).**
 Sessions represent class meetings where students check in.
 
 #### GET /sessions/
-List all sessions with filters. **Requires auth (instructor/admin).**
+List all sessions with filters. **Requires auth (TA/instructor/admin).**
 
 **Query Parameters:**
 | Parameter | Type | Default | Description |
@@ -497,9 +497,18 @@ the course's active enrollments and is not an editable session field.
 - Any status → `cancelled`: Cancels session
 
 #### DELETE /sessions/{session_id}
-Delete a session. **Requires auth (instructor only, must be session owner).**
+Permanently delete a session. **Requires auth (owning instructor or admin).**
 
 Only sessions with status `scheduled` can be deleted. Active or closed sessions should be cancelled instead.
+
+Sessions with check-ins cannot be deleted. Related motion policies/challenges are removed,
+and a `session_deleted` audit entry is retained in the same transaction.
+
+**Error Responses:**
+- `403 Forbidden`: Not an instructor/admin, or instructor does not own the session
+- `404 Not Found`: Session not found
+- `400 Bad Request`: Session is not scheduled
+- `409 Conflict`: Session has check-ins
 
 **Response:** `204 No Content`
 
