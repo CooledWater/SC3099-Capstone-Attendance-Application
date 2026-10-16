@@ -129,7 +129,7 @@ The project is deliberately **technology-agnostic**: tests exercise HTTP endpoin
 | UI | React 18 + Tailwind CSS 3 | Component model plus utility-first styling for fast mobile layout |
 | HTTP client | Axios 1.6 | Interceptors make transparent 401 → refresh → retry straightforward |
 | JWT handling | `jose` 5 | Decoding/validating tokens client-side without a heavyweight dependency |
-| Offline storage | `localforage` 1.10 | IndexedDB wrapper with a localStorage-shaped API |
+| Offline storage | Browser IndexedDB API | Account-scoped, read-only session snapshots in `lib/offline/sessionCache.ts` |
 | Camera | WebRTC `MediaDevices.getUserMedia()` | Browser-native camera access; frames drawn to `<canvas>` and exported as base64 JPEG |
 | Location | Geolocation API `getCurrentPosition()` | Latitude, longitude, and an accuracy figure the risk engine consumes |
 | Permissions | Permissions API `navigator.permissions.query()` | Lets the app check state before prompting, enabling "explain first, then ask" |
@@ -616,7 +616,7 @@ SC3099-Capstone-Attendance-Application/
 │
 ├── module1-frontend/               # ── MODULE 1: Student PWA (Next.js) ──
 │   ├── Dockerfile
-│   ├── package.json                # next, react, axios, jose, localforage, tailwind
+│   ├── package.json                # next, react, TypeScript, MediaPipe, tailwind
 │   ├── next.config.js
 │   ├── tsconfig.json
 │   ├── tailwind.config.js

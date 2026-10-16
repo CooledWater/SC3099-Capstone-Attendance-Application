@@ -37,3 +37,5 @@ Run backend tests separately from native Module 3 tests (both modules name their
 - New checks: **13 backend cases + 15 temporal/sequence cases + 1 real-model static-photo rejection = 29 passed**. Backend cases mock the face-service transport; the native smoke test does not.
 - Final frontend production compilation, TypeScript, and lint passed in a temporary clean copy. The pre-existing untracked `app/page 2.tsx` imports missing `localforage` and blocks normal workspace type-checking; duplicate `* 2` files were excluded from that validation copy and left untouched in the workspace.
 - No interactive browser connection was available, so actual webcam capture, model loading in the browser, blink accuracy, and mobile-device performance still require manual validation. Tests do not certify production anti-spoofing or PostgreSQL concurrency behaviour.
+
+Cleanup follow-up (2026-10-13): the tracked, unused `app/page 2.tsx` and `app/globals 2.css` have now been removed. The active frontend uses `app/page.tsx`, `app/globals.css`, and native IndexedDB; it does not require localforage. The earlier temporary-copy validation above describes the historical state.
