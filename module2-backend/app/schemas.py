@@ -17,6 +17,14 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     camera_consent: Optional[bool] = None
     geolocation_consent: Optional[bool] = None
+class AdminUserUpdate(BaseModel):
+    # docs/API-SPECIFICATION.md "PATCH /users/{user_id}" request fields.
+    role: Optional[Literal["student", "ta", "instructor", "admin"]] = None
+    is_active: Optional[bool] = None
+class BulkUserCreate(BaseModel):
+    # Items are validated one by one so a bad entry is reported in
+    # ``errors`` instead of failing the whole batch.
+    users: list[dict] = Field(min_length=1)
 class CourseCreate(BaseModel):
     code: str
     name: str
@@ -43,6 +51,10 @@ class CourseUpdate(BaseModel):
 class EnrollmentCreate(BaseModel):
     student_id: str
     course_id: str
+class BulkEnrollmentCreate(BaseModel):
+    course_id: str
+    student_emails: list[EmailStr] = Field(min_length=1)
+    create_accounts: bool = False
 class SessionCreate(BaseModel):
     course_id: str
     name: str
@@ -89,6 +101,11 @@ class CheckInCreate(BaseModel):
     motion_verification_id: Optional[str] = Field(default=None, max_length=36)
     liveness_challenge_response: Optional[str] = None
     qr_code: Optional[str] = None
+class CheckInAppeal(BaseModel):
+    appeal_reason: str = Field(min_length=1)
+class CheckInReview(BaseModel):
+    status: Literal["approved", "rejected"]
+    review_notes: Optional[str] = None
 class FaceEnrollRequest(BaseModel):
     # Base64-encoded face image (PNG/JPEG), no data URL prefix. See
     # docs/API-SPECIFICATION.md "POST /users/me/face/enroll".

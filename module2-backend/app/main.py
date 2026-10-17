@@ -13,7 +13,9 @@ import io
 import json
 import math
 import os
+import secrets
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -23,7 +25,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import JSONResponse
 
+from pydantic import ValidationError
 from sqlalchemy import exists, func, or_, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import engine, Base, get_db, get_read_db
@@ -34,13 +38,18 @@ from app.schemas import (
     UserLogin,
     RefreshTokenRequest,
     UserUpdate,
+    AdminUserUpdate,
+    BulkUserCreate,
     CourseCreate,
     CourseUpdate,
     EnrollmentCreate,
+    BulkEnrollmentCreate,
     SessionCreate,
     SessionUpdate,
     SessionStatusUpdate,
     CheckInCreate,
+    CheckInAppeal,
+    CheckInReview,
     FaceEnrollRequest,
     DeviceCreate,
     DeviceUpdate
@@ -515,6 +524,252 @@ def deactivate_user(
     }
 
 
+@app.patch("/api/v1/admin/users/{user_id}/activate")
+def activate_user(
+    user_id: str,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    user.is_active = True
+    create_audit_log(
+        db, "user_updated", current_user.id, user.id,
+        resource_type="user", details={"is_active": True}
+    )
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "is_active": user.is_active,
+        "message": "User activated successfully"
+    }
+
+
+# bcrypt is deliberately slow (~0.1-0.3 s per hash) and releases the GIL, so a
+# bulk request hashes in parallel to stay inside client timeouts.
+BULK_HASH_WORKERS = 8
+
+
+@app.post("/api/v1/admin/users/bulk", status_code=status.HTTP_201_CREATED)
+def bulk_create_users(
+    payload: BulkUserCreate,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db)
+):
+    errors = []
+    accepted: list[tuple[int, UserRegister]] = []
+    seen_emails: set[str] = set()
+
+    for index, raw_user in enumerate(payload.users):
+        try:
+            user_data = UserRegister.model_validate(raw_user)
+        except ValidationError as exc:
+            errors.append({
+                "index": index,
+                "email": raw_user.get("email") if isinstance(raw_user.get("email"), str) else None,
+                "error": "; ".join(
+                    f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
+                    for err in exc.errors()
+                )
+            })
+            continue
+        if user_data.email in seen_emails:
+            errors.append({"index": index, "email": user_data.email, "error": "Duplicate email in request"})
+            continue
+        seen_emails.add(user_data.email)
+        accepted.append((index, user_data))
+
+    existing_emails = {
+        email for (email,) in db.query(User.email).filter(User.email.in_(seen_emails)).all()
+    } if seen_emails else set()
+
+    to_create = []
+    for index, user_data in accepted:
+        if user_data.email in existing_emails:
+            errors.append({"index": index, "email": user_data.email, "error": "Email already registered"})
+        else:
+            to_create.append(user_data)
+
+    with ThreadPoolExecutor(max_workers=BULK_HASH_WORKERS) as pool:
+        hashes = list(pool.map(hash_password, [user_data.password for user_data in to_create]))
+
+    new_users = [
+        User(
+            email=user_data.email,
+            full_name=user_data.full_name,
+            hashed_password=hashed,
+            role=user_data.role
+        )
+        for user_data, hashed in zip(to_create, hashes)
+    ]
+    db.add_all(new_users)
+
+    try:
+        db.flush()  # assigns ids so the audit rows can reference them
+        for new_user in new_users:
+            create_audit_log(
+                db, "user_created", current_user.id, new_user.id,
+                details={"role": new_user.role, "bulk": True}
+            )
+        created = [
+            {
+                "id": new_user.id,
+                "email": new_user.email,
+                "full_name": new_user.full_name,
+                "role": new_user.role
+            }
+            for new_user in new_users
+        ]
+        db.commit()
+    except IntegrityError:
+        # An email registered concurrently between the lookup and the insert.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="One or more emails were registered concurrently; retry the request"
+        )
+
+    errors.sort(key=lambda error: error["index"])
+    return {
+        "created": len(created),
+        "failed": len(errors),
+        "users": created,
+        "errors": errors
+    }
+
+
+def _serialize_user(user: User) -> dict:
+    """User object for admin/staff reads; never includes password or template hashes."""
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        "camera_consent": user.camera_consent,
+        "geolocation_consent": user.geolocation_consent,
+        "face_enrolled": user.face_enrolled,
+        "created_at": user.created_at
+    }
+
+
+@app.get("/api/v1/users/")
+def list_users(
+    role: Literal["student", "ta", "instructor", "admin"] | None = None,
+    is_active: bool | None = None,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(require_roles("admin", read_only=True)),
+    db: Session = Depends(get_read_db)
+):
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    query = db.query(User)
+
+    if role:
+        query = query.filter(User.role == role)
+    if is_active is not None:
+        query = query.filter(User.is_active == is_active)
+    if search and search.strip():
+        term = search.strip().lower()
+        query = query.filter(or_(
+            func.lower(User.full_name).contains(term, autoescape=True),
+            func.lower(User.email).contains(term, autoescape=True)
+        ))
+
+    total = query.count()
+    users = query.order_by(User.created_at.desc(), User.id).offset(offset).limit(limit).all()
+
+    return {
+        "items": [_serialize_user(user) for user in users],
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@app.get("/api/v1/users/{user_id}")
+def get_user(
+    user_id: str,
+    current_user: User = Depends(require_roles("instructor", "admin", read_only=True)),
+    db: Session = Depends(get_read_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Spec: admin, or an instructor for students enrolled in their courses
+    # (same course visibility rule as _instructor_checkin_scope).
+    if current_user.role == "instructor":
+        teaches_student = (
+            db.query(Enrollment.id)
+            .join(Course, Course.id == Enrollment.course_id)
+            .outerjoin(SessionModel, SessionModel.course_id == Course.id)
+            .filter(
+                Enrollment.student_id == user.id,
+                Enrollment.is_active == True,  # noqa: E712
+                *_instructor_checkin_scope(current_user)
+            )
+            .first()
+        )
+        if not teaches_student:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+
+    return _serialize_user(user)
+
+
+@app.patch("/api/v1/users/{user_id}")
+def update_user(
+    user_id: str,
+    update_data: AdminUserUpdate,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    updates = {
+        field: value
+        for field, value in update_data.model_dump(exclude_unset=True).items()
+        if value is not None
+    }
+
+    for field, value in updates.items():
+        setattr(user, field, value)
+
+    create_audit_log(
+        db, "user_updated", current_user.id, user.id,
+        resource_type="user", details=updates
+    )
+    db.commit()
+    db.refresh(user)
+
+    return _serialize_user(user)
+
+
 def _serialize_course(
     db: Session, course: Course, instructor_names: dict | None = None
 ) -> dict:
@@ -672,6 +927,27 @@ def update_course(
     return _serialize_course(db, course)
 
 
+@app.delete("/api/v1/courses/{course_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_course(
+    course_id: str,
+    current_user: User = Depends(require_roles("admin")),
+    db: Session = Depends(get_db)
+):
+    course = db.query(Course).filter(Course.id == course_id).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course not found"
+        )
+
+    # Soft delete per spec: sessions, enrollments and check-ins are kept.
+    course.is_active = False
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 def _serialize_enrollment(enrollment: Enrollment) -> dict:
     return {
         "id": enrollment.id,
@@ -698,15 +974,23 @@ def _create_enrollment(
         Enrollment.course_id == course_id
     ).first()
 
-    if existing:
+    if existing and existing.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Student already enrolled"
         )
 
-    new_enrollment = Enrollment(student_id=student_id, course_id=course_id)
+    if existing:
+        # Re-enrolling after DELETE /enrollments/{id}: (student, course) is
+        # unique, so the dropped row is reactivated instead of re-inserted.
+        new_enrollment = existing
+        new_enrollment.is_active = True
+        new_enrollment.dropped_at = None
+        new_enrollment.enrolled_at = datetime.utcnow()
+    else:
+        new_enrollment = Enrollment(student_id=student_id, course_id=course_id)
+        db.add(new_enrollment)
 
-    db.add(new_enrollment)
     db.flush()  # assigns new_enrollment.id so the audit row can reference it
     create_audit_log(
         db, "enrollment_added", actor_id, new_enrollment.id,
@@ -745,6 +1029,147 @@ def create_enrollment(
     )
 
     return _serialize_enrollment(new_enrollment)
+
+
+def _require_course_manager(db: Session, user: User, course_id: str) -> Course:
+    """Course must exist; instructors must teach it (same rule as POST /enrollments/)."""
+    course = db.query(Course).filter(Course.id == course_id).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course not found"
+        )
+
+    if user.role == "instructor" and course.instructor_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+
+    return course
+
+
+@app.post("/api/v1/enrollments/bulk")
+def bulk_enroll_students(
+    payload: BulkEnrollmentCreate,
+    current_user: User = Depends(require_roles("instructor", "admin")),
+    db: Session = Depends(get_db)
+):
+    course = _require_course_manager(db, current_user, payload.course_id)
+    actor_id = current_user.id
+
+    # Keep request order, drop repeats.
+    emails = list(dict.fromkeys(payload.student_emails))
+    users_by_email = {
+        user.email: user
+        for user in db.query(User).filter(User.email.in_(emails)).all()
+    }
+    enrollments_by_student = {
+        enrollment.student_id: enrollment
+        for enrollment in db.query(Enrollment).filter(
+            Enrollment.course_id == course.id,
+            Enrollment.student_id.in_([user.id for user in users_by_email.values()])
+        ).all()
+    } if users_by_email else {}
+
+    counts = {"enrolled": 0, "already_enrolled": 0, "not_found": 0, "created": 0}
+    details = []
+    now = datetime.utcnow()
+
+    # The per-row flushes can hit the same unique constraints as the commit
+    # (an email or enrollment inserted concurrently), so they share its handler.
+    try:
+        for email in emails:
+            student = users_by_email.get(email)
+            account_created = False
+
+            if student is None:
+                if not payload.create_accounts:
+                    counts["not_found"] += 1
+                    details.append({"email": email, "status": "not_found"})
+                    continue
+                # The spec does not say how a created account gets a password, so
+                # it receives an unguessable one and cannot log in until one is set.
+                student = User(
+                    email=email,
+                    full_name=email.split("@", 1)[0],
+                    hashed_password=hash_password(secrets.token_urlsafe(32)),
+                    role="student"
+                )
+                db.add(student)
+                db.flush()
+                create_audit_log(
+                    db, "user_created", actor_id, student.id,
+                    details={"role": "student", "bulk_enrollment": True}
+                )
+                account_created = True
+
+            enrollment = enrollments_by_student.get(student.id)
+            if enrollment is not None and enrollment.is_active:
+                counts["already_enrolled"] += 1
+                details.append({"email": email, "status": "already_enrolled"})
+                continue
+
+            if enrollment is None:
+                enrollment = Enrollment(student_id=student.id, course_id=course.id)
+                db.add(enrollment)
+            else:
+                enrollment.is_active = True
+                enrollment.dropped_at = None
+                enrollment.enrolled_at = now
+            db.flush()
+            create_audit_log(
+                db, "enrollment_added", actor_id, enrollment.id,
+                details={"student_id": student.id, "course_id": course.id, "bulk": True}
+            )
+
+            counts["enrolled"] += 1
+            if account_created:
+                counts["created"] += 1
+            details.append({
+                "email": email,
+                "status": "created" if account_created else "enrolled"
+            })
+
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Enrollments changed concurrently; retry the request"
+        )
+
+    return {**counts, "details": details}
+
+
+@app.delete("/api/v1/enrollments/{enrollment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_enrollment(
+    enrollment_id: str,
+    current_user: User = Depends(require_roles("instructor", "admin")),
+    db: Session = Depends(get_db)
+):
+    enrollment = db.query(Enrollment).filter(Enrollment.id == enrollment_id).first()
+
+    if not enrollment or not enrollment.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Enrollment not found"
+        )
+
+    _require_course_manager(db, current_user, enrollment.course_id)
+
+    # Soft delete: past check-ins keep their history and the student can be
+    # re-enrolled later (see _create_enrollment).
+    enrollment.is_active = False
+    enrollment.dropped_at = datetime.utcnow()
+    create_audit_log(
+        db, "enrollment_removed", current_user.id, enrollment.id,
+        details={"student_id": enrollment.student_id, "course_id": enrollment.course_id}
+    )
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/api/v1/admin/enrollments/", status_code=status.HTTP_201_CREATED)
@@ -1088,6 +1513,49 @@ def list_sessions(
         "limit": limit,
         "offset": offset
     }
+
+
+@app.get("/api/v1/sessions/my-sessions")
+def list_my_sessions(
+    status_filter: Literal["scheduled", "active", "closed", "cancelled"] | None = Query(
+        default=None, alias="status"
+    ),
+    upcoming: bool = False,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    limit = max(1, min(limit, 100))
+
+    query = db.query(SessionModel)
+
+    if current_user.role == "student":
+        query = query.join(
+            Enrollment, Enrollment.course_id == SessionModel.course_id
+        ).filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.is_active == True  # noqa: E712
+        )
+    else:
+        # Spec covers students (enrolled) and instructors (teaching). Staff of
+        # any other role get the sessions they own or whose course they teach.
+        query = query.join(Course, Course.id == SessionModel.course_id).filter(or_(
+            Course.instructor_id == current_user.id,
+            SessionModel.instructor_id == current_user.id
+        ))
+
+    if status_filter:
+        query = query.filter(SessionModel.status == status_filter)
+
+    if upcoming:
+        query = query.filter(SessionModel.scheduled_start > datetime.utcnow())
+        query = query.order_by(SessionModel.scheduled_start.asc(), SessionModel.id)
+    else:
+        query = query.order_by(SessionModel.scheduled_start.desc(), SessionModel.id)
+
+    sessions = query.limit(limit).all()
+
+    return [_serialize_session_summary(db, session) for session in sessions]
 
 
 @app.get("/api/v1/sessions/{session_id}")
@@ -1940,6 +2408,212 @@ def list_flagged_checkins(
     )
 
 
+APPEAL_WINDOW = timedelta(days=7)
+APPEALABLE_STATUSES = ("flagged", "rejected")
+REVIEWABLE_STATUSES = ("flagged", "appealed")
+
+
+def _is_session_staff(user: User, session: SessionModel, course: Course) -> bool:
+    """Staff visibility for one check-in, matching _instructor_checkin_scope."""
+    if user.role in ("admin", "ta"):
+        return True
+    if user.role == "instructor":
+        return (
+            session.instructor_id == user.id
+            or course.instructor_id in (None, user.id)
+        )
+    return False
+
+
+def _load_checkin(db: Session, checkin_id: str, lock: bool = False):
+    query = (
+        db.query(CheckIn, SessionModel, Course)
+        .join(SessionModel, SessionModel.id == CheckIn.session_id)
+        .join(Course, Course.id == SessionModel.course_id)
+        .filter(CheckIn.id == checkin_id)
+    )
+    if lock:
+        # Locks the check-in row only, so concurrent appeals/reviews serialize.
+        query = query.with_for_update(of=CheckIn)
+    row = query.first()
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Check-in not found"
+        )
+
+    return row
+
+
+@app.get("/api/v1/checkins/{checkin_id}")
+def get_checkin(
+    checkin_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    checkin, session, course = _load_checkin(db, checkin_id)
+
+    if checkin.student_id != current_user.id and not _is_session_staff(current_user, session, course):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+
+    student = db.query(User).filter(User.id == checkin.student_id).first()
+
+    # Every stored signal except face_embedding_hash (data minimization).
+    return {
+        "id": checkin.id,
+        "session_id": checkin.session_id,
+        "session_name": session.name,
+        "course_id": course.id,
+        "course_code": course.code,
+        "student_id": checkin.student_id,
+        "student_name": student.full_name if student else None,
+        "student_email": student.email if student else None,
+        "device_id": checkin.device_id,
+        "status": checkin.status,
+        "checked_in_at": checkin.checked_in_at,
+        "verified_at": checkin.verified_at,
+        "latitude": checkin.latitude,
+        "longitude": checkin.longitude,
+        "location_accuracy_meters": checkin.location_accuracy_meters,
+        "distance_from_venue_meters": checkin.distance_from_venue_meters,
+        "liveness_passed": checkin.liveness_passed,
+        "liveness_score": checkin.liveness_score,
+        "liveness_challenge_type": checkin.liveness_challenge_type,
+        "face_match_passed": checkin.face_match_passed,
+        "face_match_score": checkin.face_match_score,
+        "qr_code_verified": checkin.qr_code_verified,
+        "risk_score": checkin.risk_score,
+        "risk_factors": json.loads(checkin.risk_factors) if checkin.risk_factors else [],
+        "reviewed_by_id": checkin.reviewed_by_id,
+        "reviewed_at": checkin.reviewed_at,
+        "review_notes": checkin.review_notes,
+        "appeal_reason": checkin.appeal_reason,
+        "appealed_at": checkin.appealed_at
+    }
+
+
+@app.post("/api/v1/checkins/{checkin_id}/appeal")
+def appeal_checkin(
+    checkin_id: str,
+    appeal: CheckInAppeal,
+    current_user: User = Depends(require_roles("student")),
+    db: Session = Depends(get_db)
+):
+    reason = appeal.appeal_reason.strip()
+    if not reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="appeal_reason is required"
+        )
+
+    checkin, _, _ = _load_checkin(db, checkin_id, lock=True)
+
+    if checkin.student_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only appeal your own check-ins"
+        )
+    if checkin.appealed_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This check-in has already been appealed"
+        )
+    if checkin.status not in APPEALABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only flagged or rejected check-ins can be appealed"
+        )
+
+    now = datetime.utcnow()
+    if now - checkin.checked_in_at > APPEAL_WINDOW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The 7-day appeal window has passed"
+        )
+
+    previous_status = checkin.status
+    checkin.status = "appealed"
+    # XSS: neutralize markup; quote=False keeps apostrophes readable in prose.
+    checkin.appeal_reason = html.escape(reason, quote=False)
+    checkin.appealed_at = now
+
+    result = {
+        "id": checkin.id,
+        "status": checkin.status,
+        "appeal_reason": checkin.appeal_reason,
+        "appealed_at": now
+    }
+    create_audit_log(
+        db, "checkin_appealed", current_user.id, checkin.id,
+        details={"session_id": checkin.session_id, "previous_status": previous_status}
+    )
+    db.commit()
+
+    return result
+
+
+@app.post("/api/v1/checkins/{checkin_id}/review")
+def review_checkin(
+    checkin_id: str,
+    review: CheckInReview,
+    current_user: User = Depends(require_roles("instructor", "ta", "admin")),
+    db: Session = Depends(get_db)
+):
+    checkin, session, course = _load_checkin(db, checkin_id, lock=True)
+
+    if not _is_session_staff(current_user, session, course):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
+        )
+    if checkin.status not in REVIEWABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only flagged or appealed check-ins can be reviewed"
+        )
+
+    now = datetime.utcnow()
+    previous_status = checkin.status
+    notes = review.review_notes.strip() if review.review_notes else None
+
+    checkin.status = review.status
+    checkin.reviewed_by_id = current_user.id
+    checkin.reviewed_at = now
+    checkin.review_notes = html.escape(notes, quote=False) if notes else None
+    if review.status == "approved":
+        checkin.verified_at = now
+
+    result = {
+        "id": checkin.id,
+        "status": checkin.status,
+        "reviewed_by_id": current_user.id,
+        "reviewed_at": now,
+        "review_notes": checkin.review_notes
+    }
+    details = {
+        "session_id": checkin.session_id,
+        "previous_status": previous_status,
+        "reviewer_id": current_user.id
+    }
+    create_audit_log(
+        db, "checkin_reviewed", current_user.id, checkin.id,
+        details={**details, "decision": review.status}, timestamp=now
+    )
+    # SECURITY-REQUIREMENTS.md: manual approve/reject is logged with the reviewer.
+    create_audit_log(
+        db, f"checkin_{review.status}", current_user.id, checkin.id,
+        details=details, success=review.status == "approved",
+        timestamp=now + timedelta(microseconds=1)
+    )
+    db.commit()
+
+    return result
+
+
 def _serialize_device(device: Device) -> dict:
     return {
         "id": device.id,
@@ -2150,6 +2824,26 @@ def _utc_iso(value: datetime | None) -> str | None:
     return value.isoformat() + "Z" if value else None
 
 
+# CSV columns from docs/API-SPECIFICATION.md "GET /export/attendance/{course_id}".
+EXPORT_COLUMNS = [
+    "student_id", "student_name", "student_email", "session_date",
+    "session_name", "status", "checked_in_at", "risk_score"
+]
+
+
+def _records_csv_response(records: list[dict], filename: str) -> Response:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(EXPORT_COLUMNS)
+    for record in records:
+        writer.writerow([_csv_safe(record[column]) for column in EXPORT_COLUMNS])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
 @app.get("/api/v1/export/session/{session_id}")
 def export_session_attendance(
     session_id: str,
@@ -2239,22 +2933,7 @@ def export_session_attendance(
     }
 
     if export_format == "csv":
-        columns = [
-            "student_id", "student_name", "student_email", "session_date",
-            "session_name", "status", "checked_in_at", "risk_score"
-        ]
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow(columns)
-        for record in records:
-            writer.writerow([_csv_safe(record[column]) for column in columns])
-        response = Response(
-            content=buffer.getvalue(),
-            media_type="text/csv; charset=utf-8",
-            headers={
-                "Content-Disposition": f'attachment; filename="session-{result["session_id"]}.csv"'
-            }
-        )
+        response = _records_csv_response(records, f'session-{result["session_id"]}.csv')
     else:
         response = result
 
@@ -2267,6 +2946,98 @@ def export_session_attendance(
             "export_type": "session_attendance",
             "format": export_format,
             "records": checked_in
+        }
+    )
+
+    return response
+
+
+@app.get("/api/v1/export/attendance/{course_id}")
+def export_course_attendance(
+    course_id: str,
+    export_format: Literal["csv", "json"] = Query(default="csv", alias="format"),
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    current_user: User = Depends(require_roles("instructor", "admin")),
+    db: Session = Depends(get_db)
+):
+    course = db.query(Course).filter(Course.id == course_id).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course not found"
+        )
+
+    actor_id = current_user.id
+    scope = _instructor_checkin_scope(current_user)
+
+    # Same visibility rule as the session export: an instructor needs the
+    # course (or an unassigned course) or at least one session in it they own.
+    if current_user.role == "instructor" and course.instructor_id not in (None, actor_id):
+        owns_session = db.query(SessionModel.id).filter(
+            SessionModel.course_id == course.id,
+            SessionModel.instructor_id == actor_id
+        ).first()
+        if not owns_session:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+
+    start = _to_naive_utc(start_date) if start_date else None
+    end = _to_naive_utc(end_date) if end_date else None
+    if start and end and start > end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must not be after end_date"
+        )
+
+    # The schema has no semester dates, so without start_date/end_date every
+    # session of the course is exported. Dates filter on the session start.
+    filters = [SessionModel.course_id == course.id, *scope]
+    if start:
+        filters.append(SessionModel.scheduled_start >= start)
+    if end:
+        filters.append(SessionModel.scheduled_start <= end)
+
+    rows = (
+        db.query(CheckIn, User, SessionModel)
+        .join(SessionModel, SessionModel.id == CheckIn.session_id)
+        .join(Course, Course.id == SessionModel.course_id)
+        .join(User, User.id == CheckIn.student_id)
+        .filter(*filters)
+        .order_by(SessionModel.scheduled_start, CheckIn.checked_in_at, CheckIn.id)
+        .all()
+    )
+
+    records = [
+        {
+            "student_id": checkin.student_id,
+            "student_name": student.full_name,
+            "student_email": student.email,
+            "session_date": session.scheduled_start.date().isoformat(),
+            "session_name": session.name,
+            "status": checkin.status,
+            "checked_in_at": _utc_iso(checkin.checked_in_at),
+            "risk_score": checkin.risk_score
+        }
+        for checkin, student, session in rows
+    ]
+
+    if export_format == "csv":
+        response = _records_csv_response(records, f"course-{course.id}-attendance.csv")
+    else:
+        # Spec: format=json returns a JSON array.
+        response = records
+
+    create_audit_log(
+        db, "data_exported", actor_id, course.id,
+        resource_type="course", commit=True,
+        details={
+            "export_type": "course_attendance",
+            "format": export_format,
+            "records": len(records)
         }
     )
 
@@ -2290,8 +3061,6 @@ def export_session_attendance(
 # -----------------------------------------------------------------------------
 # User Management Endpoints (users.py)
 # -----------------------------------------------------------------------------
-# GET /users - List users (admin only)
-# GET /users/{id} - User details
 # DELETE /users/{id} - Delete user
 
 # -----------------------------------------------------------------------------
@@ -2301,20 +3070,12 @@ def export_session_attendance(
 # -----------------------------------------------------------------------------
 # Check-in Endpoints (checkins.py)
 # -----------------------------------------------------------------------------
-# GET /checkins - List check-ins (with filters)
-# GET /checkins/{id} - Check-in details
 
 # -----------------------------------------------------------------------------
 # Audit Log Endpoints (audit.py)
 # -----------------------------------------------------------------------------
 # GET /audit/logs - Retrieve audit logs
 # POST /audit/logs - Create audit entry
-
-# -----------------------------------------------------------------------------
-# Admin Endpoints (admin.py) - Required for automated testing
-# -----------------------------------------------------------------------------
-# PATCH /admin/users/{user_id}/activate - Activate user (admin only)
-# POST /admin/users/bulk - Bulk create users (admin only)
 
 # =============================================================================
 # Database Models to Implement (see DATABASE-SCHEMA.md)
