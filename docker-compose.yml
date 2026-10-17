@@ -49,14 +49,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres.qapaoyywvzysqbnnlwkh:3MLTbS7L7xDv@aws-0-ap-southeast-2.pooler.supabase.com:5432/postgres?sslmode=require
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set}"
       REDIS_URL: redis://redis:6379
       JWT_SECRET: your-secret-key-change-in-production
       FACE_SERVICE_URL: http://face-recognition:8001
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -103,7 +101,7 @@ services:
     ports:
       - "8501:8501"
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://saiv:saiv_password@postgres:5432/saiv}
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set}"
       BACKEND_URL: http://backend:8000
       PROMETHEUS_URL: http://prometheus:9090
     depends_on:
