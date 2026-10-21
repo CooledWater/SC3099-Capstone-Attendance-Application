@@ -15,10 +15,8 @@ a ContextVar so handlers need no extra ``Request`` parameter to log them.
 Reading
 -------
 ``GET /api/v1/audit/`` and ``GET /api/v1/audit/summary`` are admin only.
-Each item carries the API-SPECIFICATION.md fields *and* the fields the
-Module 4 dashboard (AuditLogs.tsx) reads (``occurred_at``, ``event_type``,
-``actor_email``, ``severity``, ``detail``), so both consumers are served by one
-response shape.
+The dashboard uses timestamp, user_email, action, severity and details directly.
+Other documented audit metadata and the pagination envelope remain available.
 """
 
 import json
@@ -43,7 +41,7 @@ MAX_LIMIT = 1000
 DEFAULT_LIMIT = 100
 _MAX_DETAILS_CHARS = 4000
 
-# Module 4's "event type" filter: a coarse category per action.
+# Action categories used to infer resource types when writing audit events.
 EVENT_TYPES = {
     "login_success": "authentication",
     "login_failed": "authentication",
@@ -208,26 +206,9 @@ def _load_details(raw: str | None) -> dict | None:
     return loaded if isinstance(loaded, dict) else {"value": loaded}
 
 
-def _summarise(details: dict | None, resource_type: str | None, resource_id: str | None) -> str | None:
-    parts = []
-    for key, value in (details or {}).items():
-        if isinstance(value, (dict, list)):
-            value = json.dumps(value, default=str)
-        parts.append(f"{key}={value}")
-    text = ", ".join(parts)
-    if not text and resource_type and resource_id:
-        text = f"{resource_type} {resource_id}"
-    return text[:300] or None
-
-
 def _serialize(entry: AuditLog, user_email: str | None) -> dict:
     details = _load_details(entry.details)
     timestamp = _iso_utc(entry.timestamp)
-    # Module 4 lowercases/escapes actor_email, so it must always be a string:
-    # fall back to the address a failed login tried, then to "system".
-    attempted_email = details.get("email") if details else None
-    actor_email = user_email or (attempted_email if isinstance(attempted_email, str) else None) or "system"
-
     return {
         # API-SPECIFICATION.md fields
         "id": entry.id,
@@ -242,12 +223,7 @@ def _serialize(entry: AuditLog, user_email: str | None) -> dict:
         "details": details,
         "success": entry.success,
         "timestamp": timestamp,
-        # Module 4 (AuditLogs.tsx) fields
-        "occurred_at": timestamp,
-        "event_type": EVENT_TYPES.get(entry.action, "other"),
-        "actor_email": actor_email,
         "severity": _severity(entry.action, entry.success),
-        "detail": _summarise(details, entry.resource_type, entry.resource_id),
     }
 
 

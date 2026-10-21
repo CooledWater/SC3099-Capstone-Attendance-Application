@@ -34,7 +34,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  checkInsToCsv,
   downloadCsv,
   fetchSessions,
   fetchCourses,
@@ -49,14 +48,18 @@ export function SessionsPanel({
   canCreate,
   courseIds,
   currentUserId,
+  selectedCourseId: controlledCourseId,
+  onCourseChange,
 }: {
   rows: CheckInRow[];
   canCreate: boolean;
   courseIds?: Set<string>;
   currentUserId?: string;
+  selectedCourseId?: string;
+  onCourseChange?: (id: string) => void;
 }) {
   const qc = useQueryClient();
-  const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions });
+  const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions, refetchInterval: 5000 });
   const courses = useQuery({
     queryKey: ["courses"],
     queryFn: fetchCourses,
@@ -65,13 +68,28 @@ export function SessionsPanel({
   const [saving, setSaving] = useState(false);
   const [savingSessionId, setSavingSessionId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [selectedCourseId, setSelectedCourseId] = useState("all");
+  const [localCourseId, setLocalCourseId] = useState("all");
+  const selectedCourseId = controlledCourseId ?? localCourseId;
+  const setSelectedCourseId = onCourseChange ?? setLocalCourseId;
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null);
+  const [exportingSessionId, setExportingSessionId] = useState<string | null>(null);
+  async function exportSession(session: SessionRow) {
+    setExportingSessionId(session.id);
+    try {
+      const csv = await api.text(`/export/session/${encodeURIComponent(session.id)}?format=csv`);
+      downloadCsv(`session-${session.id}`, csv);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not export session attendance.");
+    } finally {
+      setExportingSessionId(null);
+    }
+  }
   const [form, setForm] = useState({
     course_id: "",
     room: "",
     starts_at: "",
+    duration_minutes: "60",
     geofence_lat: "",
     geofence_lng: "",
     geofence_radius_m: "100",
@@ -80,6 +98,7 @@ export function SessionsPanel({
     course_id: "",
     room: "",
     starts_at: "",
+    duration_minutes: "60",
     geofence_lat: "",
     geofence_lng: "",
     geofence_radius_m: "100",
@@ -172,8 +191,8 @@ export function SessionsPanel({
     setSaving(true);
     try {
       const scheduledStart = parseSingaporeDateTimeLocal(form.starts_at);
-      if (!scheduledStart) {
-        toast.error("Enter a valid session start time.");
+      if (!scheduledStart || !Number.isSafeInteger(Number(form.duration_minutes)) || Number(form.duration_minutes) <= 0) {
+        toast.error("Enter a valid start time and a positive duration.");
         return;
       }
       await api.request("/sessions/", {
@@ -183,7 +202,9 @@ export function SessionsPanel({
           name: `${form.room} session`,
           session_type: "lecture",
           scheduled_start: scheduledStart.toISOString(),
-          scheduled_end: new Date(scheduledStart.getTime() + 60 * 60 * 1000).toISOString(),
+          checkin_opens_at: scheduledStart.toISOString(),
+          checkin_closes_at: new Date(scheduledStart.getTime() + Number(form.duration_minutes) * 60000).toISOString(),
+          scheduled_end: new Date(scheduledStart.getTime() + Number(form.duration_minutes) * 60000).toISOString(),
           venue_name: form.room,
           venue_latitude: form.geofence_lat ? Number(form.geofence_lat) : null,
           venue_longitude: form.geofence_lng ? Number(form.geofence_lng) : null,
@@ -207,6 +228,7 @@ export function SessionsPanel({
       course_id: session.course_id,
       room: session.room === "Not set" ? "" : session.room,
       starts_at: toSingaporeDateTimeLocal(session.starts_at),
+      duration_minutes: String((parseApiDateTime(session.ends_at).getTime() - parseApiDateTime(session.starts_at).getTime()) / 60000),
       geofence_lat: session.geofence_lat == null ? "" : String(session.geofence_lat),
       geofence_lng: session.geofence_lng == null ? "" : String(session.geofence_lng),
       geofence_radius_m: String(session.geofence_radius_m),
@@ -230,18 +252,20 @@ export function SessionsPanel({
       return;
     }
     const scheduledStart = parseSingaporeDateTimeLocal(editForm.starts_at);
-    const previousStart = parseApiDateTime(session.starts_at).getTime();
-    if (!scheduledStart || !Number.isFinite(previousStart)) {
-      toast.error("Enter a valid session start time.");
+    if (!scheduledStart || !Number.isSafeInteger(Number(editForm.duration_minutes)) || Number(editForm.duration_minutes) <= 0) {
+      toast.error("Enter a valid start time and a positive duration.");
       return;
     }
-    const shiftTime = (value: string) => {
-      const timestamp = parseApiDateTime(value).getTime();
-      if (!Number.isFinite(timestamp)) {
-        throw new Error("Session timing data is invalid.");
-      }
-      return new Date(timestamp + scheduledStart.getTime() - previousStart).toISOString();
-    };
+
+    const scheduledEnd = new Date(scheduledStart.getTime() + Number(editForm.duration_minutes) * 60000);
+    const shiftedOpen = new Date(
+      parseApiDateTime(session.checkin_opens_at).getTime()
+      + scheduledStart.getTime() - parseApiDateTime(session.starts_at).getTime(),
+    );
+    const shiftedClose = new Date(
+      parseApiDateTime(session.checkin_closes_at).getTime()
+      + scheduledEnd.getTime() - parseApiDateTime(session.ends_at).getTime(),
+    );
 
     setSavingSessionId(session.id);
     try {
@@ -253,9 +277,9 @@ export function SessionsPanel({
             course_id: editForm.course_id,
             name: `${editForm.room.trim()} session`,
             scheduled_start: scheduledStart.toISOString(),
-            scheduled_end: shiftTime(session.ends_at),
-            checkin_opens_at: shiftTime(session.checkin_opens_at),
-            checkin_closes_at: shiftTime(session.checkin_closes_at),
+            scheduled_end: scheduledEnd.toISOString(),
+            checkin_opens_at: shiftedOpen.toISOString(),
+            checkin_closes_at: shiftedClose.toISOString(),
             venue_name: editForm.room.trim(),
             venue_latitude: editForm.geofence_lat ? Number(editForm.geofence_lat) : null,
             venue_longitude: editForm.geofence_lng ? Number(editForm.geofence_lng) : null,
@@ -279,38 +303,6 @@ export function SessionsPanel({
     }
     toast.success("Session updated.");
     setEditingSessionId(null);
-    await qc.invalidateQueries({ queryKey: ["sessions"] });
-    await qc.invalidateQueries({ queryKey: ["check-ins"] });
-  }
-
-  async function activateSession(session: SessionRow) {
-    if (
-      !currentUserId ||
-      session.instructor_id !== currentUserId ||
-      session.status !== "scheduled" ||
-      savingSessionId
-    ) {
-      return;
-    }
-    setSavingSessionId(session.id);
-    try {
-      const updated = await api.request<{ status: string }>(
-        `/sessions/${encodeURIComponent(session.id)}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ status: "active" }),
-        },
-      );
-      if (updated.status !== "active") {
-        throw new Error("The backend did not activate this session.");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not activate session.");
-      return;
-    } finally {
-      setSavingSessionId(null);
-    }
-    toast.success("Session activated.");
     await qc.invalidateQueries({ queryKey: ["sessions"] });
     await qc.invalidateQueries({ queryKey: ["check-ins"] });
   }
@@ -476,6 +468,12 @@ export function SessionsPanel({
             />
           </label>
           <label className="text-xs text-muted-foreground">
+            Duration (minutes)
+            <input type="number" min="1" step="1" required className={`${input} mt-1`}
+              value={form.duration_minutes}
+              onChange={(event) => setForm({ ...form, duration_minutes: event.target.value })} />
+          </label>
+          <label className="text-xs text-muted-foreground">
             Geofence latitude
             <input
               className={`${input} mt-1`}
@@ -534,7 +532,12 @@ export function SessionsPanel({
         {sessions.isLoading && (
           <p className="py-2 text-sm text-muted-foreground">Loading sessions…</p>
         )}
-        {!sessions.isLoading && list.length === 0 && (
+        {sessions.isError && (
+          <p role="alert" className="py-2 text-sm text-destructive">
+            Could not load sessions. <button type="button" className="underline" onClick={() => void sessions.refetch()}>Retry</button>
+          </p>
+        )}
+        {!sessions.isLoading && !sessions.isError && list.length === 0 && (
           <p className="py-2 text-sm text-muted-foreground">
             {currentUserId && courses.isSuccess && availableCourses.length === 0
               ? "No courses are assigned to you."
@@ -558,7 +561,7 @@ export function SessionsPanel({
                           {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          {formatSingaporeDateTime(s.starts_at)} SGT · {s.room}{" "}
+                          {formatSingaporeDateTime(s.starts_at)} to {formatSingaporeDateTime(s.ends_at)} SGT · {s.room}{" "}
                           {s.status === "scheduled" && <> · {s.expected_attendance} enrolled</>}
                           {s.status !== "scheduled" && (
                             <button
@@ -586,16 +589,6 @@ export function SessionsPanel({
                         >
                           {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
                         </span>
-                        {canManage && s.status === "scheduled" && (
-                          <button
-                            type="button"
-                            onClick={() => void activateSession(s)}
-                            disabled={savingSessionId !== null}
-                            className="rounded-full bg-gradient-to-r from-primary to-accent px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110 disabled:opacity-60"
-                          >
-                            {savingSessionId === s.id ? "Activating…" : "Activate session"}
-                          </button>
-                        )}
                         {((canManage && (s.status === "scheduled" || s.status === "active")) ||
                           s.status === "closed") && (
                           <DropdownMenu>
@@ -630,14 +623,10 @@ export function SessionsPanel({
                               )}
                               {s.status === "closed" && (
                                 <DropdownMenuItem
-                                  onSelect={() =>
-                                    downloadCsv(
-                                      `session-${s.courses?.code ?? "export"}`,
-                                      checkInsToCsv(sessionRows),
-                                    )
-                                  }
+                                  disabled={exportingSessionId !== null}
+                                  onSelect={() => void exportSession(s)}
                                 >
-                                  Export session CSV
+                                  {exportingSessionId === s.id ? "Exporting…" : "Export session CSV"}
                                 </DropdownMenuItem>
                               )}
                               {canManage && (s.status === "active" || s.status === "closed") && (
@@ -767,6 +756,12 @@ export function SessionsPanel({
                     : "Derived from the selected course"}
                 </p>
               </div>
+          <label className="text-xs text-muted-foreground">
+            Duration (minutes)
+            <input type="number" min="1" step="1" required className={`${input} mt-1`}
+              value={editForm.duration_minutes}
+              onChange={(event) => setEditForm({ ...editForm, duration_minutes: event.target.value })} />
+          </label>
               <label className="text-xs text-muted-foreground">
                 Geofence latitude
                 <input

@@ -14,3 +14,6 @@
 .vscode/
 # Generated for each frontend production build
 module1-frontend/public/sw-precache.js
+
+# Local scheduling verification environment
+.venv-scheduling/

@@ -10,6 +10,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
+# Supabase session mode has a shared 15-client limit. Bound retained and burst
+# connections; the scheduler and HTTP handlers share this same pool.
+# SQLite test engines use their dialect-specific pooling defaults.
+pool_options = ({"pool_size": 3, "max_overflow": 0, "pool_timeout": 10}
+                if DATABASE_URL.startswith(("postgresql", "postgres")) else {})
+
 engine = create_engine(
     DATABASE_URL,
     # pool_pre_ping issues an extra round trip (a throwaway "ping" query) on
@@ -18,6 +24,7 @@ engine = create_engine(
     # doubles latency for single-query endpoints. pool_recycle proactively
     # retires connections before Supabase's pooler would otherwise drop them
     # silently, without paying a ping on every request.
+    **pool_options,
     pool_recycle=280
 )
 

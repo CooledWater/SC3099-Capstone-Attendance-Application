@@ -17,10 +17,10 @@ function storage() {
   return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
 }
 
-function client(handler, local = storage()) {
+function client(handler, local = storage(), timers = { setTimeout, clearTimeout }) {
   const calls = [];
-  const context = { exports: {}, localStorage: local, sessionStorage: storage(), AbortController,
-    window: { setTimeout, clearTimeout },
+  const context = { exports: {}, localStorage: local, sessionStorage: storage(), AbortController, Response,
+    window: timers,
     fetch: async (url, init) => {
       const path = new URL(url).pathname.replace("/api/v1", "");
       calls.push(path);
@@ -35,6 +35,61 @@ function client(handler, local = storage()) {
 const ok = (body) => ({ status: 200, ok: true, json: async () => body });
 const error = (status) => ({ status, ok: false, json: async () => ({ detail: "Rejected" }) });
 const student = { id: "student", role: "student" };
+
+for (const mode of ["json", "file"]) {
+  test(`${mode} body remains protected by timeout after headers arrive`, async () => {
+    let expire;
+    let reading;
+    const started = new Promise(resolve => { reading = resolve; });
+    let cleared = false;
+    const c = client((path, init) => {
+      const body = () => {
+        reading();
+        return new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("Body aborted")), { once: true }));
+      };
+      return { status: 200, ok: true, json: body, blob: body };
+    }, storage(), { setTimeout: callback => { expire = callback; return 1; }, clearTimeout: () => { cleared = true; } });
+    const pending = mode === "file" ? c.api.response("/export/attendance/course") : c.api.me();
+    await started;
+    assert.equal(cleared, false);
+    expire();
+    await assert.rejects(pending, /Body aborted/);
+    assert.equal(cleared, true);
+  });
+}
+
+test("file exports preserve response headers and binary body after authentication refresh", async () => {
+  const response = { status: 200, ok: true, headers: new Map([["Content-Disposition", 'attachment; filename="attendance.csv"']]), blob: async () => "server bytes" };
+  let attempts = 0;
+  const c = client(path => path.endsWith("refresh") ? ok({ access_token: "renewed" }) : ++attempts === 1 ? error(401) : response);
+  const file = await c.api.response("/export/attendance/course-a?format=csv");
+  assert.equal(file.headers.get("Content-Disposition"), 'attachment; filename="attendance.csv"');
+  assert.equal(await file.text(), "server bytes");
+  assert.equal(attempts, 2);
+});
+
+test("CSV exports preserve backend contents and refresh authentication before retry", async () => {
+  const csv = '\uFEFFstudent_id,student_name\r\n123,"Student, One"\r\n';
+  let attempts = 0;
+  const c = client((path, init) => {
+    if (path.endsWith("refresh")) return ok({ access_token: "renewed" });
+    assert.equal(path, "/export/session/session-123");
+    assert.equal(init.headers.Accept, "text/csv");
+    if (++attempts === 1) return error(401);
+    assert.equal(init.headers.Authorization, "Bearer renewed");
+    return { status: 200, ok: true, text: async () => csv };
+  });
+  assert.equal(await c.api.text("/export/session/session-123?format=csv"), csv);
+  assert.equal(attempts, 2);
+});
+
+test("CSV export errors propagate without downloading error content", async () => {
+  for (const status of [403, 404, 500]) {
+    const c = client(() => error(status));
+    await assert.rejects(c.api.text("/export/session/session-123?format=csv"),
+      (failure) => failure.status === status && failure.message === "Rejected");
+  }
+});
 
 test("restoration prefers the separate dashboard session", async () => {
   const c = client((path) => path.endsWith("refresh") ? ok({ access_token: "dashboard" }) : ok(student));

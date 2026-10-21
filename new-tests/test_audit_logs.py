@@ -13,12 +13,8 @@ Two layers:
   Point them only at a scratch backend, e.g. one started with
   DATABASE_URL=sqlite:///scratch.db - never at a server on shared data.
 
-Module 4 (src/components/dashboard/AuditLogs.tsx) calls ``GET /audit/?limit=200``
-and reads ``id, occurred_at, event_type, action, actor_email, severity, detail``
-from ``items``. API-SPECIFICATION.md / the public tests want
-``{items, total, limit, offset}`` with ``user_id, user_email, action,
-resource_type, resource_id, ip_address, user_agent, device_id, details,
-success, timestamp``. Both field sets are asserted here.
+Module 4 uses timestamp, user_email, action, severity and details directly.
+The documented metadata and pagination envelope remain available.
 """
 import os
 import sys
@@ -33,7 +29,7 @@ BACKEND_URL = os.getenv("TEST_BACKEND_URL")  # deliberately no default
 PASSWORD = "testpassword123"
 USER_AGENT = "audit-contract-test/1.0"
 
-MODULE4_FIELDS = {"id", "occurred_at", "event_type", "action", "actor_email", "severity", "detail"}
+MODULE4_FIELDS = {"timestamp", "user_email", "action", "severity", "details"}
 SPEC_FIELDS = {
     "id", "user_id", "user_email", "action", "resource_type", "resource_id",
     "ip_address", "user_agent", "device_id", "details", "success", "timestamp",
@@ -138,7 +134,7 @@ def test_oversized_details_stay_valid_json(unit_db):
     assert json.loads(entry.details) == {"truncated": True}
 
 
-def test_serializer_severity_event_type_and_actor_fallbacks(unit_db):
+def test_serializer_canonical_fields_and_nullable_email(unit_db):
     from app.audit import _serialize, create_audit_log
 
     def row(action, **kwargs):
@@ -149,18 +145,12 @@ def test_serializer_severity_event_type_and_actor_fallbacks(unit_db):
     assert row("checkin_flagged")["severity"] == "warning"
     assert row("checkin_approved", success=False)["severity"] == "warning"
     assert row("security_violation")["severity"] == "critical"
-    assert row("checkin_approved")["event_type"] == "checkin"
-    assert row("login_failed")["event_type"] == "authentication"
-
-    # actor_email must always be a string (Module 4 lowercases it).
-    assert row("logout")["actor_email"] == "system"
+    assert row("logout")["user_email"] is None
     attempted = row("login_failed", details={"email": "Nobody@Example.com"})
-    assert attempted["actor_email"] == "Nobody@Example.com"
     assert attempted["user_email"] is None
-
-    detail = row("checkin_attempted", details={"session_id": "s1", "risk_score": 0.15})["detail"]
-    assert detail == "session_id=s1, risk_score=0.15"
-    assert row("logout")["detail"] is None
+    assert attempted["details"] == {"email": "Nobody@Example.com"}
+    assert not {"occurred_at", "actor_email", "event_type", "detail"} & attempted.keys()
+    assert row("logout")["details"] is None
 
 
 def test_serializer_timestamps_are_explicit_utc(unit_db):
@@ -171,7 +161,6 @@ def test_serializer_timestamps_are_explicit_utc(unit_db):
     )
     item = _serialize(entry, "a@b.com")
     assert item["timestamp"] == "2024-01-15T14:05:00Z"
-    assert item["occurred_at"] == item["timestamp"]
 
 
 # =============================================================================
@@ -291,15 +280,14 @@ def test_module4_request_shape_returns_both_field_sets(api, admin):
         assert SPEC_FIELDS <= set(item)
         # Types Module 4 relies on (toLowerCase / replace / new Date / Set).
         assert isinstance(item["id"], str)
-        assert isinstance(item["event_type"], str) and item["event_type"]
         assert isinstance(item["action"], str)
-        assert isinstance(item["actor_email"], str) and item["actor_email"]
+        assert item["user_email"] is None or isinstance(item["user_email"], str)
         assert item["severity"] in SEVERITIES
-        assert item["detail"] is None or isinstance(item["detail"], str)
+        assert item["details"] is None or isinstance(item["details"], dict)
         assert isinstance(item["success"], bool)
-        assert item["timestamp"] == item["occurred_at"]
+        assert not {"occurred_at", "actor_email", "event_type", "detail"} & item.keys()
         assert item["timestamp"].endswith("Z")
-        assert _parse(item["occurred_at"]).tzinfo is not None
+        assert _parse(item["timestamp"]).tzinfo is not None
 
 
 def test_default_limit_and_newest_first_ordering(api, admin):
@@ -324,10 +312,9 @@ def test_registration_is_logged_with_request_context(api, admin):
 
     (entry,) = _events(api, admin, user_id=user["id"], action="user_created")
     assert entry["resource_type"] == "user" and entry["resource_id"] == user["id"]
-    assert entry["user_email"] == entry["actor_email"] == user["email"]
+    assert entry["user_email"] == user["email"]
     assert entry["details"] == {"role": "student"}
     assert entry["success"] is True and entry["severity"] == "info"
-    assert entry["event_type"] == "user"
     assert entry["ip_address"]
     assert entry["user_agent"] == USER_AGENT
     assert abs((_now() - _parse(entry["timestamp"]).replace(tzinfo=None)).total_seconds()) < 300
@@ -336,8 +323,7 @@ def test_registration_is_logged_with_request_context(api, admin):
 def test_login_success_is_logged(api, admin):
     user = _register(api, "student")  # registers then logs in
     (entry,) = _events(api, admin, user_id=user["id"], action="login_success")
-    assert entry["event_type"] == "authentication"
-    assert entry["actor_email"] == user["email"]
+    assert entry["user_email"] == user["email"]
 
 
 def test_failed_login_wrong_password_is_logged_without_the_password(api, admin):
@@ -361,7 +347,7 @@ def test_failed_login_unknown_email_is_logged_with_no_user(api, admin):
     assert len(matches) == 1
     entry = matches[0]
     assert entry["user_id"] is None and entry["user_email"] is None
-    assert entry["actor_email"] == email
+    assert entry["details"]["email"] == email
     assert entry["details"]["reason"] == "unknown_user"
 
 
@@ -384,7 +370,7 @@ def test_logout_is_logged_only_when_an_actor_is_identifiable(api, admin):
     user = _register(api, "student")
     assert api.post("/api/v1/auth/logout", headers=user["headers"]).status_code == 200
     (entry,) = _events(api, admin, user_id=user["id"], action="logout")
-    assert entry["actor_email"] == user["email"]
+    assert entry["user_email"] == user["email"]
 
     before = _audit(api, admin, action="logout")["total"]
     assert api.post("/api/v1/auth/logout").status_code == 200
@@ -414,7 +400,6 @@ def test_device_registration_is_logged_once(api, admin):
     (entry,) = _events(api, admin, user_id=user["id"], action="device_registered")
     assert entry["resource_type"] == "device"
     assert entry["resource_id"] == entry["device_id"] == device.json()["id"]
-    assert entry["event_type"] == "device"
 
 
 # --- Course / session / check-in scenario ----------------------------------
@@ -520,7 +505,6 @@ def test_approved_checkin_logs_attempt_then_outcome(api, admin, scenario):
         assert entry["success"] is True and entry["severity"] == "info"
         assert entry["details"]["session_id"] == scenario["session_id"]
         assert entry["details"]["risk_score"] == checkin["risk_score"]
-        assert entry["event_type"] == "checkin"
 
 
 def test_rejected_checkin_is_a_failed_warning_event(api, admin, scenario):

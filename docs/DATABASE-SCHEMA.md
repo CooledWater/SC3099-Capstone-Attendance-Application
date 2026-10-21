@@ -310,3 +310,21 @@ States are issued, processing, verified, failed, consumed. Expired records are
 pruned on challenge creation. No images, embeddings, or landmarks are stored.
 These are additive tables created by existing startup metadata creation; no
 existing column migration is needed.
+
+
+### Account invitations and durable email outbox(Added by ishita)
+
+`account_invitations` is an additive metadata table created by startup metadata
+creation; existing user/enrollment columns do not change. `user_id` VARCHAR(36)
+is the primary key and cascading FK to users; `course_id` is a nullable FK to
+courses with SET NULL on deletion. `nonce` VARCHAR(36), unique indexed
+`token_hash` VARCHAR(64), `issued_at`, `expires_at` TIMESTAMP and indexed
+`delivery_status` VARCHAR(16) are required. `used_at`, `claimed_at` TIMESTAMP
+and `delivery_error` VARCHAR(255) are nullable. Delivery states are queued,
+sending, sent and failed. No raw token, setup URL, password, email body or
+SMTP credentials are stored here. A purpose-bound signed token is regenerated
+from metadata using the existing server secret for durable delivery. Only its
+SHA-256 digest is stored for lookup. Rotation invalidates older links; password
+setup conditionally consumes the current unexpired token in the same transaction
+as the bcrypt password update. One invitation row per account prevents duplicate
+pending setup flows. Account deletion removes its invitation metadata.

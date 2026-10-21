@@ -5,6 +5,8 @@ import { CheckInTrend } from "./CheckInTrend";
 import { LiveActivity } from "./LiveActivity";
 import { StatusPie } from "./StatusPie";
 import { CourseAnalytics, type CourseStat } from "./CourseAnalytics";
+import { EnrollmentsPanel } from "./EnrollmentsPanel";
+import { ExportPanel } from "./ExportPanel";
 import { SessionsPanel } from "./SessionsPanel";
 import { CheckInsPanel } from "./CheckInsPanel";
 import { AuditLogs } from "./AuditLogs";
@@ -16,6 +18,8 @@ const tabs = [
   { id: "overview", label: "Overview" },
   { id: "sessions", label: "Sessions" },
   { id: "checkins", label: "Check-ins" },
+  { id: "enrollments", label: "Enrollments" },
+  { id: "export", label: "Export" },
   { id: "audit", label: "Audit logs" },
   { id: "metrics", label: "Metrics" },
 ] as const;
@@ -70,6 +74,7 @@ export function buildCourseStats(
 
 export function InstructorView({ userId }: { userId: string }) {
   const [tab, setTab] = useState<Tab>("overview");
+  const [selectedCourseId, setSelectedCourseId] = useState("all");
   const checkIns = useQuery({
     queryKey: ["check-ins"],
     queryFn: fetchCheckIns,
@@ -166,12 +171,14 @@ export function InstructorView({ userId }: { userId: string }) {
       )}
 
       {tab === "sessions" && (
-        <SessionsPanel rows={rows} canCreate courseIds={visibleCourseIds} currentUserId={userId} />
+        <SessionsPanel rows={rows} canCreate courseIds={visibleCourseIds} currentUserId={userId} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} />
       )}
       {tab === "checkins" && (
         <CheckInsPanel rows={rows} loading={checkIns.isLoading} courseIds={visibleCourseIds} />
       )}
+      {tab === "enrollments" && <EnrollmentsPanel courses={(courses.data ?? []).filter((course) => course.instructor_id === userId)} loading={courses.isLoading} error={courses.isError} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} canManage />}
       {tab === "audit" && <AuditLogs />}
+      {tab === "export" && <ExportPanel courses={(courses.data ?? []).filter(course => course.instructor_id === userId)} loading={courses.isLoading} error={courses.isError} />}
       {tab === "metrics" && <MetricsPanel rows={rows} />}
     </>
   );

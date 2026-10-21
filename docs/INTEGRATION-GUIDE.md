@@ -487,3 +487,29 @@ async def check_all_services():
                 results[name] = "unreachable"
     return results
 ```
+
+
+## Enrollment invitation email setup (Added by ishita)
+
+temporary fix:
+Docker Compose starts Mailpit for local testing. Open http://localhost:8025 to
+read captured invitations; messages are not forwarded to real inboxes. SMTP is
+private to the Compose network. Backend defaults use SMTP_HOST=mailpit,
+SMTP_PORT=1025, SMTP_SECURITY=none, SMTP_FROM=attendance@example.test and
+DASHBOARD_APP_URL=http://localhost:8501. Invitation links open Module 4's
+`/setup-account` page. Set DASHBOARD_APP_URL to the dashboard origin reachable
+by the recipient when using another environment.
+
+External delivery can be configured through root .env: SMTP_HOST, SMTP_PORT,
+SMTP_SECURITY (starttls or ssl), SMTP_FROM, SMTP_USERNAME, SMTP_PASSWORD and
+DASHBOARD_APP_URL. Do not commit credentials. A sent status means SMTP accepted
+the message. Rotate the existing JWT secret only with awareness that outstanding
+setup links become invalid and must be reissued. Local inbox messages contain
+live setup links; the Mailpit web port is bound to 127.0.0.1 only.
+
+Enrollment commits and queued invitations are atomic. A background worker
+reconstructs the signed link from invitation metadata, claims one delivery,
+releases its database connection, then contacts SMTP. Delivery status updates
+are conditional on the same token digest so old delivery attempts cannot
+replace the status of a newer invitation. Enrollment and invite status are
+separate in the dashboard. Removing enrollment retains attendance history.

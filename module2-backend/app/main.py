@@ -13,11 +13,13 @@ import io
 import json
 import math
 import os
+import re
 import secrets
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, Depends, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import engine, Base, get_db, get_read_db
+from app.session_lifecycle import session_lifespan, get_session_db
 from app import models
 from app.models import User, Course, Enrollment, Session as SessionModel, CheckIn, Device
 from app.schemas import (
@@ -65,22 +68,25 @@ from app.auth import (
     create_access_token,
     create_refresh_token,
     get_current_user,
+    get_read_current_user,
     require_roles
 )
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats
+from app import audit, motion, prometheus_metrics, stats, invitations
 from app.audit import create_audit_log
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
+    lifespan=session_lifespan,
     title="SAIV Backend API",
     description="Secure Attendance & Identity Verification System",
     version="1.0.0"
 )
 
+app.include_router(invitations.router)
 app.include_router(motion.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
@@ -91,6 +97,8 @@ app.add_middleware(audit.AuditContextMiddleware)
 
 @app.exception_handler(RequestValidationError)
 async def safe_motion_validation(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith('/api/v1/auth/invitations/'):
+        return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. Passwords must contain 8 to 72 characters.'})
     if request.url.path.startswith('/api/v1/motion/'):
         return JSONResponse(status_code=422, content={'detail': 'Invalid motion sequence. Capture again.'})
     return await request_validation_exception_handler(request, exc)
@@ -103,6 +111,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 REFRESH_COOKIE_NAME = "saiv_refresh_token"
@@ -196,9 +205,14 @@ def login_user(
     request: Request,
     db: Session = Depends(get_db)
 ):
-    user = db.query(User).filter(
-        User.email == login_data.email
-    ).first()
+    row = db.query(User, invitations.AccountInvitation.user_id, invitations.AccountInvitation.used_at).outerjoin(
+        invitations.AccountInvitation, invitations.AccountInvitation.user_id == User.id,
+    ).filter(User.email == login_data.email).first()
+    user = row[0] if row else None
+    if user and row[1] is not None and row[2] is None:
+        create_audit_log(db, "login_failed", user.id, success=False, commit=True,
+                         details={"reason": "invitation_pending"})
+        raise HTTPException(403, "Set your password using the account invitation before signing in")
 
     if not user:
         create_audit_log(
@@ -791,6 +805,7 @@ def _serialize_course(
         "code": course.code,
         "name": course.name,
         "semester": course.semester,
+        "semester_start_date": os.getenv("SEMESTER_START_DATE") or None,
         "instructor_id": course.instructor_id,
         "instructor_name": instructor_name,
         "venue_name": course.venue_name,
@@ -961,13 +976,16 @@ def _serialize_enrollment(enrollment: Enrollment) -> dict:
 def _create_enrollment(
     db: Session, student_id: str, course_id: str, actor_id: str | None = None
 ) -> Enrollment:
-    student = db.query(User).filter(User.id == student_id).first()
+    student = db.query(User).filter(User.id == student_id).with_for_update().first()
 
     if not student:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found"
         )
+
+    if student.role != "student" or not student.is_active:
+        raise HTTPException(400, "Choose an active student account")
 
     existing = db.query(Enrollment).filter(
         Enrollment.student_id == student_id,
@@ -991,12 +1009,16 @@ def _create_enrollment(
         new_enrollment = Enrollment(student_id=student_id, course_id=course_id)
         db.add(new_enrollment)
 
-    db.flush()  # assigns new_enrollment.id so the audit row can reference it
-    create_audit_log(
-        db, "enrollment_added", actor_id, new_enrollment.id,
-        details={"student_id": student_id, "course_id": course_id}
-    )
-    db.commit()
+    try:
+        db.flush()  # assigns the ID; the unique student/course index handles races
+        create_audit_log(
+            db, "enrollment_added", actor_id, new_enrollment.id,
+            details={"student_id": student_id, "course_id": course_id}
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(400, "Student already enrolled")
     db.refresh(new_enrollment)
 
     return new_enrollment
@@ -1063,7 +1085,7 @@ def bulk_enroll_students(
     emails = list(dict.fromkeys(payload.student_emails))
     users_by_email = {
         user.email: user
-        for user in db.query(User).filter(User.email.in_(emails)).all()
+        for user in db.query(User).filter(User.email.in_(emails)).order_by(User.id).with_for_update().all()
     }
     enrollments_by_student = {
         enrollment.student_id: enrollment
@@ -1103,7 +1125,13 @@ def bulk_enroll_students(
                     db, "user_created", actor_id, student.id,
                     details={"role": "student", "bulk_enrollment": True}
                 )
+                invitations.queue_invitation(db, student.id, course.id)
                 account_created = True
+
+            if student.role != "student" or not student.is_active:
+                counts["not_found"] += 1
+                details.append({"email": email, "status": "not_found", "error": "Account is not an active student"})
+                continue
 
             enrollment = enrollments_by_student.get(student.id)
             if enrollment is not None and enrollment.is_active:
@@ -1129,7 +1157,9 @@ def bulk_enroll_students(
                 counts["created"] += 1
             details.append({
                 "email": email,
-                "status": "created" if account_created else "enrolled"
+                "status": "created" if account_created else "enrolled",
+                "invitation_status": "queued" if account_created else "not_needed",
+                "invitation_pending": account_created,
             })
 
         db.commit()
@@ -1149,7 +1179,7 @@ def delete_enrollment(
     current_user: User = Depends(require_roles("instructor", "admin")),
     db: Session = Depends(get_db)
 ):
-    enrollment = db.query(Enrollment).filter(Enrollment.id == enrollment_id).first()
+    enrollment = db.query(Enrollment).filter(Enrollment.id == enrollment_id).with_for_update().first()
 
     if not enrollment or not enrollment.is_active:
         raise HTTPException(
@@ -1230,44 +1260,53 @@ def list_my_enrollments(
 @app.get("/api/v1/enrollments/course/{course_id}")
 def list_course_enrollments(
     course_id: str,
-    current_user: User = Depends(require_roles("instructor", "ta", "admin")),
-    db: Session = Depends(get_db)
+    is_active: bool | Literal["all"] = True,
+    search: str | None = None,
+    current_user: User = Depends(require_roles("instructor", "ta", "admin", read_only=True)),
+    db: Session = Depends(get_read_db)
 ):
     course = db.query(Course).filter(Course.id == course_id).first()
-
     if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+        raise HTTPException(404, "Course not found")
+    if current_user.role == "instructor" and course.instructor_id != current_user.id:
+        raise HTTPException(403, "Insufficient permissions")
+    if current_user.role == "ta":
+        # Fail closed until an explicit assignment mechanism is configured.
+        raise HTTPException(403, "No TA course assignment is available")
 
-    enrollments = db.query(Enrollment).filter(
+    counts = dict(db.query(Enrollment.is_active, func.count(Enrollment.id)).filter(
         Enrollment.course_id == course_id,
-        Enrollment.is_active == True
-    ).all()
-
-    students = []
-
-    for enrollment in enrollments:
-        student = db.query(User).filter(User.id == enrollment.student_id).first()
-        if not student:
-            continue
-
-        students.append({
-            "id": enrollment.id,
-            "student_id": student.id,
-            "student_email": student.email,
-            "student_name": student.full_name,
-            "enrolled_at": enrollment.enrolled_at,
-            "is_active": enrollment.is_active,
-            "face_enrolled": student.face_enrolled
-        })
-
+    ).group_by(Enrollment.is_active).all())
+    query = db.query(Enrollment, User).join(User, User.id == Enrollment.student_id).filter(
+        Enrollment.course_id == course_id,
+    )
+    if is_active != "all":
+        query = query.filter(Enrollment.is_active == is_active)
+    if search and search.strip():
+        term = search.strip().lower()
+        query = query.filter(or_(
+            func.lower(User.full_name).contains(term, autoescape=True),
+            func.lower(User.email).contains(term, autoescape=True),
+        ))
+    rows = query.order_by(func.lower(User.full_name), Enrollment.id).all()
+    students = [{
+        "id": enrollment.id,
+        "student_id": student.id,
+        "student_email": student.email,
+        "student_name": student.full_name,
+        "enrolled_at": enrollment.enrolled_at,
+        "is_active": enrollment.is_active,
+        "face_enrolled": student.face_enrolled,
+    } for enrollment, student in rows]
     return {
         "course_id": course.id,
         "course_code": course.code,
-        "total_enrolled": len(students),
-        "students": students
+        "total_enrolled": counts.get(True, 0),
+        "total_records": sum(counts.values()),
+        "active_count": counts.get(True, 0),
+        "inactive_count": counts.get(False, 0),
+        "matching_count": len(students),
+        "students": students,
     }
 
 
@@ -1318,8 +1357,9 @@ def _effective_venue(session: SessionModel, course: Course | None) -> dict:
     }
 
 
-def _serialize_session(db: Session, session: SessionModel) -> dict:
-    course = db.query(Course).filter(Course.id == session.course_id).first()
+def _serialize_session(db: Session, session: SessionModel, context=None) -> dict:
+    course = (context["courses"].get(session.course_id) if context is not None
+              else db.query(Course).filter(Course.id == session.course_id).first())
     venue = _effective_venue(session, course)
 
     return {
@@ -1332,13 +1372,15 @@ def _serialize_session(db: Session, session: SessionModel) -> dict:
         "status": session.status,
         "scheduled_start": session.scheduled_start,
         "scheduled_end": session.scheduled_end,
+        "actual_start": session.actual_start,
+        "actual_end": session.actual_end,
         "checkin_opens_at": session.checkin_opens_at,
         "checkin_closes_at": session.checkin_closes_at,
         "venue_latitude": venue["latitude"],
         "venue_longitude": venue["longitude"],
         "venue_name": venue["name"],
         "geofence_radius_meters": venue["radius_meters"],
-        "require_motion_check": motion.required(db, session.id),
+        "require_motion_check": (session.id in context["motion"] if context is not None else motion.required(db, session.id)),
         "require_liveness_check": session.require_liveness_check,
         "require_face_match": session.require_face_match,
         "risk_threshold": venue["risk_threshold"],
@@ -1346,19 +1388,31 @@ def _serialize_session(db: Session, session: SessionModel) -> dict:
     }
 
 
-def _serialize_session_summary(db: Session, session: SessionModel) -> dict:
-    detail = _serialize_session(db, session)
-    course = db.query(Course).filter(Course.id == session.course_id).first()
-    total_enrolled = db.query(Enrollment).filter(
-        Enrollment.course_id == session.course_id,
-        Enrollment.is_active == True
-    ).count()
+def _session_summary_context(db, sessions):
+    course_ids = {session.course_id for session in sessions}
+    session_ids = [session.id for session in sessions]
+    if not sessions:
+        return {"courses": {}, "enrolled": {}, "motion": set()}
+    return {
+        "courses": {course.id: course for course in db.query(Course).filter(Course.id.in_(course_ids)).all()},
+        "enrolled": dict(db.query(Enrollment.course_id, func.count(Enrollment.id)).filter(
+            Enrollment.course_id.in_(course_ids), Enrollment.is_active == True,
+        ).group_by(Enrollment.course_id).all()),
+        "motion": {row[0] for row in db.query(motion.MotionPolicy.session_id).filter(
+            motion.MotionPolicy.session_id.in_(session_ids), motion.MotionPolicy.required == True,
+        ).all()},
+    }
 
+
+def _serialize_session_summary(db: Session, session: SessionModel, context=None) -> dict:
+    context = context if context is not None else _session_summary_context(db, [session])
+    detail = _serialize_session(db, session, context)
+    course = context["courses"].get(session.course_id)
     return {
         **detail,
         "course_code": course.code if course else None,
         "course_name": course.name if course else None,
-        "total_enrolled": total_enrolled
+        "total_enrolled": context["enrolled"].get(session.course_id, 0),
     }
 
 
@@ -1383,6 +1437,9 @@ def create_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Course not found"
         )
+
+    if current_user.role == "instructor" and course.instructor_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     scheduled_start = _to_naive_utc(session_data.scheduled_start)
     scheduled_end = _to_naive_utc(session_data.scheduled_end)
@@ -1450,7 +1507,7 @@ def create_session(
 
 
 @app.get("/api/v1/sessions/active")
-def list_active_sessions(db: Session = Depends(get_db)):
+def list_active_sessions(db: Session = Depends(get_read_db)):
     now = datetime.utcnow()
 
     sessions = db.query(SessionModel).filter(
@@ -1459,7 +1516,8 @@ def list_active_sessions(db: Session = Depends(get_db)):
         SessionModel.checkin_closes_at >= now
     ).all()
 
-    return [_serialize_session_summary(db, session) for session in sessions]
+    context = _session_summary_context(db, sessions)
+    return [_serialize_session_summary(db, session, context) for session in sessions]
 
 
 @app.get("/api/v1/sessions/")
@@ -1471,8 +1529,8 @@ def list_sessions(
     end_date: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(require_roles("ta", "instructor", "admin")),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(require_roles("ta", "instructor", "admin", read_only=True)),
+    db: Session = Depends(get_read_db)
 ):
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
@@ -1493,6 +1551,8 @@ def list_sessions(
     total = query.count()
     sessions = query.offset(offset).limit(limit).all()
 
+    context = _session_summary_context(db, sessions)
+
     # One grouped query for the whole page (spec: checked_in_count per session).
     checked_in_counts = dict(
         db.query(CheckIn.session_id, func.count(CheckIn.id))
@@ -1504,7 +1564,7 @@ def list_sessions(
     return {
         "items": [
             {
-                **_serialize_session_summary(db, session),
+                **_serialize_session_summary(db, session, context),
                 "checked_in_count": checked_in_counts.get(session.id, 0)
             }
             for session in sessions
@@ -1522,8 +1582,8 @@ def list_my_sessions(
     ),
     upcoming: bool = False,
     limit: int = 50,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_read_current_user),
+    db: Session = Depends(get_read_db)
 ):
     limit = max(1, min(limit, 100))
 
@@ -1555,14 +1615,15 @@ def list_my_sessions(
 
     sessions = query.limit(limit).all()
 
-    return [_serialize_session_summary(db, session) for session in sessions]
+    context = _session_summary_context(db, sessions)
+    return [_serialize_session_summary(db, session, context) for session in sessions]
 
 
 @app.get("/api/v1/sessions/{session_id}")
 def get_session(
     session_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_read_current_user),
+    db: Session = Depends(get_read_db)
 ):
     session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
 
@@ -1580,9 +1641,9 @@ def update_session(
     session_id: str,
     update_data: SessionUpdate,
     current_user: User = Depends(require_roles("instructor", "admin")),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_session_db)
 ):
-    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    session = db.query(SessionModel).filter(SessionModel.id == session_id).with_for_update().first()
 
     if not session:
         raise HTTPException(
@@ -1639,6 +1700,16 @@ def update_session(
         if updates.get(field) is not None:
             updates[field] = _to_naive_utc(updates[field])
 
+    timing_fields = {"scheduled_start", "scheduled_end", "checkin_opens_at", "checkin_closes_at"}
+    if timing_fields.intersection(updates):
+        proposed = {field: updates.get(field, getattr(session, field)) for field in timing_fields}
+        if any(value is None for value in proposed.values()):
+            raise HTTPException(422, "Session times cannot be null")
+        if proposed["scheduled_end"] <= proposed["scheduled_start"]:
+            raise HTTPException(400, "scheduled_end must be after scheduled_start")
+        if proposed["checkin_closes_at"] <= proposed["checkin_opens_at"]:
+            raise HTTPException(400, "checkin_closes_at must be after checkin_opens_at")
+
     motion_required = updates.pop("require_motion_check", None)
     if motion_required is not None:
         policy = db.get(motion.MotionPolicy, session.id)
@@ -1669,7 +1740,7 @@ def update_session(
 def delete_session(
     session_id: str,
     current_user: User = Depends(require_roles("instructor", "admin")),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_session_db)
 ):
     # Lock the session so concurrent status changes cannot bypass these checks.
     session = db.query(SessionModel).filter(
@@ -2004,7 +2075,7 @@ def _combine_checkin_assessment(
 def create_checkin(
     checkin_data: CheckInCreate,
     current_user: User = Depends(require_roles("student")),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_session_db)
 ):
     # Session, its course, and the enrollment/duplicate-checkin flags all in
     # one round trip: each network round trip to the (remote) database costs
@@ -2840,7 +2911,7 @@ def _records_csv_response(records: list[dict], filename: str) -> Response:
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}"}
     )
 
 
@@ -2970,32 +3041,24 @@ def export_course_attendance(
         )
 
     actor_id = current_user.id
-    scope = _instructor_checkin_scope(current_user)
+    if current_user.role == "instructor" and course.instructor_id != actor_id:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
-    # Same visibility rule as the session export: an instructor needs the
-    # course (or an unassigned course) or at least one session in it they own.
-    if current_user.role == "instructor" and course.instructor_id not in (None, actor_id):
-        owns_session = db.query(SessionModel.id).filter(
-            SessionModel.course_id == course.id,
-            SessionModel.instructor_id == actor_id
-        ).first()
-        if not owns_session:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions"
-            )
-
-    start = _to_naive_utc(start_date) if start_date else None
-    end = _to_naive_utc(end_date) if end_date else None
+    singapore = timezone(timedelta(hours=8))
+    semester_start = os.getenv("SEMESTER_START_DATE", "")
+    start = (_to_naive_utc(start_date) if start_date else
+             _to_naive_utc(datetime.combine(date.fromisoformat(semester_start), time.min, singapore))
+             if semester_start else None)
+    end = (_to_naive_utc(end_date) if end_date else
+           _to_naive_utc(datetime.combine(datetime.now(singapore).date(), time.max, singapore)))
     if start and end and start > end:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="start_date must not be after end_date"
         )
 
-    # The schema has no semester dates, so without start_date/end_date every
-    # session of the course is exported. Dates filter on the session start.
-    filters = [SessionModel.course_id == course.id, *scope]
+    # Inclusive timestamp boundaries filter session start times, not check-in times.
+    filters = [SessionModel.course_id == course.id]
     if start:
         filters.append(SessionModel.scheduled_start >= start)
     if end:
@@ -3026,7 +3089,8 @@ def export_course_attendance(
     ]
 
     if export_format == "csv":
-        response = _records_csv_response(records, f"course-{course.id}-attendance.csv")
+        course_name = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", course.name).strip().strip(".") or "Course"
+        response = _records_csv_response(records, f"{course_name} attendance.csv")
     else:
         # Spec: format=json returns a JSON array.
         response = records

@@ -41,7 +41,7 @@ def world():
     namespace = {
         "app": FastAPI(), "Depends": Depends, "HTTPException": HTTPException,
         "Response": Response, "status": status, "User": SimpleNamespace,
-        "Session": object, "get_db": lambda: db,
+        "Session": object, "get_db": lambda: db, "get_session_db": lambda: db,
         "get_current_user": lambda: actor, "get_read_current_user": lambda: actor,
         "SessionModel": models["SessionModel"], "CheckIn": models["CheckIn"],
         "motion": SimpleNamespace(MotionChallenge=models["MotionChallenge"],

@@ -510,7 +510,7 @@ def test_bulk_enroll_create_accounts(api, world):
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["created"] == 1 and data["enrolled"] == 1
-    assert data["details"] == [{"email": unknown, "status": "created"}]
+    assert data["details"] == [{"email": unknown, "status": "created", "invitation_status": "queued", "invitation_pending": True}]
 
 
 def test_bulk_enroll_permissions_and_validation(api, world):
@@ -546,6 +546,39 @@ def test_delete_enrollment_then_re_enroll(api, world):
 
 # --- Course export -----------------------------------------------------------
 
+def test_course_export_boundaries_and_validation(api, world):
+    url = f"/api/v1/export/attendance/{world['course_id']}"
+    stamp = world["session"]["scheduled_start"]
+    params = {"format": "json", "start_date": stamp, "end_date": stamp}
+    exact = api.get(url, headers=world["instructor"]["headers"], params=params)
+    assert exact.status_code == 200, exact.text
+    # Earlier tests may add check-ins to this shared module fixture.
+    assert {student["id"] for student in world["students"].values()} <= {
+        record["student_id"] for record in exact.json()
+    }
+    assert all(record["session_name"] == world["session"]["name"] for record in exact.json())
+    instant = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    local_day = instant.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+    params.update(start_date=local_day + "T00:00:00+08:00", end_date=local_day + "T23:59:59.999999+08:00")
+    whole_day = api.get(url, headers=world["instructor"]["headers"], params=params)
+    assert whole_day.status_code == 200 and whole_day.json() == exact.json()
+    for bad in ({"format": "xml"}, {"start_date": "bad"}, {"end_date": "bad"}):
+        assert api.get(url, headers=world["admin"]["headers"], params=bad).status_code == 422
+    assert api.get(url, headers=world["ta"]["headers"]).status_code == 403
+    assert api.get(url).status_code in (401, 403)
+
+
+def test_course_export_unassigned_is_admin_only(api, world):
+    result = api.post("/api/v1/courses/", headers=world["admin"]["headers"], json={
+        "code": "EX" + uuid.uuid4().hex[:8], "name": "Unassigned export course", "semester": "Test"})
+    assert result.status_code == 201, result.text
+    url = f"/api/v1/export/attendance/{result.json()['id']}"
+    assert api.get(url, headers=world["instructor"]["headers"]).status_code == 403
+    admin = api.get(url, headers=world["admin"]["headers"], params={"format": "json"})
+    assert admin.status_code == 200 and admin.json() == []
+
 def test_export_course_attendance_csv_and_json(api, world):
     url = f"/api/v1/export/attendance/{world['course_id']}"
     csv_response = api.get(url, headers=world["instructor"]["headers"])
@@ -566,7 +599,8 @@ def test_export_course_attendance_csv_and_json(api, world):
 def test_export_course_attendance_date_filter_and_access(api, world):
     url = f"/api/v1/export/attendance/{world['course_id']}"
     future = _iso(_now() + timedelta(days=30))
-    empty = api.get(url, headers=world["admin"]["headers"], params={"format": "json", "start_date": future})
+    empty = api.get(url, headers=world["admin"]["headers"], params={"format": "json", "start_date": future,
+                    "end_date": _iso(_now() + timedelta(days=31))})
     assert empty.status_code == 200 and empty.json() == []
     assert api.get(url, headers=world["admin"]["headers"], params={
         "start_date": future, "end_date": _iso(_now())}).status_code == 400

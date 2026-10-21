@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.orm import Session
-from app.database import Base, get_db
+from app.database import Base
+from app.session_lifecycle import get_session_db
 from app.auth import require_roles
 from app.models import User, Session as AttendanceSession, Enrollment, CheckIn
 from app.face_service import face_service, LivenessResult, FaceMatchResult, RiskResult
@@ -79,7 +80,7 @@ def eligible(db, user, session_id):
 
 
 @router.post('/challenges', status_code=201)
-def start(payload: StartChallenge, user: User = Depends(require_roles('student')), db: Session = Depends(get_db)):
+def start(payload: StartChallenge, user: User = Depends(require_roles('student')), db: Session = Depends(get_session_db)):
     session = eligible(db, user, payload.session_id)
     # Serialize issuance per user so concurrent retries cannot leave two active attempts.
     db.query(User).filter_by(id=user.id).with_for_update().first()
@@ -93,7 +94,7 @@ def start(payload: StartChallenge, user: User = Depends(require_roles('student')
 
 
 @router.post('/challenges/{challenge_id}/verify')
-def verify(challenge_id: str, payload: Sequence, user: User = Depends(require_roles('student')), db: Session = Depends(get_db)):
+def verify(challenge_id: str, payload: Sequence, user: User = Depends(require_roles('student')), db: Session = Depends(get_session_db)):
     item = db.get(MotionChallenge, challenge_id)
     if not item or item.user_id != user.id:
         raise HTTPException(404, 'Challenge not found')

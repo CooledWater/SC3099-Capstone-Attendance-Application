@@ -491,6 +491,18 @@ Instructors may change `course_id` only to a course they teach, and only while t
 is scheduled and has no check-ins. `total_enrolled` / expected attendance is derived from
 the course's active enrollments and is not an editable session field.
 
+Sessions automatically become `active` at `scheduled_start` and `closed` at
+`scheduled_end`. The backend reconciles persisted schedules at startup, every
+second, and before session mutations, check-ins and motion challenges.
+Session-list and detail reads use read-only connections and do not run scheduler
+updates; they display the last persisted status. Missed transitions after downtime are applied in order. Cancelled
+and manually closed sessions stay terminal. Automatic transitions append
+`session_updated` audit entries and use scheduled times for actual start/end.
+Manual status endpoints remain available for compatibility and early closing.
+Custom check-in windows remain independent; a closed session never accepts
+check-ins. Dashboard-created sessions explicitly use the entire scheduled
+interval as their check-in window and accept a duration in minutes.
+
 **Status Transitions:**
 - `scheduled` → `active`: Opens check-in window
 - `active` → `closed`: Closes check-in, finalizes attendance
@@ -994,7 +1006,7 @@ Get all students enrolled in a course. **Requires auth (instructor/TA for course
 **Query Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `is_active` | boolean | true | Filter by enrollment status |
+| `is_active` | boolean | true | Filter by enrollment status (`true`, `false`, or `all`) |
 | `search` | string | - | Search by student name/email |
 
 **Response:** `200 OK`
@@ -1003,6 +1015,10 @@ Get all students enrolled in a course. **Requires auth (instructor/TA for course
   "course_id": "uuid",
   "course_code": "CS6101",
   "total_enrolled": 50,
+  "total_records": 52,
+  "active_count": 50,
+  "inactive_count": 2,
+  "matching_count": 50,
   "students": [
     {
       "id": "uuid",
@@ -1016,6 +1032,14 @@ Get all students enrolled in a course. **Requires auth (instructor/TA for course
   ]
 }
 ```
+
+`total_enrolled` and `active_count` count all active enrollments in the course.
+`total_records` includes active and inactive records, and `matching_count` counts
+the returned students after filtering. The roster is not paginated or truncated.
+Search matches name/email case-insensitively and treats SQL wildcard characters
+literally. Instructor access requires `course.instructor_id` to match the caller;
+unassigned courses are admin-only. The project has no TA assignment model, so
+TA roster requests fail closed (403) until explicit course assignments exist.
 
 #### POST /enrollments/
 Enroll a student in a course. **Requires auth (instructor for course, or admin).**
@@ -1065,10 +1089,57 @@ Bulk enroll students by email. **Requires auth (instructor for course, or admin)
 }
 ```
 
+Repeated validated email addresses are processed once. Existing inactive
+enrollments are reactivated. Non-student or disabled accounts are reported as
+`not_found` with an explanatory per-email error. Missing accounts are reported
+as `not_found` unless `create_accounts=true`. Successful entries and audit rows
+commit together; concurrent unique-constraint conflicts roll back the batch
+and return 409, so clients can retry. Single enrollment conflicts return 400.
+New accounts receive a queued email invitation. Accounts and enrollments commit
+before delivery; SMTP failure does not undo enrollment. New-account results add
+`invitation_status: "queued"` and `invitation_pending: true`. Pending accounts
+cannot log in until password setup completes. Existing usable accounts are not
+sent setup invitations and their passwords cannot be reset through this flow.
+
 #### DELETE /enrollments/{enrollment_id}
-Remove an enrollment. **Requires auth (instructor for course, or admin).**
+Deactivate an enrollment (`is_active=false`, with `dropped_at` recorded). Attendance history is retained. Re-enrollment reactivates the existing record. **Requires auth (instructor for course, or admin).**
 
 **Response:** `204 No Content`
+
+---
+
+### Enrollment invitation setup (Added by ishita)
+
+- `GET /enrollments/course/{course_id}/invitations`: owning instructor/admin;
+  returns `items` containing email, invitation_status, invitation_pending and
+  invitation_error (nullable). States: queued, sending, sent, failed, not_needed.
+- `POST /enrollments/invitations/resend`: owning instructor/admin; body
+  `{ "course_id": "uuid", "email": "student@example.edu" }`. Requires an
+  active enrollment and pending account setup. Rotates the link and queues
+  delivery; returns the invitation status. Returns 403 for an unrelated course,
+  400 for no pending setup, and 429 with Retry-After for resends within 60 seconds.
+- `POST /auth/invitations/validate`: public; body `{ "token": "..." }`;
+  returns `{ "email": "..." }` for a valid invitation, otherwise 400.
+- `POST /auth/invitations/complete`: public; body `{ "token": "...", "password": "..." }`;
+  accepts 8-72 characters and at most 72 UTF-8 bytes. Atomically consumes the
+  token and sets a bcrypt password. Returns email and a success message, 400
+  for expired/used/tampered links, or sanitized 422 for invalid input. The
+  frontend then uses the existing login endpoint and cookie flow.
+- `POST /auth/invitations/request`: public; body `{ "email": "..." }`;
+  returns the same generic message for unknown, completed, disabled and pending
+  accounts. Only eligible pending accounts receive another invitation. Requests
+  are limited to five per IP per minute per backend worker, and rotation has a
+  persisted 60-second cooldown per account.
+
+Links expire after 24 hours, are single-use and purpose-bound, and place their
+token in the URL fragment (`/setup-account#token=...`) so HTTP request URLs do
+not contain it. The page clears the fragment after loading. Tokens, passwords
+and SMTP exceptions are excluded from audit details and invitation error output.
+A durable outbox retries interrupted `sending` claims after two minutes. Failed
+SMTP deliveries require resend; sent means accepted by SMTP, not that a user
+has read the email. Delivery worker checks run every three seconds. Only newly
+provisioned accounts use this flow; it is not a password-reset mechanism for
+existing users.
 
 ---
 
@@ -1101,6 +1172,7 @@ Get audit logs with comprehensive filtering. **Requires auth (admin only).**
       "user_id": "uuid",
       "user_email": "student@example.com",
       "action": "checkin_attempted",
+      "severity": "info",
       "resource_type": "checkin",
       "resource_id": "uuid",
       "ip_address": "192.168.1.1",
@@ -1119,6 +1191,14 @@ Get audit logs with comprehensive filtering. **Requires auth (admin only).**
   "offset": 0
 }
 ```
+
+The dashboard and CSV export use `timestamp`, `user_email`, `action`,
+`severity`, and `details`. `timestamp` is ISO 8601 UTC with a `Z` suffix;
+`user_email` is null for system events or unknown users; `details` is a JSON
+object or null. Severity is `info`, `warning`, or `critical`, derived from the
+action and success flag. The response retains the documented metadata and
+pagination fields. The former UI aliases `occurred_at`, `actor_email`,
+`event_type`, and `detail` are not returned.
 
 **Audit Actions:**
 | Action | Description |
@@ -1149,7 +1229,8 @@ Get audit logs with comprehensive filtering. **Requires auth (admin only).**
 Data export endpoints for reporting.
 
 #### GET /export/attendance/{course_id}
-Export attendance data for a course. **Requires auth (instructor for course).**
+Export attendance data for a course. **Requires auth (assigned course instructor or admin).**
+Unassigned courses are admin-only. TA and student access is forbidden.
 
 **Query Parameters:**
 | Parameter | Type | Default | Description |
@@ -1161,6 +1242,17 @@ Export attendance data for a course. **Requires auth (instructor for course).**
 **Response:** `200 OK`
 - `format=csv`: Returns CSV file download
 - `format=json`: Returns JSON array
+
+Date bounds are inclusive and filter the session's scheduled start, rather than
+the check-in timestamp. Offset-aware timestamps are converted to UTC; naive
+timestamps are treated as UTC. The dashboard submits midnight through
+23:59:59.999999 with `+08:00` for the selected Singapore dates.
+Omitted `start_date` uses `SEMESTER_START_DATE` at Singapore midnight; if not
+configured, it has no lower bound. Omitted `end_date` uses the end of today in
+Singapore. Invalid date/format parameters return 422; a reversed range returns 400.
+The shared semester start is also returned as `semester_start_date` on courses.
+JSON array items contain the same eight fields as CSV, with `risk_score` numeric
+and `checked_in_at` a UTC ISO8601 timestamp. Empty JSON is `[]`; empty CSV has headers only.
 
 **CSV Columns:**
 ```csv

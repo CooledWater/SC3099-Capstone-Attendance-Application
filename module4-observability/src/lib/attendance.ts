@@ -48,6 +48,7 @@ export type ActiveSession = {
   checkin_closes_at: string;
 };
 export type CourseRow = {
+  semester_start_date?: string | null;
   id: string;
   code: string;
   name: string;
@@ -149,11 +150,15 @@ export async function fetchCheckIns() {
 }
 export const fetchMyCheckIns = () => api.request<RawCheckIn[]>("/checkins/my-checkins?limit=100");
 export async function fetchCourses() {
-  return (
-    await api.request<{
-      items: CourseRow[];
-    }>("/courses/?limit=100")
-  ).items;
+  const items: CourseRow[] = [];
+  let total = Infinity;
+  while (items.length < total) {
+    const page = await api.request<{ items: CourseRow[]; total: number }>(`/courses/?limit=100&offset=${items.length}`);
+    items.push(...page.items);
+    total = page.total;
+    if (!page.items.length) break;
+  }
+  return items;
 }
 export const fetchMyEnrollments = () => api.request<EnrollmentRow[]>("/enrollments/my-enrollments");
 export const fetchActiveSessions = () => api.request<ActiveSession[]>("/sessions/active");

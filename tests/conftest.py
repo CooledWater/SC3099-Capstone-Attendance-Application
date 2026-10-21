@@ -300,7 +300,7 @@ def auth_headers_admin(http_client, test_admin) -> Dict[str, str]:
 # =============================================================================
 
 @pytest.fixture
-def test_course(http_client, auth_headers_admin) -> Dict[str, Any]:
+def test_course(http_client, auth_headers_admin, test_instructor) -> Dict[str, Any]:
     """
     Create a test course via API.
 
@@ -312,6 +312,7 @@ def test_course(http_client, auth_headers_admin) -> Dict[str, Any]:
     course_data = {
         "code": f"CS{uuid.uuid4().hex[:4].upper()}",
         "name": "Test Course",
+        "instructor_id": test_instructor["id"],
         "semester": "AY2024-25 Sem 1",
         "venue_latitude": 1.3483,  # NTU coordinates
         "venue_longitude": 103.6831,

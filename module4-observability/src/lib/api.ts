@@ -41,15 +41,23 @@ export function clearAccessToken() {
   accessToken = null;
 }
 
-async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  retry = true,
+  responseType: "json" | "text" | "response" = "json",
+): Promise<T> {
   const token = getAccessToken();
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 15000);
+  const abortFromCaller = () => controller.abort();
+  if (init.signal?.aborted) controller.abort();
+  else init.signal?.addEventListener("abort", abortFromCaller, { once: true });
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
-      signal: init.signal ?? controller.signal,
+      signal: controller.signal,
       credentials: "include",
       headers: {
         Accept: "application/json",
@@ -58,29 +66,41 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
         ...init.headers,
       },
     });
+    if (
+      response.status === 401 &&
+      retry &&
+      !path.startsWith("/auth/") &&
+      (await refreshDashboard())
+    ) {
+      return await request<T>(path, init, false, responseType);
+    }
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as {
+        detail?: string;
+        message?: string;
+      } | null;
+      throw new ApiError(
+        response.status,
+        payload?.detail ?? payload?.message ?? `Request failed (${response.status})`,
+      );
+    }
+    if (response.status === 204) return undefined as T;
+    if (responseType === "response") {
+      // Read the body while timeout/caller cancellation still apply. The caller
+      // receives the same server bytes and headers in a consumable response.
+      const body = await response.blob();
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      }) as T;
+    }
+    if (responseType === "text") return (await response.text()) as T;
+    return (await response.json()) as T;
   } finally {
     window.clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", abortFromCaller);
   }
-  if (
-    response.status === 401 &&
-    retry &&
-    !path.startsWith("/auth/") &&
-    (await refreshDashboard())
-  ) {
-    return request<T>(path, init, false);
-  }
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as {
-      detail?: string;
-      message?: string;
-    } | null;
-    throw new ApiError(
-      response.status,
-      payload?.detail ?? payload?.message ?? `Request failed (${response.status})`,
-    );
-  }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
 }
 
 async function obtainSession(path: string) {
@@ -121,6 +141,9 @@ async function restoreSession(): Promise<CurrentUser | null> {
 
 export const api = {
   request,
+  response: (path: string, init: RequestInit = {}) =>
+    request<Response>(path, init, true, "response"),
+  text: (path: string) => request<string>(path, { headers: { Accept: "text/csv" } }, true, "text"),
   restoreSession() {
     if (!restorationInFlight) {
       restorationInFlight = restoreSession().finally(() => {

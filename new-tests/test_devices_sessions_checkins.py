@@ -193,6 +193,14 @@ def test_students_cannot_list_sessions_and_students_and_tas_cannot_create(api, w
         assert api.post("/api/v1/sessions/", headers=who["headers"], json={}).status_code in (403, 422)
 
 
+def test_session_creation_requires_course_assignment_except_admin(api, world):
+    start = _now() + timedelta(hours=1)
+    payload = {"course_id": world["other_course_id"], "name": "Assignment test",
+               "scheduled_start": _iso(start), "scheduled_end": _iso(start + timedelta(hours=1))}
+    assert api.post("/api/v1/sessions/", headers=world["instructor"]["headers"], json=payload).status_code == 403
+    assert api.post("/api/v1/sessions/", headers=world["admin"]["headers"], json=payload).status_code == 201
+
+
 def test_ta_can_list_sessions_filtered_by_course(api, world):
     response = api.get("/api/v1/sessions/", params={"course_id": world["course_id"], "limit": 100},
                        headers=world["ta"]["headers"])
@@ -423,7 +431,7 @@ def test_export_writes_a_data_exported_audit_entry(api, world):
     assert audit.status_code == 200, audit.text
     entries = audit.json()["items"]
     assert entries and all(e["user_id"] == world["instructor"]["id"] for e in entries)
-    assert all(e["severity"] == "info" and e["event_type"] == "export" for e in entries)
+    assert all(e["severity"] == "info" and e["action"] == "data_exported" for e in entries)
     assert entries[0]["details"]["export_type"] == "session_attendance"
 
 

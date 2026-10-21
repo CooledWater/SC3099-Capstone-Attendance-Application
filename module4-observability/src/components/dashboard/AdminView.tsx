@@ -6,17 +6,19 @@ import { LiveActivity } from "./LiveActivity";
 import { StatusPie } from "./StatusPie";
 import { CourseAnalytics } from "./CourseAnalytics";
 import { buildCourseStats } from "./InstructorView";
+import { EnrollmentsPanel } from "./EnrollmentsPanel";
 import { SessionsPanel } from "./SessionsPanel";
 import { CheckInsPanel } from "./CheckInsPanel";
 import { AuditLogs } from "./AuditLogs";
 import { MetricsPanel } from "./MetricsPanel";
 import { Tabs } from "./Tabs";
-import { fetchCheckIns, fetchSessions, toRows, trendOf } from "@/lib/attendance";
+import { fetchCheckIns, fetchCourses, fetchSessions, toRows, trendOf } from "@/lib/attendance";
 
 const tabs = [
   { id: "overview", label: "Overview" },
   { id: "sessions", label: "Sessions" },
   { id: "checkins", label: "Check-ins" },
+  { id: "enrollments", label: "Enrollments" },
   { id: "audit", label: "Audit logs" },
   { id: "metrics", label: "Metrics" },
 ] as const;
@@ -25,6 +27,8 @@ type Tab = (typeof tabs)[number]["id"];
 
 export function AdminView() {
   const [tab, setTab] = useState<Tab>("overview");
+  const [selectedCourseId, setSelectedCourseId] = useState("all");
+  const courses = useQuery({ queryKey: ["courses"], queryFn: fetchCourses });
   const checkIns = useQuery({
     queryKey: ["check-ins"],
     queryFn: fetchCheckIns,
@@ -92,8 +96,9 @@ export function AdminView() {
         </>
       )}
 
-      {tab === "sessions" && <SessionsPanel rows={rows} canCreate />}
+      {tab === "sessions" && <SessionsPanel rows={rows} canCreate selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} />}
       {tab === "checkins" && <CheckInsPanel rows={rows} loading={checkIns.isLoading} />}
+      {tab === "enrollments" && <EnrollmentsPanel courses={courses.data ?? []} loading={courses.isLoading} error={courses.isError} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} canManage />}
       {tab === "audit" && <AuditLogs />}
       {tab === "metrics" && <MetricsPanel rows={rows} />}
     </>

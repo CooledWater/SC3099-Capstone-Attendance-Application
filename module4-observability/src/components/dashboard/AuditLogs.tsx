@@ -6,12 +6,11 @@ import { formatSingaporeDateTime } from "@/lib/time";
 
 type AuditRow = {
   id: string;
-  occurred_at: string;
-  event_type: string;
+  timestamp: string;
   action: string;
-  actor_email: string;
+  user_email: string | null;
   severity: string;
-  detail: string | null;
+  details: Record<string, unknown> | null;
 };
 
 const severityStyle: Record<string, string> = {
@@ -35,21 +34,21 @@ export function AuditLogs() {
   });
 
   const all = q.data ?? [];
-  const types = useMemo(() => ["all", ...new Set(all.map((r) => r.event_type))], [all]);
+  const types = useMemo(() => ["all", ...new Set(all.map((r) => r.action))], [all]);
 
   const visible = all.filter(
     (r) =>
-      (type === "all" || r.event_type === type) &&
+      (type === "all" || r.action === type) &&
       (severity === "all" || r.severity === severity) &&
-      (actor === "" || r.actor_email.toLowerCase().includes(actor.toLowerCase())),
+      (actor === "" || (r.user_email ?? "system").toLowerCase().includes(actor.toLowerCase())),
   );
 
   function exportCsv() {
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const csv = [
-      ["Timestamp", "Event type", "Action", "Actor", "Severity", "Detail"].map(esc).join(","),
+      ["timestamp", "user_email", "action", "severity", "details"].map(esc).join(","),
       ...visible.map((r) =>
-        [r.occurred_at, r.event_type, r.action, r.actor_email, r.severity, r.detail ?? ""]
+        [r.timestamp, r.user_email ?? "", r.action, r.severity, r.details ? JSON.stringify(r.details) : ""]
           .map(esc)
           .join(","),
       ),
@@ -80,7 +79,7 @@ export function AuditLogs() {
           >
             {types.map((t) => (
               <option key={t} value={t} className="bg-card">
-                {t === "all" ? "All events" : t}
+                {t === "all" ? "All actions" : t}
               </option>
             ))}
           </select>
@@ -108,7 +107,7 @@ export function AuditLogs() {
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {["When", "Event", "Action", "User", "Severity"].map((h) => (
+              {["Timestamp", "User email", "Action", "Severity", "Details"].map((h) => (
                 <th key={h} className="px-5 py-3 font-medium">
                   {h}
                 </th>
@@ -133,16 +132,10 @@ export function AuditLogs() {
             {visible.map((r) => (
               <tr key={r.id} className="transition-colors hover:bg-secondary/50">
                 <td className="px-5 py-3 text-muted-foreground">
-                  {formatSingaporeDateTime(r.occurred_at)} SGT
+                  {formatSingaporeDateTime(r.timestamp)} SGT
                 </td>
-                <td className="px-5 py-3 text-muted-foreground">{r.event_type}</td>
-                <td className="px-5 py-3">
-                  <span className="font-medium text-foreground">{r.action}</span>
-                  {r.detail && (
-                    <span className="block text-xs text-muted-foreground">{r.detail}</span>
-                  )}
-                </td>
-                <td className="px-5 py-3 text-muted-foreground">{r.actor_email}</td>
+                <td className="px-5 py-3 text-muted-foreground">{r.user_email ?? "system"}</td>
+                <td className="px-5 py-3 font-medium text-foreground">{r.action}</td>
                 <td className="px-5 py-3">
                   <span
                     className={`rounded-full px-2 py-0.5 text-[11px] ${
@@ -151,6 +144,9 @@ export function AuditLogs() {
                   >
                     {r.severity}
                   </span>
+                </td>
+                <td className="max-w-md break-words px-5 py-3 text-xs text-muted-foreground">
+                  {r.details ? JSON.stringify(r.details) : "—"}
                 </td>
               </tr>
             ))}
