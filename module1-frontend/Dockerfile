@@ -9,13 +9,15 @@ ENV NEXT_PUBLIC_INTEGRATION_TEST_GEOLOCATION=$NEXT_PUBLIC_INTEGRATION_TEST_GEOLO
 
 # Install dependencies
 COPY package*.json ./
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --include=optional --no-audit --no-fund \
+    && node -e "require('@next/swc-linux-' + process.arch + '-musl')"
 
 # Copy application code
 COPY . .
 
 # Build the application
-RUN npm run build
+RUN --mount=type=cache,target=/app/.next/cache npm run build
 
 # Expose port
 EXPOSE 3000
