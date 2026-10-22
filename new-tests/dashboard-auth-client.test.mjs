@@ -5,7 +5,10 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const require = createRequire(new URL("../module4-observability/package.json", import.meta.url));
-const ts = require("typescript");
+const ts = (() => {
+  try { return require("typescript"); }
+  catch { return createRequire(new URL("../module1-frontend/package.json", import.meta.url))("typescript"); }
+})();
 const source = readFileSync(new URL("../module4-observability/src/lib/api.ts", import.meta.url), "utf8")
   .replace('import.meta.env["VITE_API_BASE_URL"]', "undefined");
 const javascript = ts.transpileModule(source, {
@@ -22,7 +25,7 @@ function client(handler, local = storage(), timers = { setTimeout, clearTimeout 
   const context = { exports: {}, localStorage: local, sessionStorage: storage(), AbortController, Response,
     window: timers,
     fetch: async (url, init) => {
-      const path = new URL(url).pathname.replace("/api/v1", "");
+      const path = new URL(url, "http://localhost:8501").pathname.replace("/api/v1", "");
       calls.push(path);
       assert.equal(init.credentials, "include");
       return handler(path, init);
@@ -53,7 +56,7 @@ for (const mode of ["json", "file"]) {
     await started;
     assert.equal(cleared, false);
     expire();
-    await assert.rejects(pending, /Body aborted/);
+    await assert.rejects(pending, failure => failure.status === 408 && /too long/.test(failure.message));
     assert.equal(cleared, true);
   });
 }

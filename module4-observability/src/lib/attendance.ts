@@ -131,22 +131,38 @@ export async function fetchSessionsForCourses(courseIds: string[]) {
 }
 
 export async function fetchCheckInsForSessions(sessions: SessionRow[]) {
-  const groups = await Promise.all(
-    sessions.map(async (session) => {
+  const groups: RawCheckIn[][] = [];
+  let next = 0;
+  // Leave database capacity available for interactive actions such as creating sessions.
+  await Promise.all(Array.from({ length: Math.min(2, sessions.length) }, async () => {
+    while (next < sessions.length) {
+      const session = sessions[next++]!;
       const items = await api.request<RawCheckIn[]>(`/checkins/session/${session.id}`);
-      return items
-        .filter((item) => item.session_id === session.id)
-        .map((item) => ({
-          ...item,
-          session_name: session.courses?.name ?? null,
-          course_code: session.courses?.code ?? null,
-        }));
-    }),
-  );
+      groups.push(items.filter(item => item.session_id === session.id).map(item => ({
+        ...item, session_name: session.courses?.name ?? null,
+        course_code: session.courses?.code ?? null,
+      })));
+    }
+  }));
   return groups.flat().sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
 }
 export async function fetchCheckIns() {
-  return fetchCheckInsForSessions(await fetchSessions());
+  const sessions = new Map((await fetchSessions()).map(session => [session.id, session]));
+  const items: RawCheckIn[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await api.request<{ items: RawCheckIn[]; total: number }>(
+      `/checkins/?limit=100&offset=${offset}`,
+    );
+    items.push(...page.items);
+    offset += page.items.length;
+    if (!page.items.length || offset >= page.total) break;
+  }
+  return items.filter(item => sessions.has(item.session_id)).map(item => {
+    const session = sessions.get(item.session_id)!;
+    return { ...item, session_name: session.courses?.name ?? null,
+      course_code: session.courses?.code ?? null };
+  }).sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
 }
 export const fetchMyCheckIns = () => api.request<RawCheckIn[]>("/checkins/my-checkins?limit=100");
 export async function fetchCourses() {

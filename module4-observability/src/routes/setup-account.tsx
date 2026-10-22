@@ -93,7 +93,7 @@ function SetupAccount() {
           } catch {
             /* Storage is optional. */
           }
-          window.location.assign("/");
+          window.location.assign(import.meta.env.BASE_URL);
         } catch {
           try {
             sessionStorage.setItem("saiv.dashboard.signed-out", "true");
@@ -141,7 +141,7 @@ function SetupAccount() {
             {completed ? (
               <a
                 className="rounded-xl bg-primary px-4 py-3 text-center font-medium text-primary-foreground disabled:opacity-60"
-                href="/auth"
+                href={`${import.meta.env.BASE_URL}auth`}
               >
                 Go to sign in
               </a>
@@ -215,7 +215,7 @@ function SetupAccount() {
             )}
           </>
         )}
-        <a href="/auth">Back to sign in</a>
+        <a href={`${import.meta.env.BASE_URL}auth`}>Back to sign in</a>
       </section>
     </main>
   );

@@ -197,6 +197,7 @@ export function SessionsPanel({
       }
       await api.request("/sessions/", {
         method: "POST",
+        timeoutMs: 60000,
         body: JSON.stringify({
           course_id: form.course_id,
           name: `${form.room} session`,

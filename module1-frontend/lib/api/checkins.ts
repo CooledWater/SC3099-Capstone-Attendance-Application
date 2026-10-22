@@ -2,6 +2,10 @@ import { apiRequest } from './client';
 import type { CheckIn, CheckInRequest, Session } from '@/types/api';
 
 export const getActiveSessions = () => apiRequest<Session[]>('/sessions/active');
+export const getMySessionCheckIn = async (sessionId: string): Promise<CheckIn | undefined> => {
+  const records = await apiRequest<CheckIn[]>(`/checkins/my-checkins?session_id=${encodeURIComponent(sessionId)}&limit=1`);
+  return records.find(record => record.session_id === sessionId);
+};
 export const submitCheckIn = (payload: CheckInRequest) =>
   apiRequest<CheckIn>('/checkins/', { method: 'POST', body: JSON.stringify(payload) });
 

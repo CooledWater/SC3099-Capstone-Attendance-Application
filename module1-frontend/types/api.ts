@@ -39,7 +39,7 @@ export type CheckInRequest = {
 export type CheckIn = {
   id: string;
   session_id: string;
-  status: 'pending' | 'approved' | 'flagged' | 'rejected';
+  status: 'pending' | 'approved' | 'flagged' | 'rejected' | 'appealed';
   checked_in_at: string;
   risk_score: number;
   liveness_passed?: boolean | null;

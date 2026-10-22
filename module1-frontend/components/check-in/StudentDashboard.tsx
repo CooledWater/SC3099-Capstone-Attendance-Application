@@ -6,7 +6,7 @@ import { useEffect, useReducer, useState } from 'react';
 import { useCamera } from '@/features/camera/useCamera';
 import { FaceVerification, type FaceEvidence } from './FaceVerification';
 import { useGeolocation } from '@/features/geolocation/useGeolocation';
-import { getActiveSessions, submitCheckIn } from '@/lib/api/checkins';
+import { getActiveSessions, getMySessionCheckIn, submitCheckIn } from '@/lib/api/checkins';
 import { updateConsent } from '@/lib/api/auth';
 import { createDeviceFingerprint } from '@/lib/device';
 import { ApiError, isConnectivityError } from '@/lib/api/client';
@@ -39,6 +39,10 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
   const [snapshot, setSnapshot] = useState<CachedActiveSessions | null>(null);
   const [readOnly, setReadOnly] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(true);
+  const [attendance, setAttendance] = useState<{ key: string; error?: string }>();
+  const [attendanceRetry, setAttendanceRetry] = useState(0);
+  const attendanceKey = `${user.id}:${selectedId}`;
+  const attendanceReady = demo || (!!selectedId && attendance?.key === attendanceKey && !attendance.error);
   const [retry, setRetry] = useState(0);
   const camera = useCamera(); const geo = useGeolocation();
   const stopCamera = camera.stop;
@@ -74,13 +78,28 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
     return () => { cancelled = true; };
   }, [demo, user.id, online, retry]);
   useEffect(() => {
+    if (demo || !selectedId || !online || readOnly) return;
+    let cancelled = false;
+    stopCamera(); resetLocation(); setEvidence({}); dispatch({ type: 'reset' });
+    setAttendance(undefined);
+    void getMySessionCheckIn(selectedId).then(result => {
+      if (cancelled) return;
+      if (result) dispatch({ type: 'result', result });
+      setAttendance({ key: attendanceKey });
+    }).catch(error => {
+      if (!cancelled) setAttendance({ key: attendanceKey, error: error instanceof Error ? error.message : 'Could not load your attendance.' });
+    });
+    return () => { cancelled = true; };
+  }, [demo, selectedId, user.id, attendanceKey, online, readOnly, attendanceRetry, stopCamera, resetLocation]);
+
+  useEffect(() => {
     const update = () => setOnline(navigator.onLine);
     update(); window.addEventListener('online', update); window.addEventListener('offline', update);
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, []);
   useEffect(() => { if (camera.state !== 'ready') setEvidence({}); }, [camera.state]);
   useEffect(() => { if (camera.state === 'ready' && flow.phase === 'camera') dispatch({ type: 'phase', phase: 'location' }); }, [camera.state, flow.phase]);
-  useEffect(() => { if (geo.state === 'ready') dispatch({ type: 'phase', phase: 'liveness' }); }, [geo.state]);
+  useEffect(() => { if (geo.state === 'ready' && flow.phase === 'location') dispatch({ type: 'phase', phase: 'liveness' }); }, [geo.state, flow.phase]);
 
   useEffect(() => {
     if (!demo && (!online || readOnly)) { stopCamera(); resetLocation(); setEvidence({}); dispatch({ type: 'reset' }); }
@@ -91,7 +110,7 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
   }, [signingOut, camera.state, flow.phase, onBusyChange]);
 
   async function completeCheckIn() {
-    if (!selected || !geo.point || (!demo && (!navigator.onLine || readOnly || loadingSessions))) return;
+    if (!attendanceReady || !selected || !geo.point || (!demo && (!navigator.onLine || readOnly || loadingSessions))) return;
     dispatch({ type: 'phase', phase: 'submitting' }); setNotice('');
     if (demo) {
       await new Promise(resolve => window.setTimeout(resolve, 700));
@@ -133,6 +152,11 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
         </section>
 
         <section className="verification-card">
+          {!demo && (loadingSessions || (selectedId && !attendanceReady)) ? <div className="step-content" role="status">
+            <h2>{attendance?.key === attendanceKey && attendance.error ? 'Attendance unavailable' : 'Checking your attendance…'}</h2>
+            {attendance?.key === attendanceKey && attendance.error && <><p>{attendance.error}</p><button className="button" onClick={() => setAttendanceRetry(value => value + 1)}>Retry attendance check</button></>}
+          </div> : <>
+
           <div className="stepper" aria-label="Check-in progress">{['Camera', 'Location', 'Verify', 'Submit'].map((label, index) => { const active = ['camera','location','liveness','review'].indexOf(flow.phase); return <div className={index <= active || flow.phase === 'result' ? 'done' : ''} key={label}><span>{index < active || flow.phase === 'result' ? '✓' : index + 1}</span><small>{label}</small></div>; })}</div>
 
           {flow.phase === 'camera' && <div className="step-content"><span className="eyebrow">STEP 1 OF 4</span><h2>Camera access</h2><p>We use a temporary camera frame to verify identity and liveness. Raw images are sent to the attendance service for immediate processing and are not saved on this device.</p><label className="consent"><input type="checkbox" checked={cameraConsent} onChange={e => setCameraConsent(e.target.checked)}/><span><b>I consent to camera verification</b><small>You can stop the camera at any time.</small></span></label>{cameraProblem && <div className="inline-error">{cameraProblem}</div>}<button className="button primary" disabled={!selected || loadingSessions || !cameraConsent || camera.state === 'requesting'} onClick={camera.start}>{camera.state === 'requesting' ? 'Requesting access…' : cameraProblem ? 'Retry camera' : camera.permissionState === 'granted' ? 'Start camera' : 'Allow camera access'}</button></div>}
@@ -145,7 +169,8 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
             <FaceVerification key={selected.id} videoRef={camera.videoRef} capture={camera.capture} cameraReady={cameraReady} session={selected} demo={demo} onComplete={value => { setEvidence(value); dispatch({ type: 'phase', phase: 'review' }); }}/>
           </>}
           {(flow.phase === 'review' || flow.phase === 'submitting') && <div className="step-content"><span className="eyebrow">STEP 4 OF 4</span><h2>Ready to check in</h2><button className="button" disabled={flow.phase === 'submitting'} onClick={() => { setEvidence({}); dispatch({ type: 'phase', phase: 'liveness' }); }}>Retake / repeat verification</button><div className="readiness"><span>{cameraReady ? '✓ Camera ready' : 'Camera stopped'}</span><span>✓ Location captured {geo.point && `(±${Math.round(geo.point.accuracy)} m)`}</span><span>{evidence.motion_verification_id ? '✓ Motion verified by server' : demo ? 'Demo capture complete' : evidence.liveness_challenge_response ? '✓ Photo captured for server verification' : 'Capture cleared — repeat verification'}</span></div>{geo.point && geo.point.accuracy > 100 && <div className="inline-error">Location accuracy is low. The backend may flag or reject this attempt.</div>}<button className="button primary" disabled={flow.phase === 'submitting' || (!online && !demo) || (!demo && !evidence.motion_verification_id && !evidence.liveness_challenge_response)} onClick={completeCheckIn}>{flow.phase === 'submitting' ? 'Verifying securely…' : 'Submit check-in'}</button></div>}
-          {flow.phase === 'result' && <div className={`result ${status}`}><div className="result-icon">{status === 'approved' ? '✓' : status === 'flagged' ? '!' : status === 'pending' ? '…' : '×'}</div><span className="eyebrow">CHECK-IN RESULT</span><h2>{status === 'approved' ? 'Attendance confirmed' : status === 'flagged' ? 'Submitted for review' : status === 'pending' ? 'Verification pending' : 'Check-in rejected'}</h2><p>{status === 'approved' ? 'You are checked in. You may now close this page.' : status === 'flagged' ? 'Your attendance was recorded and requires instructor review.' : status === 'pending' ? 'Your submission is still being processed.' : 'Your attendance could not be verified. Contact your instructor if you believe this is incorrect.'}</p><dl><div><dt>Time</dt><dd>{flow.result && formatSingaporeDateTime(flow.result.checked_in_at, { timeStyle: 'medium' })}</dd></div><div><dt>Risk score</dt><dd>{flow.result?.risk_score.toFixed(2)}</dd></div></dl></div>}
+          {flow.phase === 'result' && <div className={`result ${status}`}><div className="result-icon">{status === 'approved' ? '✓' : status === 'flagged' ? '!' : status === 'pending' ? '…' : '×'}</div><span className="eyebrow">CHECK-IN RESULT</span><h2>{status === 'approved' ? 'Attendance confirmed' : status === 'appealed' ? 'Appeal submitted' : status === 'flagged' ? 'Submitted for review' : status === 'pending' ? 'Verification pending' : 'Check-in rejected'}</h2><p>{status === 'approved' ? 'You are checked in. You may now close this page.' : status === 'appealed' ? 'Your appeal is awaiting instructor review.' : status === 'flagged' ? 'Your attendance was recorded and requires instructor review.' : status === 'pending' ? 'Your submission is still being processed.' : 'Your attendance could not be verified. Contact your instructor if you believe this is incorrect.'}</p><dl><div><dt>Check-in time</dt><dd>{flow.result && formatSingaporeDateTime(flow.result.checked_in_at, { timeStyle: 'medium' })}</dd></div><div><dt>Risk score</dt><dd>{flow.result?.risk_score.toFixed(2)}</dd></div></dl></div>}
+          </>}
         </section>
       </div>
     </main>

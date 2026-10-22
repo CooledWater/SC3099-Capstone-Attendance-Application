@@ -7,7 +7,9 @@ RUN npm install
 
 COPY . .
 
+RUN npm run build
+
 EXPOSE 8501
 
-# Vite's dev server makes the dashboard available on the compose-defined port.
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "8501"]
+# Serve compiled browser assets; keep development transforms out of mobile clients.
+CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "8501"]

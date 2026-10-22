@@ -10,6 +10,6 @@ async function assets(directory, prefix) {
 }
 
 const buildId = (await readFile('.next/BUILD_ID', 'utf8')).trim();
-const shell = ['/', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.webmanifest', ...await assets('.next/static', '/_next/static')];
+const shell = ['/', '/attendance', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png', '/manifest.webmanifest', ...await assets('.next/static', '/_next/static')];
 await writeFile('public/sw-precache.js', `const CACHE = ${JSON.stringify(`saiv-shell-${buildId}`)};\nconst SHELL = ${JSON.stringify(shell.sort())};\n`);
 console.log(`Service worker prepared: ${shell.length} shell files (${buildId}).`);

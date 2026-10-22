@@ -626,6 +626,7 @@ Get current student's check-in history. **Requires auth (student).**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `course_id` | uuid | - | Filter by course |
+| `session_id` | uuid | - | Filter by session before applying the result limit |
 | `limit` | int | 50 | Results per page |
 
 **Response:** `200 OK`
@@ -1507,7 +1508,7 @@ Comprehensive risk assessment combining multiple signals.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `risk_score` | float | 0.0-1.0, combined weighted risk |
+ok | `risk_score` | float | 0.0-1.0, combined weighted risk |
 | `risk_level` | string | LOW, MEDIUM, HIGH, or CRITICAL |
 | `pass_threshold` | boolean | true if risk_score < risk_threshold |
 | `risk_threshold` | float | Threshold used (default 0.50) |

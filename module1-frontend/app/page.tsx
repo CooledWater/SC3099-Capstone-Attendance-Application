@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AuthCard } from '@/components/auth/AuthCard';
 import { StudentDashboard } from '@/components/check-in/StudentDashboard';
 import { SavedSessions } from '@/components/check-in/SavedSessions';
+import { PullToRefresh } from '@/components/PullToRefresh';
 import { PwaUpdates } from '@/components/PwaUpdates';
 import { AppLogo } from '@/components/AppLogo';
 import { PwaInstall } from '@/components/PwaInstall';
@@ -31,6 +32,12 @@ export default function Home() {
     setOfflineView(false);
     setSnapshot(null);
     setUser(account);
+  }, []);
+
+  useEffect(() => {
+    const standalone = window.matchMedia('(display-mode: standalone)').matches
+      || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    if (standalone && window.location.pathname === '/') window.location.replace('/attendance');
   }, []);
 
   useEffect(() => {
@@ -83,10 +90,11 @@ export default function Home() {
     setProfileOpen(false); setDemo(false); setOfflineView(false); setSnapshot(null); setUser(undefined); setBusy(false);
   }
 
-  return <><PwaUpdates busy={busy || restoring}/><section hidden={!user || !profileOpen || offlineView} className="profile-screen">
+  return <><PullToRefresh busy={busy || restoring}/><PwaUpdates busy={busy || restoring}/><section hidden={!user || !profileOpen || offlineView} className="profile-screen">
     <button className="button secondary" onClick={() => setProfileOpen(false)}>← Back to check-in</button>
     <div className="profile-card"><AppLogo size={80}/><h1>Your profile</h1>
       {user && <dl><dt>Name</dt><dd>{user.full_name}</dd><dt>Email</dt><dd>{user.email}</dd><dt>Account</dt><dd>{demo ? 'Demo student' : user.role}</dd></dl>}
+      {!demo && <p><a className="button primary" href="/dashboard" target="_blank" rel="noopener noreferrer">Open dashboard in browser ↗</a></p>}
       <PwaInstall busy={busy || restoring}/>
     </div>
   </section>{

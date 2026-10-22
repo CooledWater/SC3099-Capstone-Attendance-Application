@@ -58,7 +58,7 @@ services:
       SMTP_FROM: ${SMTP_FROM:-attendance@example.test}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      DASHBOARD_APP_URL: ${DASHBOARD_APP_URL:-http://localhost:8501}
+      DASHBOARD_APP_URL: ${DASHBOARD_APP_URL:-http://localhost:8501/dashboard}
       SEMESTER_START_DATE: ${SEMESTER_START_DATE:-}
       FACE_SERVICE_URL: http://face-recognition:8001
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -100,12 +100,16 @@ services:
       context: ./module1-frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+        NEXT_PUBLIC_API_URL: /api/v1
+        BACKEND_INTERNAL_URL: http://backend:8000
+        DASHBOARD_INTERNAL_URL: http://dashboard:8501
     container_name: saiv-frontend
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_API_URL: /api/v1
+      BACKEND_INTERNAL_URL: http://backend:8000
+      DASHBOARD_INTERNAL_URL: http://dashboard:8501
       NEXT_PUBLIC_FACE_SERVICE_URL: http://localhost:8001
     depends_on:
       - backend
@@ -122,6 +126,8 @@ services:
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set}"
       BACKEND_URL: http://backend:8000
+      DASHBOARD_BASE_PATH: /dashboard/
+      VITE_API_BASE_URL: /api/v1
       PROMETHEUS_URL: http://prometheus:9090
     depends_on:
       - backend

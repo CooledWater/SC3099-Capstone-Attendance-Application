@@ -2243,6 +2243,7 @@ def create_checkin(
 @app.get("/api/v1/checkins/my-checkins")
 def list_my_checkins(
     course_id: str | None = None,
+    session_id: str | None = None,
     limit: int = 50,
     current_user: User = Depends(require_roles("student")),
     db: Session = Depends(get_db)
@@ -2250,6 +2251,9 @@ def list_my_checkins(
     limit = max(1, min(limit, 100))
 
     query = db.query(CheckIn).filter(CheckIn.student_id == current_user.id)
+
+    if session_id:
+        query = query.filter(CheckIn.session_id == session_id)
 
     if course_id:
         query = query.join(

@@ -172,7 +172,7 @@ function AuthPage() {
               </button>
             </form>
 
-            {mode === "signin" && <a className="mt-4 block text-center text-sm text-primary" href="/setup-account">Request a new account invitation</a>}
+            {mode === "signin" && <a className="mt-4 block text-center text-sm text-primary" href={`${import.meta.env.BASE_URL}setup-account`}>Request a new account invitation</a>}
 
             <p className="mt-6 text-center text-xs text-muted-foreground">
               {mode === "signin" ? "New to Veridian? " : "Already registered? "}

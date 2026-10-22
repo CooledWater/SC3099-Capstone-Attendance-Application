@@ -1,6 +1,6 @@
 import type { AuthTokens } from '@/types/api';
 
-const configuredBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
+const configuredBase = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 export const API_BASE = configuredBase.replace(/\/$/, '');
 // Kept only to remove refresh tokens stored by older frontend versions.
 const REFRESH_KEY = 'saiv_refresh_token';

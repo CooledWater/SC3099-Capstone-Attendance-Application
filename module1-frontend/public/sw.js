@@ -21,9 +21,9 @@ worker.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== worker.location.origin) return;
   // An allowlist excludes API responses, RSC payloads and biometric data.
-  if (request.mode === 'navigate' && url.pathname === '/') {
+  if (request.mode === 'navigate' && (url.pathname === '/' || url.pathname === '/attendance')) {
     event.respondWith(fetch(request).catch(async () =>
-      (await (await caches.open(CACHE)).match('/')) || Response.error()));
+      (await (await caches.open(CACHE)).match(url.pathname)) || Response.error()));
   } else if (!url.search && STATIC.has(url.pathname)) {
     event.respondWith(caches.open(CACHE).then(async cache =>
       (await cache.match(request)) || fetch(request)));

@@ -1,5 +1,5 @@
 const API_BASE_URL = (
-  import.meta.env["VITE_API_BASE_URL"] ?? "http://localhost:8000/api/v1"
+  import.meta.env["VITE_API_BASE_URL"] ?? "/api/v1"
 ).replace(/\/$/, "");
 let accessToken: string | null = null;
 // Remove credentials persisted by previous dashboard versions. New tokens
@@ -43,20 +43,22 @@ export function clearAccessToken() {
 
 async function request<T>(
   path: string,
-  init: RequestInit = {},
+  init: RequestInit & { timeoutMs?: number } = {},
   retry = true,
   responseType: "json" | "text" | "response" = "json",
 ): Promise<T> {
+  const { timeoutMs = 15000, ...fetchOptions } = init;
   const token = getAccessToken();
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  let timedOut = false;
+  const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const abortFromCaller = () => controller.abort();
   if (init.signal?.aborted) controller.abort();
   else init.signal?.addEventListener("abort", abortFromCaller, { once: true });
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
+      ...fetchOptions,
       signal: controller.signal,
       credentials: "include",
       headers: {
@@ -97,6 +99,14 @@ async function request<T>(
     }
     if (responseType === "text") return (await response.text()) as T;
     return (await response.json()) as T;
+  } catch (error) {
+    if (timedOut) {
+      const saving = init.method && !["GET", "HEAD"].includes(init.method.toUpperCase());
+      throw new ApiError(408, saving
+        ? "The server took too long to respond. The save may have completed; check the list before trying again."
+        : "The server took too long to respond. Please try again.");
+    }
+    throw error;
   } finally {
     window.clearTimeout(timeout);
     init.signal?.removeEventListener("abort", abortFromCaller);
