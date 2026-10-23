@@ -142,7 +142,7 @@ function Dashboard() {
         {activeRole === "admin" && <AdminView />}
         {activeRole === "instructor" && user && <InstructorView userId={user.id} />}
         {activeRole === "ta" && user && <TaView userId={user.id} />}
-        {activeRole === "student" && <StudentView />}
+        {activeRole === "student" && user && <StudentView userId={user.id} />}
       </section>
     </div>
   );

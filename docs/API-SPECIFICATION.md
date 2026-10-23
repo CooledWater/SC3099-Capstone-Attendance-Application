@@ -448,7 +448,7 @@ Create a new session. **Requires auth (instructor or admin).**
 ```json
 {
   "course_id": "uuid",
-  "name": "Lecture 5: Neural Networks",
+  "session_name": "Lecture 5: Neural Networks",
   "session_type": "lecture",  // lecture|tutorial|lab|exam
   "scheduled_start": "2024-01-15T14:00:00Z",
   "scheduled_end": "2024-01-15T16:00:00Z",
@@ -680,12 +680,25 @@ List all check-ins with filters. **Requires auth (instructor/admin).**
 #### GET /checkins/my-checkins
 Get current student's check-in history. **Requires auth (student).**
 
+Each record includes nullable `appealed_at`. A non-null value means its one
+allowed appeal has already been used, even if review later changes its status
+to `rejected`; the student dashboard must not offer another appeal.
+
+Records also include `course_id` for course-scoped history queries. The student
+history table displays course code, session name, check-in time, verification
+status and risk score on the 0–1 scale. Session-name search/course changes reset the table
+to its first page. The dashboard requests 50 results per page using `offset`;
+the response remains an array, ordered newest first with an ID tie-breaker.
+
 **Query Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `course_id` | uuid | - | Filter by course |
 | `session_id` | uuid | - | Filter by session before applying the result limit |
+| `session_name` | string | - | Case-insensitive literal substring search; trimmed and applied before pagination |
+| `status` | string | - | Comma-separated verification statuses, e.g. flagged,appealed; OR filter before pagination |
 | `limit` | int | 50 | Results per page |
+| `offset` | int | 0 | Matching records to skip, after course/session filtering |
 
 **Response:** `200 OK`
 ```json
@@ -811,6 +824,78 @@ Review a flagged/appealed check-in. **Requires auth (instructor/TA for the sessi
 ---
 
 ### Statistics
+
+#### GET /stats/my-overview (student Overview)
+
+The student page uses these three cards at the top of its existing layout,
+without additional tabs. View attendance applies a course to the existing
+history table. Flagged's View records applies flagged/appealed filters to that
+same table. Today's sessions displays counts without a navigation action.
+
+JWT authentication, **student only**. Identity is derived from the token; no
+student ID parameter is accepted for scoping. An optional `course_id` must be
+one of the caller's current enrollments (otherwise 403). Existing staff
+`/stats/students/{student_id}` permissions and calculations are unchanged.
+
+Query `section=attendance|today|flagged|all` (default all). Independent frontend
+queries use the first three values and poll every 30 seconds. `course_id`
+affects attendance only; today and flagged always cover the student's courses.
+
+Response fields (only requested sections are included):
+
+```json
+{
+  "as_of": "2026-10-24T04:00:00Z",
+  "courses": [{"id":"uuid","code":"SC4000","name":"Machine Learning","semester":"S1"}],
+  "period": {"start":"2026-08-07T16:00:00Z","end":"2026-10-24T04:00:00Z","error":null},
+  "attendance": {"course_id":"uuid","approved":9,"eligible":10,"percentage":90.0,"unresolved":0},
+  "today": {"date":"2026-10-24","start":"2026-10-23T16:00:00Z","end":"2026-10-24T16:00:00Z","total":2,"active":1,"upcoming":1,"completed":0,"sessions":[]},
+  "flagged": {"total":1,"flagged":0,"appealed":1}
+}
+```
+
+Attendance uses `SEMESTER_START_DATE` at Singapore midnight through `as_of`.
+Missing/invalid/future configuration produces `period.error`; it must not be
+displayed as zero attendance. Course semester labels are free text, not a
+calendar; operators must update this existing setting each semester.
+The selected course defaults to the caller's first current enrollment by code.
+
+The denominator is distinct eligible Closed sessions starting within this
+period, including those without a check-in. Scheduled/Active/Cancelled
+sessions are excluded; scheduled lifecycle transitions are resolved at read
+time without writes, preserving explicit Closed/Cancelled states. Eligibility
+is enrollment at scheduled start, using immutable enrollment_added/removed
+events, or the stored enrolled_at/dropped_at interval when no prior event is
+available. Overwritten pre-audit enrollment intervals cannot be reconstructed;
+historical completeness is not promised. No schema changes are introduced.
+
+The numerator counts only effective approved check-ins in that denominator;
+unresolved counts pending/flagged/appealed separately. Unique(student,session)
+prevents retries; latest checked_in_at then ID is a defensive legacy fallback.
+`percentage` retains the backend calculation without rounding and is null with
+zero eligible sessions. The UI rounds to the nearest integer; null displays
+an empty ring and an em dash. No warning threshold is applied. This approved
+attendance metric intentionally differs from the instructor roster's timing
+based Present/Absent policy.
+
+Attendance returns aggregate counts only; the unused completed-session detail
+list is omitted. Missing check-ins still count in the denominator.
+Today's sessions use Singapore [midnight,next midnight),
+scheduled start and enrollment eligibility, excluding Cancelled sessions.
+Each item has `id`, `course_id`, `course_code`, `name`, nullable `venue_name`,
+UTC `scheduled_start`/`scheduled_end`, and `status`. Today counts sessions,
+not check-ins. Flagged totals count distinct effective own records of flagged
+or appealed status across courses, excluding resolved appeals and all other
+statuses. The three cards expose separate loading/error states; course
+requests use cancellation and distinct query keys without previous-course
+placeholder metrics. Appeal submission invalidates these metrics; polling
+reflects reviews, lifecycle changes, and enrollment changes.
+
+View attendance scrolls to the existing history table with the selected course.
+View records scrolls to that table across courses with both flagged and appealed
+filters; records retain newest-first ordering. Today's sessions shows the
+counts for the API's Singapore date without a details link. Selection uses
+the dashboard's existing React view state; no tabs are added.
 
 Analytics endpoints for the instructor dashboard.
 

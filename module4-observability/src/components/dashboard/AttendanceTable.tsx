@@ -15,11 +15,14 @@ export type CheckInRow = {
   course: string;
   courseId: string;
   sessionId: string;
+  sessionName?: string;
   room: string;
   time: string;
   status: "approved" | "flagged" | "rejected" | "pending" | "appealed";
   risk: number;
   riskScore?: number;
+  appealedAt?: string | null;
+  reviewedAt?: string | null;
   liveness: number;
   faceMatch: number;
   lat: number | null;

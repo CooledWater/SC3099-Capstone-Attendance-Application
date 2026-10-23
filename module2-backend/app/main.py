@@ -74,7 +74,7 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster
+from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 
@@ -89,6 +89,7 @@ app = FastAPI(
 
 app.include_router(invitations.router)
 app.include_router(attendance_roster.router)
+app.include_router(student_overview.router)
 app.include_router(motion.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
@@ -2301,40 +2302,48 @@ def list_my_checkins(
     course_id: str | None = None,
     session_id: str | None = None,
     limit: int = 50,
-    current_user: User = Depends(require_roles("student")),
-    db: Session = Depends(get_db)
+    offset: int = 0,
+    session_name: str | None = None,
+    status: str | None = None,
+    current_user: User = Depends(require_roles("student", read_only=True)),
+    db: Session = Depends(get_read_db)
 ):
     limit = max(1, min(limit, 100))
 
-    query = db.query(CheckIn).filter(CheckIn.student_id == current_user.id)
+    statuses = [value.strip() for value in status.split(",")] if status else []
+    if any(value not in ("pending", "approved", "flagged", "rejected", "appealed") for value in statuses):
+        raise HTTPException(422, "Invalid check-in status")
+
+    query = (db.query(CheckIn, SessionModel.name, Course.code, Course.id)
+             .outerjoin(SessionModel, CheckIn.session_id == SessionModel.id)
+             .outerjoin(Course, SessionModel.course_id == Course.id)
+             .filter(CheckIn.student_id == current_user.id))
 
     if session_id:
         query = query.filter(CheckIn.session_id == session_id)
+    if statuses:
+        query = query.filter(CheckIn.status.in_(statuses))
 
+    search = (session_name or "").strip()
     if course_id:
-        query = query.join(
-            SessionModel, CheckIn.session_id == SessionModel.id
-        ).filter(SessionModel.course_id == course_id)
+        query = query.filter(SessionModel.course_id == course_id)
+    if search:
+        query = query.filter(func.lower(SessionModel.name).contains(search.lower(), autoescape=True))
 
-    checkins = query.order_by(CheckIn.checked_in_at.desc()).limit(limit).all()
+    checkins = query.order_by(CheckIn.checked_in_at.desc(), CheckIn.id).offset(max(0, offset)).limit(limit).all()
 
     results = []
 
-    for checkin in checkins:
-        session = db.query(SessionModel).filter(
-            SessionModel.id == checkin.session_id
-        ).first()
-        course = (
-            db.query(Course).filter(Course.id == session.course_id).first()
-            if session else None
-        )
-
+    for checkin, session_name_value, course_code, result_course_id in checkins:
         results.append({
             "id": checkin.id,
             "session_id": checkin.session_id,
-            "session_name": session.name if session else None,
-            "course_code": course.code if course else None,
+            "session_name": session_name_value,
+            "course_code": course_code,
+            "course_id": result_course_id,
             "status": checkin.status,
+            "appealed_at": checkin.appealed_at,
+            "reviewed_at": checkin.reviewed_at,
             "checked_in_at": checkin.checked_in_at,
             "risk_score": checkin.risk_score
         })

@@ -10,6 +10,8 @@ export type RawCheckIn = {
   checked_in_at: string;
   status: "approved" | "flagged" | "rejected" | "pending" | "appealed";
   risk_score: number;
+  appealed_at?: string | null;
+  reviewed_at?: string | null;
   liveness_score?: number | null;
   face_match_score?: number | null;
   latitude?: number | null;
@@ -17,6 +19,7 @@ export type RawCheckIn = {
   session_id: string;
   session_name?: string | null;
   course_code?: string | null;
+  course_id?: string | null;
 };
 export type SessionRow = {
   id: string;
@@ -38,15 +41,6 @@ export type SessionRow = {
   geofence_radius_m: number;
   courses: { code: string; name: string } | null;
 };
-export type ActiveSession = {
-  id: string;
-  course_id: string;
-  name: string;
-  course_code?: string | null;
-  course_name?: string | null;
-  venue_name?: string | null;
-  checkin_closes_at: string;
-};
 export type CourseRow = {
   semester_start_date?: string | null;
   id: string;
@@ -58,6 +52,9 @@ export type EnrollmentRow = {
   course_id: string;
   course_code: string;
   course_name: string;
+  semester?: string;
+  instructor_name?: string | null;
+  enrolled_at?: string;
 };
 export type ApiSession = {
   id: string;
@@ -184,7 +181,23 @@ export async function fetchCheckIns() {
     })
     .sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
 }
-export const fetchMyCheckIns = () => api.request<RawCheckIn[]>("/checkins/my-checkins?limit=100");
+export const HISTORY_PAGE_SIZE = 50;
+export function fetchMyCheckInsPage(sessionId = "all", offset = 0, courseId = "all", signal?: AbortSignal, sessionName = "", statuses: string[] = []) {
+  const params = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE), offset: String(offset) });
+  if (sessionId !== "all") params.set("session_id", sessionId);
+  if (courseId !== "all") params.set("course_id", courseId);
+  if (sessionName.trim()) params.set("session_name", sessionName.trim());
+  if (statuses.length) params.set("status", statuses.join(","));
+  return api.request<RawCheckIn[]>(`/checkins/my-checkins?${params}`, { signal: signal ?? null });
+}
+export async function fetchMyCheckIns() {
+  const rows: RawCheckIn[] = [];
+  while (true) {
+    const page = await fetchMyCheckInsPage("all", rows.length);
+    rows.push(...page);
+    if (page.length < HISTORY_PAGE_SIZE) return rows;
+  }
+}
 export async function fetchCourses() {
   const items: CourseRow[] = [];
   let total = Infinity;
@@ -199,7 +212,6 @@ export async function fetchCourses() {
   return items;
 }
 export const fetchMyEnrollments = () => api.request<EnrollmentRow[]>("/enrollments/my-enrollments");
-export const fetchActiveSessions = () => api.request<ActiveSession[]>("/sessions/active");
 export async function fetchMyAssignedCourses() {
   return (await api.request<{ items: CourseRow[] }>("/courses/my-courses?limit=100")).items;
 }
@@ -210,11 +222,14 @@ export function toRows(list: RawCheckIn[]): CheckInRow[] {
     student: c.student_name ?? "You",
     email: c.student_email ?? c.student_id ?? "—",
     course: c.course_code ?? "—",
-    courseId: "",
+    courseId: c.course_id ?? "",
     sessionId: c.session_id,
+    sessionName: c.session_name ?? "Unnamed session",
     room: "—",
     time: c.checked_in_at,
     status: c.status,
+    appealedAt: c.appealed_at ?? null,
+    reviewedAt: c.reviewed_at ?? null,
     risk: Math.round((c.risk_score ?? 0) * 100),
     riskScore: c.risk_score ?? 0,
     liveness: c.liveness_score ?? 0,
