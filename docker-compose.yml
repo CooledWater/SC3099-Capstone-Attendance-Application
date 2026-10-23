@@ -51,7 +51,9 @@ services:
     environment:
       DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in the root .env file}"
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: your-secret-key-change-in-production
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      STRICT_SECURITY_MODE: ${STRICT_SECURITY_MODE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8501}
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_SECURITY: ${SMTP_SECURITY:-none}

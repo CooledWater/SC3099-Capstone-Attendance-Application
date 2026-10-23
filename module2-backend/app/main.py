@@ -75,6 +75,7 @@ from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
 from app import audit, motion, prometheus_metrics, stats, invitations
+from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 
 Base.metadata.create_all(bind=engine)
@@ -91,6 +92,8 @@ app.include_router(motion.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
 app.include_router(prometheus_metrics.router)
+from app.admission import DatabaseAdmission
+app.add_middleware(DatabaseAdmission)
 app.add_middleware(motion.MotionBodyLimit)
 app.add_middleware(stats.MetricsMiddleware)
 app.add_middleware(audit.AuditContextMiddleware)
@@ -101,13 +104,16 @@ async def safe_motion_validation(request: Request, exc: RequestValidationError):
         return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. Passwords must contain 8 to 72 characters.'})
     if request.url.path.startswith('/api/v1/motion/'):
         return JSONResponse(status_code=422, content={'detail': 'Invalid motion sequence. Capture again.'})
-    return await request_validation_exception_handler(request, exc)
+    # Validation failures must not echo passwords/images or attempt to JSON-encode NaN.
+    errors = [{key: value for key, value in error.items() if key in ('type', 'loc', 'msg')}
+              for error in exc.errors()]
+    return JSONResponse(status_code=422, content={'detail': errors})
 
 
 # CORS middleware - configure appropriately for your frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8501"],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -119,7 +125,7 @@ DASHBOARD_COOKIE_NAME = "saiv_dashboard_refresh_token"
 DASHBOARD_COOKIE_PATH = "/api/v1/auth/dashboard"
 REFRESH_COOKIE_PATH = "/api/v1/auth"
 REFRESH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60
-REFRESH_COOKIE_SECURE = os.getenv("REFRESH_COOKIE_SECURE", "false").lower() == "true"
+REFRESH_COOKIE_SECURE = os.getenv("REFRESH_COOKIE_SECURE", "true" if strict_mode() else "false").lower() == "true"
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str, dashboard: bool = False) -> None:
@@ -159,8 +165,12 @@ def db_health():
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def register_user(
     user_data: UserRegister,
+    request: Request,
     db: Session = Depends(get_db)
 ):
+    enforce_rate_limit('registration', request.client.host if request.client else 'unknown', 10, 3600)
+    if strict_mode() and user_data.role != 'student':
+        raise HTTPException(403, 'Privileged accounts must be created by an administrator')
     existing_user = db.query(User).filter(
         User.email == user_data.email
     ).first()
@@ -205,6 +215,7 @@ def login_user(
     request: Request,
     db: Session = Depends(get_db)
 ):
+    enforce_rate_limit('login', request.client.host if request.client else 'unknown', 60, 3600)
     row = db.query(User, invitations.AccountInvitation.user_id, invitations.AccountInvitation.used_at).outerjoin(
         invitations.AccountInvitation, invitations.AccountInvitation.user_id == User.id,
     ).filter(User.email == login_data.email).first()
@@ -350,6 +361,10 @@ def refresh_access_token(
     if student_bridge and user.role != "student":
         raise HTTPException(status_code=403, detail="Automatic dashboard sign-in is for students only")
 
+    check_refresh(refresh_token)
+    if not student_bridge:
+        consume_refresh(refresh_token, payload)
+
     new_access_token = create_access_token(
         user_id=user.id,
         role=user.role
@@ -382,6 +397,13 @@ def logout_user(
     # valid token the client presented; an anonymous logout logs nothing.
     dashboard = request.url.path == "/api/v1/auth/dashboard/logout"
     token = request.cookies.get(DASHBOARD_COOKIE_NAME if dashboard else REFRESH_COOKIE_NAME)
+    if token and strict_mode():
+        try:
+            refresh_payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+            if refresh_payload.get('type') == 'refresh':
+                consume_refresh(token, refresh_payload, reject_reuse=False)
+        except JWTError:
+            pass
     authorization = request.headers.get("authorization", "")
     if authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
@@ -2077,6 +2099,9 @@ def create_checkin(
     current_user: User = Depends(require_roles("student")),
     db: Session = Depends(get_session_db)
 ):
+    enforce_rate_limit('checkin', current_user.id, 10, 60)
+    if strict_mode() and not (current_user.camera_consent and current_user.geolocation_consent):
+        raise HTTPException(403, 'Camera and geolocation consent are required')
     # Session, its course, and the enrollment/duplicate-checkin flags all in
     # one round trip: each network round trip to the (remote) database costs
     # far more than the extra correlated-subquery work, so folding the
@@ -2157,6 +2182,12 @@ def create_checkin(
     else:
         biometrics = _run_biometric_verification(session, current_user, checkin_data)
 
+    if strict_mode():
+        if session.require_liveness_check and biometrics['liveness'] is None:
+            raise HTTPException(400, 'Required liveness evidence is unavailable; repeat verification')
+        if session.require_face_match and biometrics['face_match'] is None:
+            raise HTTPException(400, 'Required face-match evidence is unavailable; enroll and repeat verification')
+
     effective_threshold = (
         venue["risk_threshold"] if venue["risk_threshold"] is not None else 0.5
     )
@@ -2210,7 +2241,19 @@ def create_checkin(
         details=audit_details, success=checkin_status != "rejected",
         timestamp=now + timedelta(microseconds=1)
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two requests can both pass the early duplicate check. The database's
+        # unique constraint is authoritative; roll back proof/audit changes too.
+        db.rollback()
+        duplicate = db.query(CheckIn.id).filter(
+            CheckIn.session_id == checkin_data.session_id,
+            CheckIn.student_id == student_id,
+        ).first()
+        if duplicate:
+            raise HTTPException(400, 'Already checked in to this session')
+        raise
     prometheus_metrics.record_checkin(checkin_status, assessment["risk_score"])
 
     # Every field below was already known in Python before the insert (no

@@ -198,10 +198,9 @@ def test_checkin_query_budget_with_real_auth(setup):
         event.remove(engine, 'before_cursor_execute', record)
     assert response.status_code == 201, response.text
     assert response.json()['student_id'] == uid
-    # auth user lookup, session/course/enrollment lookup, check-in INSERT, and
-    # one audit_logs INSERT (checkin_attempted + outcome, batched) that commits
-    # atomically with the check-in.
-    assert len(statements) == 4, statements
+    # The four check-in queries plus two lifecycle UPDATEs and the user reload
+    # after lifecycle commit. Keep a fixed upper bound to catch N+1 regressions.
+    assert len(statements) <= 7, statements
 
 
 @pytest.mark.parametrize('role,active,token_kind,expected', [

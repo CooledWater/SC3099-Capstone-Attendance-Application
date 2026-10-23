@@ -528,7 +528,10 @@ def test_filters_narrow_the_result_set(api, admin, scenario):
     assert failures and all(i["success"] is False for i in failures)
     successes = _events(api, admin, success="true")
     assert successes and all(i["success"] is True for i in successes)
-    assert len(failures) + len(successes) == _audit(api, admin, limit=1)["total"]
+    # A result page is capped at 1000 rows; partition totals, not page lengths.
+    failed_total = _audit(api, admin, success="false", limit=1)["total"]
+    succeeded_total = _audit(api, admin, success="true", limit=1)["total"]
+    assert failed_total + succeeded_total == _audit(api, admin, limit=1)["total"]
 
     mine = _events(api, admin, user_id=scenario["near"]["id"])
     assert mine and all(i["user_id"] == scenario["near"]["id"] for i in mine)

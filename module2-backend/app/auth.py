@@ -1,4 +1,6 @@
 import os
+import secrets
+from app.security import enforce_rate_limit, validate_settings
 from datetime import datetime, timedelta
 
 from fastapi import Depends, HTTPException, status
@@ -18,6 +20,7 @@ pwd_context = CryptContext(
 
 security = HTTPBearer()
 
+validate_settings()
 JWT_SECRET = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -67,6 +70,7 @@ def create_refresh_token(user_id: str, role: str, session_app: str = "saiv") -> 
         "role": role,
         "type": "refresh",
         "session_app": session_app,
+        "jti": secrets.token_hex(16),
         "exp": expire
     }
 
@@ -120,6 +124,7 @@ def get_current_user(
             detail="User not found or inactive"
         )
 
+    enforce_rate_limit("api", user.id, 1000, 3600)
     return user
 
 

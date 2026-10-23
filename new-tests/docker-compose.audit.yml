@@ -1,0 +1,43 @@
+# Disposable audit environment. Never points at Supabase or exposes ports.
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: audit
+      POSTGRES_PASSWORD: isolated-audit-password
+      POSTGRES_DB: audit
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U audit']
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+  face:
+    image: sc3099-capstone-attendance-application-face-recognition:latest
+    environment:
+      TELEMETRY_ENABLED: 'false'
+      JSON_LOGGING_ENABLED: 'false'
+      MPLCONFIGDIR: /tmp/matplotlib
+      PYTHONDONTWRITEBYTECODE: '1'
+    volumes:
+      - ../module3-face-recognition/app:/app/app:ro
+      - ..:/repo:ro
+      - ${SAIV_AUDIT_RESULTS_DIR:-/tmp/saiv-audit-results}:/results
+  backend:
+    image: sc3099-capstone-attendance-application-backend:latest
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_started}
+      face: {condition: service_started}
+    environment:
+      DATABASE_URL: postgresql://audit:isolated-audit-password@db:5432/audit
+      JWT_SECRET: isolated-audit-only-not-production-secret
+      REDIS_URL: redis://redis:6379
+      FACE_SERVICE_URL: http://face:8001
+      PYTHONDONTWRITEBYTECODE: '1'
+    volumes:
+      - ../module2-backend/app:/app/app:ro
+      - ..:/repo:ro
+      - ${SAIV_AUDIT_RESULTS_DIR:-/tmp/saiv-audit-results}:/results

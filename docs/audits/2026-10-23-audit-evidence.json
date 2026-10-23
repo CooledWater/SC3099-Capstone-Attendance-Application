@@ -1,0 +1,246 @@
+{
+  "stress_before": {
+    "100_concurrent_reads": {
+      "requests": 100,
+      "statuses": {
+        "200": 22,
+        "500": 78
+      },
+      "p95_seconds": 20.194,
+      "max_seconds": 20.202,
+      "errors": [
+        {
+          "status": 500,
+          "seconds": 10.147575629998755,
+          "detail": "Internal Server Error"
+        },
+        {
+          "status": 500,
+          "seconds": 10.165587671999674,
+          "detail": "Internal Server Error"
+        },
+        {
+          "status": 500,
+          "seconds": 10.151334464000684,
+          "detail": "Internal Server Error"
+        }
+      ]
+    },
+    "100_concurrent_checkins": {
+      "requests": 100,
+      "statuses": {
+        "201": 30,
+        "500": 70
+      },
+      "p95_seconds": 20.2,
+      "max_seconds": 20.227,
+      "errors": [
+        {
+          "status": 500,
+          "seconds": 10.057631880001281,
+          "detail": "Internal Server Error"
+        },
+        {
+          "status": 500,
+          "seconds": 10.09694283799763,
+          "detail": "Internal Server Error"
+        },
+        {
+          "status": 500,
+          "seconds": 10.104193838000356,
+          "detail": "Internal Server Error"
+        }
+      ]
+    },
+    "duplicate_replay": {
+      "requests": 10,
+      "statuses": {
+        "400": 10
+      },
+      "p95_seconds": 0.04,
+      "max_seconds": 0.041,
+      "errors": [
+        {
+          "status": 400,
+          "seconds": 0.01711924999835901,
+          "detail": "{\"detail\":\"Already checked in to this session\"}"
+        },
+        {
+          "status": 400,
+          "seconds": 0.028204165999341058,
+          "detail": "{\"detail\":\"Already checked in to this session\"}"
+        },
+        {
+          "status": 400,
+          "seconds": 0.04089270799886435,
+          "detail": "{\"detail\":\"Already checked in to this session\"}"
+        }
+      ]
+    },
+    "location_accuracy_meters_invalid_status": 400,
+    "latitude_invalid_status": 500
+  },
+  "stress_after": {
+    "100_concurrent_reads": {
+      "requests": 100,
+      "statuses": {
+        "200": 100
+      },
+      "p95_seconds": 0.189,
+      "max_seconds": 0.198,
+      "errors": []
+    },
+    "100_concurrent_checkins": {
+      "requests": 100,
+      "statuses": {
+        "201": 100
+      },
+      "p95_seconds": 1.207,
+      "max_seconds": 1.273,
+      "errors": []
+    },
+    "duplicate_replay": {
+      "requests": 10,
+      "statuses": {
+        "400": 10
+      },
+      "p95_seconds": 0.072,
+      "max_seconds": 0.078,
+      "errors": [
+        {
+          "status": 400,
+          "seconds": 0.044164958999317605,
+          "detail": "{\"detail\":\"Already checked in to this session\"}"
+        },
+        {
+          "status": 400,
+          "seconds": 0.053941792000841815,
+          "detail": "{\"detail\":\"Already checked in to this session\"}"
+        },
+        {
+          "status": 400,
+          "seconds": 0.07767287499882514,
+          "detail": "{\"detail\":\"Already checked in to this session\"}"
+        }
+      ]
+    },
+    "location_accuracy_meters_invalid_status": 422,
+    "latitude_invalid_status": 422
+  },
+  "duplicate_before": {
+    "400": 7,
+    "201": 1,
+    "500": 2
+  },
+  "duplicate_after": {
+    "400": 9,
+    "201": 1
+  },
+  "strict_redis": {
+    "privilege_registration": 403,
+    "concurrent_refresh_replay": {
+      "200": 1,
+      "401": 99
+    },
+    "login_limit_enforced": 429
+  },
+  "privacy": {
+    "binary_columns": [],
+    "raw_image_prefix_matches": [],
+    "invalid_template_hashes": {
+      "users": 0,
+      "checkins": 0
+    },
+    "non_bcrypt_API_passwords": 0
+  },
+  "test_suites": [
+    {
+      "suite": "public-final.xml",
+      "tests": 103,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    {
+      "suite": "face-baseline.xml",
+      "tests": 47,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "advanced-security.xml",
+      "tests": 26,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_audit_logs.py.xml",
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_auth_cookie.py.xml",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_devices_sessions_checkins.py.xml",
+      "tests": 31,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_invitations.py.xml",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_missing_endpoints.py.xml",
+      "tests": 38,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_motion_backend.py.xml",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_my_checkin_session_filter.py.xml",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_session_deletion.py.xml",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "test_session_lifecycle.py.xml",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "frontend_regressions": {
+    "passed": 33,
+    "failed": 0
+  }
+}
