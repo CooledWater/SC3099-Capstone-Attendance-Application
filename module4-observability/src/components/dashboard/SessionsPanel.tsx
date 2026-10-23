@@ -109,20 +109,16 @@ export function SessionsPanel({
   }
   const [form, setForm] = useState({
     course_id: "",
-    room: "",
+    venue: "",
     starts_at: "",
     duration_minutes: "60",
-    geofence_lat: "",
-    geofence_lng: "",
     geofence_radius_m: "100",
   });
   const [editForm, setEditForm] = useState({
     course_id: "",
-    room: "",
+    venue: "",
     starts_at: "",
     duration_minutes: "60",
-    geofence_lat: "",
-    geofence_lng: "",
     geofence_radius_m: "100",
   });
   const selectedCourseEnrollmentCount = useQuery({
@@ -206,8 +202,8 @@ export function SessionsPanel({
       toast.error("Choose a course assigned to your account.");
       return;
     }
-    if (!form.course_id || !form.room || !form.starts_at) {
-      toast.error("Course, room and start time are required.");
+    if (!form.course_id || !form.venue || !form.starts_at) {
+      toast.error("Course, venue and start time are required.");
       return;
     }
     setSaving(true);
@@ -226,7 +222,7 @@ export function SessionsPanel({
         timeoutMs: 60000,
         body: JSON.stringify({
           course_id: form.course_id,
-          name: `${form.room} session`,
+          name: `${form.venue} session`,
           session_type: "lecture",
           scheduled_start: scheduledStart.toISOString(),
           checkin_opens_at: scheduledStart.toISOString(),
@@ -236,9 +232,7 @@ export function SessionsPanel({
           scheduled_end: new Date(
             scheduledStart.getTime() + Number(form.duration_minutes) * 60000,
           ).toISOString(),
-          venue_name: form.room,
-          venue_latitude: form.geofence_lat ? Number(form.geofence_lat) : null,
-          venue_longitude: form.geofence_lng ? Number(form.geofence_lng) : null,
+          venue_name: form.venue,
           geofence_radius_meters: Number(form.geofence_radius_m) || 100,
         }),
       });
@@ -250,22 +244,20 @@ export function SessionsPanel({
     }
     toast.success("Session created.");
     setOpen(false);
-    setForm({ ...form, room: "", starts_at: "" });
+    setForm({ ...form, venue: "", starts_at: "" });
     qc.invalidateQueries({ queryKey: ["sessions"] });
   }
 
   function startEditing(session: SessionRow) {
     setEditForm({
       course_id: session.course_id,
-      room: session.room === "Not set" ? "" : session.room,
+      venue: session.room === "Not set" ? "" : session.room,
       starts_at: toSingaporeDateTimeLocal(session.starts_at),
       duration_minutes: String(
         (parseApiDateTime(session.ends_at).getTime() -
           parseApiDateTime(session.starts_at).getTime()) /
           60000,
       ),
-      geofence_lat: session.geofence_lat == null ? "" : String(session.geofence_lat),
-      geofence_lng: session.geofence_lng == null ? "" : String(session.geofence_lng),
       geofence_radius_m: String(session.geofence_radius_m),
     });
     setEditingSessionId(session.id);
@@ -280,10 +272,10 @@ export function SessionsPanel({
     if (
       session.status !== "scheduled" ||
       !editForm.course_id ||
-      !editForm.room.trim() ||
+      !editForm.venue.trim() ||
       !editForm.starts_at
     ) {
-      toast.error("Choose a course, room and start time for this scheduled session.");
+      toast.error("Choose a course, venue and start time for this scheduled session.");
       return;
     }
     const scheduledStart = parseSingaporeDateTimeLocal(editForm.starts_at);
@@ -318,14 +310,12 @@ export function SessionsPanel({
           method: "PATCH",
           body: JSON.stringify({
             course_id: editForm.course_id,
-            name: `${editForm.room.trim()} session`,
+            name: `${editForm.venue.trim()} session`,
             scheduled_start: scheduledStart.toISOString(),
             scheduled_end: scheduledEnd.toISOString(),
             checkin_opens_at: shiftedOpen.toISOString(),
             checkin_closes_at: shiftedClose.toISOString(),
-            venue_name: editForm.room.trim(),
-            venue_latitude: editForm.geofence_lat ? Number(editForm.geofence_lat) : null,
-            venue_longitude: editForm.geofence_lng ? Number(editForm.geofence_lng) : null,
+            venue_name: editForm.venue.trim(),
             geofence_radius_meters: Number(editForm.geofence_radius_m) || 100,
           }),
         },
@@ -527,12 +517,12 @@ export function SessionsPanel({
             </select>
           </label>
           <label className="text-xs text-muted-foreground">
-            Room
+            Venue
             <input
               className={`${input} mt-1`}
-              value={form.room}
-              onChange={(e) => setForm({ ...form, room: e.target.value })}
-              placeholder="Hall B-204"
+              value={form.venue}
+              onChange={(e) => setForm({ ...form, venue: e.target.value })}
+              placeholder="Lecture Hall B"
             />
           </label>
           <label className="text-xs text-muted-foreground">
@@ -554,24 +544,6 @@ export function SessionsPanel({
               className={`${input} mt-1`}
               value={form.duration_minutes}
               onChange={(event) => setForm({ ...form, duration_minutes: event.target.value })}
-            />
-          </label>
-          <label className="text-xs text-muted-foreground">
-            Geofence latitude
-            <input
-              className={`${input} mt-1`}
-              value={form.geofence_lat}
-              onChange={(e) => setForm({ ...form, geofence_lat: e.target.value })}
-              placeholder="1.296600"
-            />
-          </label>
-          <label className="text-xs text-muted-foreground">
-            Geofence longitude
-            <input
-              className={`${input} mt-1`}
-              value={form.geofence_lng}
-              onChange={(e) => setForm({ ...form, geofence_lng: e.target.value })}
-              placeholder="103.776400"
             />
           </label>
           <label className="text-xs text-muted-foreground">
@@ -869,11 +841,11 @@ export function SessionsPanel({
                   </select>
                 </label>
                 <label className="text-xs text-muted-foreground sm:col-span-2">
-                  Room
+                  Venue
                   <input
                     className={`${input} mt-1`}
-                    value={editForm.room}
-                    onChange={(event) => setEditForm({ ...editForm, room: event.target.value })}
+                    value={editForm.venue}
+                    onChange={(event) => setEditForm({ ...editForm, venue: event.target.value })}
                     required
                   />
                 </label>
@@ -915,34 +887,6 @@ export function SessionsPanel({
                     value={editForm.duration_minutes}
                     onChange={(event) =>
                       setEditForm({ ...editForm, duration_minutes: event.target.value })
-                    }
-                  />
-                </label>
-                <label className="text-xs text-muted-foreground">
-                  Geofence latitude
-                  <input
-                    type="number"
-                    step="any"
-                    min="-90"
-                    max="90"
-                    className={`${input} mt-1`}
-                    value={editForm.geofence_lat}
-                    onChange={(event) =>
-                      setEditForm({ ...editForm, geofence_lat: event.target.value })
-                    }
-                  />
-                </label>
-                <label className="text-xs text-muted-foreground">
-                  Geofence longitude
-                  <input
-                    type="number"
-                    step="any"
-                    min="-180"
-                    max="180"
-                    className={`${input} mt-1`}
-                    value={editForm.geofence_lng}
-                    onChange={(event) =>
-                      setEditForm({ ...editForm, geofence_lng: event.target.value })
                     }
                   />
                 </label>
