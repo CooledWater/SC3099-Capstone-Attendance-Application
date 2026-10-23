@@ -75,6 +75,7 @@ export function buildCourseStats(
 export function InstructorView({ userId }: { userId: string }) {
   const [tab, setTab] = useState<Tab>("overview");
   const [selectedCourseId, setSelectedCourseId] = useState("all");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
   const checkIns = useQuery({
     queryKey: ["check-ins"],
     queryFn: fetchCheckIns,
@@ -171,14 +172,55 @@ export function InstructorView({ userId }: { userId: string }) {
       )}
 
       {tab === "sessions" && (
-        <SessionsPanel rows={rows} canCreate courseIds={visibleCourseIds} currentUserId={userId} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} />
+        <SessionsPanel
+          rows={rows}
+          canCreate
+          courseIds={visibleCourseIds}
+          currentUserId={userId}
+          selectedCourseId={selectedCourseId}
+          onCourseChange={setSelectedCourseId}
+          onViewSession={(session) => {
+            setSelectedCourseId(session.course_id);
+            setSelectedSessionId(session.id);
+            setTab("checkins");
+          }}
+        />
       )}
       {tab === "checkins" && (
-        <CheckInsPanel rows={rows} loading={checkIns.isLoading} courseIds={visibleCourseIds} />
+        <CheckInsPanel
+          rows={rows}
+          loading={checkIns.isLoading}
+          courseIds={visibleCourseIds}
+          instructor={{
+            courses: (courses.data ?? []).filter((course) => course.instructor_id === userId),
+            selectedCourseId,
+            onCourseChange: (id) => {
+              setSelectedCourseId(id);
+              setSelectedSessionId("");
+            },
+            userId,
+            initialSessionId: selectedSessionId,
+          }}
+        />
       )}
-      {tab === "enrollments" && <EnrollmentsPanel courses={(courses.data ?? []).filter((course) => course.instructor_id === userId)} loading={courses.isLoading} error={courses.isError} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} canManage />}
+      {tab === "enrollments" && (
+        <EnrollmentsPanel
+          courses={(courses.data ?? []).filter((course) => course.instructor_id === userId)}
+          loading={courses.isLoading}
+          error={courses.isError}
+          selectedCourseId={selectedCourseId}
+          onCourseChange={setSelectedCourseId}
+          canManage
+        />
+      )}
       {tab === "audit" && <AuditLogs />}
-      {tab === "export" && <ExportPanel courses={(courses.data ?? []).filter(course => course.instructor_id === userId)} loading={courses.isLoading} error={courses.isError} />}
+      {tab === "export" && (
+        <ExportPanel
+          courses={(courses.data ?? []).filter((course) => course.instructor_id === userId)}
+          loading={courses.isLoading}
+          error={courses.isError}
+        />
+      )}
       {tab === "metrics" && <MetricsPanel rows={rows} />}
     </>
   );

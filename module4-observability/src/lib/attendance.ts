@@ -59,7 +59,7 @@ export type EnrollmentRow = {
   course_code: string;
   course_name: string;
 };
-type ApiSession = {
+export type ApiSession = {
   id: string;
   course_id: string;
   instructor_id?: string | null;
@@ -81,11 +81,18 @@ type ApiSession = {
 };
 
 export async function fetchSessions() {
-  const result = await api.request<{ items: ApiSession[] }>("/sessions/?limit=100");
-  return result.items.map(toSessionRow);
+  const items: ApiSession[] = [];
+  while (true) {
+    const result = await api.request<{ items: ApiSession[]; total?: number }>(
+      `/sessions/?limit=100${items.length ? `&offset=${items.length}` : ""}`,
+    );
+    items.push(...result.items);
+    if (!result.items.length || result.total == null || items.length >= result.total) break;
+  }
+  return items.map(toSessionRow);
 }
 
-function toSessionRow(s: ApiSession): SessionRow {
+export function toSessionRow(s: ApiSession): SessionRow {
   return {
     id: s.id,
     course_id: s.course_id,
@@ -134,42 +141,57 @@ export async function fetchCheckInsForSessions(sessions: SessionRow[]) {
   const groups: RawCheckIn[][] = [];
   let next = 0;
   // Leave database capacity available for interactive actions such as creating sessions.
-  await Promise.all(Array.from({ length: Math.min(2, sessions.length) }, async () => {
-    while (next < sessions.length) {
-      const session = sessions[next++]!;
-      const items = await api.request<RawCheckIn[]>(`/checkins/session/${session.id}`);
-      groups.push(items.filter(item => item.session_id === session.id).map(item => ({
-        ...item, session_name: session.courses?.name ?? null,
-        course_code: session.courses?.code ?? null,
-      })));
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: Math.min(2, sessions.length) }, async () => {
+      while (next < sessions.length) {
+        const session = sessions[next++]!;
+        const items = await api.request<RawCheckIn[]>(`/checkins/session/${session.id}`);
+        groups.push(
+          items
+            .filter((item) => item.session_id === session.id)
+            .map((item) => ({
+              ...item,
+              session_name: session.courses?.name ?? null,
+              course_code: session.courses?.code ?? null,
+            })),
+        );
+      }
+    }),
+  );
   return groups.flat().sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
 }
 export async function fetchCheckIns() {
-  const sessions = new Map((await fetchSessions()).map(session => [session.id, session]));
+  const sessions = new Map((await fetchSessions()).map((session) => [session.id, session]));
   const items: RawCheckIn[] = [];
   let offset = 0;
   while (true) {
     const page = await api.request<{ items: RawCheckIn[]; total: number }>(
-      `/checkins/?limit=100&offset=${offset}`,
+      `/checkins/?limit=50&offset=${offset}`,
     );
     items.push(...page.items);
     offset += page.items.length;
     if (!page.items.length || offset >= page.total) break;
   }
-  return items.filter(item => sessions.has(item.session_id)).map(item => {
-    const session = sessions.get(item.session_id)!;
-    return { ...item, session_name: session.courses?.name ?? null,
-      course_code: session.courses?.code ?? null };
-  }).sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
+  return items
+    .filter((item) => sessions.has(item.session_id))
+    .map((item) => {
+      const session = sessions.get(item.session_id)!;
+      return {
+        ...item,
+        session_name: session.courses?.name ?? null,
+        course_code: session.courses?.code ?? null,
+      };
+    })
+    .sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
 }
 export const fetchMyCheckIns = () => api.request<RawCheckIn[]>("/checkins/my-checkins?limit=100");
 export async function fetchCourses() {
   const items: CourseRow[] = [];
   let total = Infinity;
   while (items.length < total) {
-    const page = await api.request<{ items: CourseRow[]; total: number }>(`/courses/?limit=100&offset=${items.length}`);
+    const page = await api.request<{ items: CourseRow[]; total: number }>(
+      `/courses/?limit=100&offset=${items.length}`,
+    );
     items.push(...page.items);
     total = page.total;
     if (!page.items.length) break;
@@ -194,6 +216,7 @@ export function toRows(list: RawCheckIn[]): CheckInRow[] {
     time: c.checked_in_at,
     status: c.status,
     risk: Math.round((c.risk_score ?? 0) * 100),
+    riskScore: c.risk_score ?? 0,
     liveness: c.liveness_score ?? 0,
     faceMatch: c.face_match_score ?? 0,
     lat: c.latitude ?? null,

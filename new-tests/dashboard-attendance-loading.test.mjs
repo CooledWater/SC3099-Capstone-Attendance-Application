@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import vm from 'node:vm';
-const require = createRequire(new URL('../module1-frontend/package.json', import.meta.url));
+const require = createRequire(new URL('../module4-observability/package.json', import.meta.url));
 const ts = require('typescript');
 const source = readFileSync(new URL('../module4-observability/src/lib/attendance.ts', import.meta.url), 'utf8');
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -25,7 +25,10 @@ test('instructor refresh paginates check-ins without one request per session', a
   const rows = await api.fetchCheckIns();
   assert.equal(rows.length, 2);
   assert.equal(rows[0].course_code, 'SC3099');
-  assert.deepEqual(calls, ['/sessions/?limit=100', '/checkins/?limit=100&offset=0', '/checkins/?limit=100&offset=1']);
+  assert.equal(calls[0], '/sessions/?limit=100');
+  assert.equal(calls.length, 3);
+  assert.match(calls[1], /^\/checkins\/\?limit=\d+&offset=0$/);
+  assert.match(calls[2], /^\/checkins\/\?limit=\d+&offset=1$/);
 });
 test('TA loading keeps session-scoped endpoint and caps concurrent requests at two', async () => {
   let active = 0, peak = 0;
@@ -39,4 +42,10 @@ test('TA loading keeps session-scoped endpoint and caps concurrent requests at t
   const rows = await api.fetchCheckInsForSessions(Array.from({ length: 8 }, (_, i) => session(String(i))));
   assert.equal(peak, 2);
   assert.equal(rows.length, 8);
+});
+
+test('session row retains the exact API risk score on the 0–1 scale', () => {
+  const api = load(async () => ({}));
+  const [row] = api.toRows([{ ...checkin('a', 's'), risk_score: 0.174389 }]);
+  assert.equal(row.riskScore, 0.174389);
 });

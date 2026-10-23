@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { SessionCalendar } from "./SessionCalendar";
+import { mondayOf } from "@/lib/session-calendar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { MoreHorizontal } from "lucide-react";
@@ -50,6 +52,7 @@ export function SessionsPanel({
   currentUserId,
   selectedCourseId: controlledCourseId,
   onCourseChange,
+  onViewSession,
 }: {
   rows: CheckInRow[];
   canCreate: boolean;
@@ -57,20 +60,39 @@ export function SessionsPanel({
   currentUserId?: string;
   selectedCourseId?: string;
   onCourseChange?: (id: string) => void;
+  onViewSession?: (session: SessionRow) => void;
 }) {
   const qc = useQueryClient();
-  const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions, refetchInterval: 5000 });
+  const sessions = useQuery({
+    queryKey: ["sessions"],
+    queryFn: fetchSessions,
+    refetchInterval: 5000,
+  });
   const courses = useQuery({
     queryKey: ["courses"],
     queryFn: fetchCourses,
   });
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"list" | "calendar">("list");
+  const [week, setWeek] = useState(() => mondayOf(Date.now()));
+  const newFormRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (open) {
+      newFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      newFormRef.current?.querySelector("select")?.focus();
+    }
+  }, [open]);
   const [saving, setSaving] = useState(false);
   const [savingSessionId, setSavingSessionId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [localCourseId, setLocalCourseId] = useState("all");
   const selectedCourseId = controlledCourseId ?? localCourseId;
   const setSelectedCourseId = onCourseChange ?? setLocalCourseId;
+  useEffect(() => {
+    setEditingSessionId(null);
+    setDeleteTarget(null);
+    setOpen(false);
+  }, [selectedCourseId]);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null);
   const [exportingSessionId, setExportingSessionId] = useState<string | null>(null);
@@ -191,7 +213,11 @@ export function SessionsPanel({
     setSaving(true);
     try {
       const scheduledStart = parseSingaporeDateTimeLocal(form.starts_at);
-      if (!scheduledStart || !Number.isSafeInteger(Number(form.duration_minutes)) || Number(form.duration_minutes) <= 0) {
+      if (
+        !scheduledStart ||
+        !Number.isSafeInteger(Number(form.duration_minutes)) ||
+        Number(form.duration_minutes) <= 0
+      ) {
         toast.error("Enter a valid start time and a positive duration.");
         return;
       }
@@ -204,8 +230,12 @@ export function SessionsPanel({
           session_type: "lecture",
           scheduled_start: scheduledStart.toISOString(),
           checkin_opens_at: scheduledStart.toISOString(),
-          checkin_closes_at: new Date(scheduledStart.getTime() + Number(form.duration_minutes) * 60000).toISOString(),
-          scheduled_end: new Date(scheduledStart.getTime() + Number(form.duration_minutes) * 60000).toISOString(),
+          checkin_closes_at: new Date(
+            scheduledStart.getTime() + Number(form.duration_minutes) * 60000,
+          ).toISOString(),
+          scheduled_end: new Date(
+            scheduledStart.getTime() + Number(form.duration_minutes) * 60000,
+          ).toISOString(),
           venue_name: form.room,
           venue_latitude: form.geofence_lat ? Number(form.geofence_lat) : null,
           venue_longitude: form.geofence_lng ? Number(form.geofence_lng) : null,
@@ -229,7 +259,11 @@ export function SessionsPanel({
       course_id: session.course_id,
       room: session.room === "Not set" ? "" : session.room,
       starts_at: toSingaporeDateTimeLocal(session.starts_at),
-      duration_minutes: String((parseApiDateTime(session.ends_at).getTime() - parseApiDateTime(session.starts_at).getTime()) / 60000),
+      duration_minutes: String(
+        (parseApiDateTime(session.ends_at).getTime() -
+          parseApiDateTime(session.starts_at).getTime()) /
+          60000,
+      ),
       geofence_lat: session.geofence_lat == null ? "" : String(session.geofence_lat),
       geofence_lng: session.geofence_lng == null ? "" : String(session.geofence_lng),
       geofence_radius_m: String(session.geofence_radius_m),
@@ -253,19 +287,27 @@ export function SessionsPanel({
       return;
     }
     const scheduledStart = parseSingaporeDateTimeLocal(editForm.starts_at);
-    if (!scheduledStart || !Number.isSafeInteger(Number(editForm.duration_minutes)) || Number(editForm.duration_minutes) <= 0) {
+    if (
+      !scheduledStart ||
+      !Number.isSafeInteger(Number(editForm.duration_minutes)) ||
+      Number(editForm.duration_minutes) <= 0
+    ) {
       toast.error("Enter a valid start time and a positive duration.");
       return;
     }
 
-    const scheduledEnd = new Date(scheduledStart.getTime() + Number(editForm.duration_minutes) * 60000);
+    const scheduledEnd = new Date(
+      scheduledStart.getTime() + Number(editForm.duration_minutes) * 60000,
+    );
     const shiftedOpen = new Date(
-      parseApiDateTime(session.checkin_opens_at).getTime()
-      + scheduledStart.getTime() - parseApiDateTime(session.starts_at).getTime(),
+      parseApiDateTime(session.checkin_opens_at).getTime() +
+        scheduledStart.getTime() -
+        parseApiDateTime(session.starts_at).getTime(),
     );
     const shiftedClose = new Date(
-      parseApiDateTime(session.checkin_closes_at).getTime()
-      + scheduledEnd.getTime() - parseApiDateTime(session.ends_at).getTime(),
+      parseApiDateTime(session.checkin_closes_at).getTime() +
+        scheduledEnd.getTime() -
+        parseApiDateTime(session.ends_at).getTime(),
     );
 
     setSavingSessionId(session.id);
@@ -298,6 +340,7 @@ export function SessionsPanel({
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update session.");
+      await qc.invalidateQueries({ queryKey: ["sessions"] });
       return;
     } finally {
       setSavingSessionId(null);
@@ -331,11 +374,13 @@ export function SessionsPanel({
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not close session.");
+      await qc.invalidateQueries({ queryKey: ["sessions"] });
       return;
     } finally {
       setSavingSessionId(null);
     }
     toast.success("Session closed.");
+    setEditingSessionId(null);
     await qc.invalidateQueries({ queryKey: ["sessions"] });
     await qc.invalidateQueries({ queryKey: ["check-ins"] });
   }
@@ -368,6 +413,7 @@ export function SessionsPanel({
       setSavingSessionId(null);
     }
     toast.success("Session cancelled.");
+    setEditingSessionId(null);
     await qc.invalidateQueries({ queryKey: ["sessions"] });
     await qc.invalidateQueries({ queryKey: ["check-ins"] });
   }
@@ -413,16 +459,45 @@ export function SessionsPanel({
     <div className="mt-4 animate-rise rounded-2xl border border-border bg-glass">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
         <div>
-          <p className="font-display text-sm font-medium text-card-foreground">Sessions</p>
+          <h2 className="font-display text-lg font-semibold">Session management</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {list.length} total · {activeCount} active · {scheduledCount} scheduled · {closedCount}{" "}
-            closed
-            {cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ""}
+            {view === "calendar" ? null : (
+              <>
+                {list.length} total · {activeCount} active · {scheduledCount} scheduled ·{" "}
+                {closedCount} closed{cancelledCount > 0 ? ` · ${cancelledCount} cancelled` : ""}
+              </>
+            )}
           </p>
         </div>
+        {currentUserId && (
+          <div
+            role="group"
+            aria-label="Session view"
+            className="ml-auto flex rounded-lg border border-border p-1"
+          >
+            {(["list", "calendar"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={view === mode}
+                onClick={() => setView(mode)}
+                className={`rounded-md px-3 py-1.5 text-xs capitalize ${view === mode ? "bg-primary/20 text-primary" : "text-muted-foreground"}`}
+              >
+                {mode === "list" ? "List" : "Calendar"}
+              </button>
+            ))}
+          </div>
+        )}
         {canCreate && (!currentUserId || availableCourses.length > 0) && (
           <button
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => {
+              setForm({
+                ...form,
+                course_id:
+                  selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
+              });
+              setOpen((v) => !v);
+            }}
             className="rounded-full bg-gradient-to-r from-primary to-accent px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110"
           >
             {open ? "Cancel" : "New session"}
@@ -432,6 +507,7 @@ export function SessionsPanel({
 
       {canCreate && (!currentUserId || availableCourses.length > 0) && open && (
         <form
+          ref={newFormRef}
           onSubmit={createSession}
           className="grid gap-3 border-b border-border px-5 py-4 sm:grid-cols-2 lg:grid-cols-4"
         >
@@ -470,9 +546,15 @@ export function SessionsPanel({
           </label>
           <label className="text-xs text-muted-foreground">
             Duration (minutes)
-            <input type="number" min="1" step="1" required className={`${input} mt-1`}
+            <input
+              type="number"
+              min="1"
+              step="1"
+              required
+              className={`${input} mt-1`}
               value={form.duration_minutes}
-              onChange={(event) => setForm({ ...form, duration_minutes: event.target.value })} />
+              onChange={(event) => setForm({ ...form, duration_minutes: event.target.value })}
+            />
           </label>
           <label className="text-xs text-muted-foreground">
             Geofence latitude
@@ -529,13 +611,36 @@ export function SessionsPanel({
           </select>
         </label>
       </div>
-      <div className="space-y-4 px-5 py-4">
+      {view === "calendar" && currentUserId && (
+        <SessionCalendar
+          key={`${selectedCourseId}:${week}`}
+          courseId={selectedCourseId}
+          courseIds={courseIds}
+          userId={currentUserId}
+          week={week}
+          onWeekChange={setWeek}
+          onEdit={(row) => startEditing(row)}
+          onCreate={(instant) => {
+            setForm({
+              ...form,
+              course_id:
+                selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
+              starts_at: toSingaporeDateTimeLocal(new Date(instant).toISOString()),
+            });
+            setOpen(true);
+          }}
+        />
+      )}
+      <div className={view === "calendar" ? "hidden" : "space-y-4 px-5 py-4"}>
         {sessions.isLoading && (
           <p className="py-2 text-sm text-muted-foreground">Loading sessions…</p>
         )}
         {sessions.isError && (
           <p role="alert" className="py-2 text-sm text-destructive">
-            Could not load sessions. <button type="button" className="underline" onClick={() => void sessions.refetch()}>Retry</button>
+            Could not load sessions.{" "}
+            <button type="button" className="underline" onClick={() => void sessions.refetch()}>
+              Retry
+            </button>
           </p>
         )}
         {!sessions.isLoading && !sessions.isError && list.length === 0 && (
@@ -549,10 +654,14 @@ export function SessionsPanel({
           list.length > 0 &&
           sessionGroups.map((group) => (
             <div key={group.status} className="space-y-2">
-              <h3 className="px-1 text-sm font-medium text-primary">{group.title}</h3>
+              <h3
+                className={`px-1 text-sm font-medium ${group.status === "active" ? "text-emerald-400" : group.status === "closed" ? "text-red-400" : "text-primary"}`}
+              >
+                {group.title}
+              </h3>
               {group.sessions.map((s) => {
                 const sessionRows = bySession.get(s.id) ?? [];
-                const isOpen = expanded === s.id;
+                const isOpen = !onViewSession && expanded === s.id;
                 const canManage = currentUserId !== undefined && s.instructor_id === currentUserId;
                 return (
                   <div key={s.id} className="rounded-xl border border-border bg-card/40 px-5 py-4">
@@ -562,13 +671,33 @@ export function SessionsPanel({
                           {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          {formatSingaporeDateTime(s.starts_at)} to {formatSingaporeDateTime(s.ends_at)} SGT · {s.room}{" "}
+                          {formatSingaporeDateTime(s.starts_at, {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                            hour12: true,
+                          })}{" "}
+                          -{" "}
+                          {formatSingaporeDateTime(s.ends_at, {
+                            hour: "numeric",
+                            minute: "2-digit",
+                            hour12: true,
+                          })}{" "}
+                          · {s.room}{" "}
                           {s.status === "scheduled" && <> · {s.expected_attendance} enrolled</>}
                           {s.status !== "scheduled" && (
                             <button
                               type="button"
-                              aria-expanded={isOpen}
-                              onClick={() => setExpanded(isOpen ? null : s.id)}
+                              aria-label={`View check-ins for ${s.name}`}
+                              aria-expanded={onViewSession ? undefined : isOpen}
+                              onClick={() =>
+                                onViewSession ? onViewSession(s) : setExpanded(isOpen ? null : s.id)
+                              }
+                              disabled={
+                                !!onViewSession && s.status !== "active" && s.status !== "closed"
+                              }
                               className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               {sessionRows.length} / {s.expected_attendance} checked in →
@@ -627,7 +756,9 @@ export function SessionsPanel({
                                   disabled={exportingSessionId !== null}
                                   onSelect={() => void exportSession(s)}
                                 >
-                                  {exportingSessionId === s.id ? "Exporting…" : "Export session CSV"}
+                                  {exportingSessionId === s.id
+                                    ? "Exporting…"
+                                    : "Export session CSV"}
                                 </DropdownMenuItem>
                               )}
                               {canManage && (s.status === "active" || s.status === "closed") && (
@@ -677,7 +808,7 @@ export function SessionsPanel({
                                   </span>
                                 </td>
                                 <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                                  {r.risk}
+                                  {r.riskScore ?? r.risk / 100}
                                 </td>
                               </tr>
                             ))}
@@ -699,110 +830,135 @@ export function SessionsPanel({
       >
         <DialogContent className="max-h-[90vh] overflow-y-auto border-border bg-card text-card-foreground">
           <DialogHeader>
-            <DialogTitle>Edit scheduled session</DialogTitle>
+            <DialogTitle>
+              {editingSession?.status === "active"
+                ? "Active session details"
+                : "Edit scheduled session"}
+            </DialogTitle>
           </DialogHeader>
           {editingSession && (
             <form
               id="edit-session-form"
               onSubmit={(event) => void updateSession(event, editingSession)}
-              className="grid gap-3 sm:grid-cols-2"
+              className="space-y-3"
             >
-              <label className="text-xs text-muted-foreground sm:col-span-2">
-                Course
-                <select
-                  className={`${input} mt-1`}
-                  value={editForm.course_id}
-                  onChange={(event) => setEditForm({ ...editForm, course_id: event.target.value })}
-                  required
-                >
-                  <option value="">Select course</option>
-                  {availableCourses.map((course) => (
-                    <option key={course.id} value={course.id}>
-                      {course.code} · {course.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs text-muted-foreground sm:col-span-2">
-                Room
-                <input
-                  className={`${input} mt-1`}
-                  value={editForm.room}
-                  onChange={(event) => setEditForm({ ...editForm, room: event.target.value })}
-                  required
-                />
-              </label>
-              <label className="text-xs text-muted-foreground sm:col-span-2">
-                Starts at (Singapore time)
-                <input
-                  type="datetime-local"
-                  className={`${input} mt-1`}
-                  value={editForm.starts_at}
-                  onChange={(event) => setEditForm({ ...editForm, starts_at: event.target.value })}
-                  required
-                />
-              </label>
-              <div className="rounded-lg border border-border bg-glass px-3 py-2 sm:col-span-2">
-                <p className="text-xs text-muted-foreground">Expected attendance</p>
-                <p className="mt-1 text-sm text-foreground">
-                  {selectedCourseEnrollmentCount.isLoading
-                    ? "Loading…"
-                    : selectedCourseEnrollmentCount.isError
-                      ? "Unavailable"
-                      : `${selectedCourseEnrollmentCount.data?.total_enrolled ?? 0} active enrollments`}
-                </p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  {selectedCourseEnrollmentCount.isError
-                    ? "Could not load this course’s enrollment count"
-                    : "Derived from the selected course"}
-                </p>
-              </div>
-          <label className="text-xs text-muted-foreground">
-            Duration (minutes)
-            <input type="number" min="1" step="1" required className={`${input} mt-1`}
-              value={editForm.duration_minutes}
-              onChange={(event) => setEditForm({ ...editForm, duration_minutes: event.target.value })} />
-          </label>
-              <label className="text-xs text-muted-foreground">
-                Geofence latitude
-                <input
-                  type="number"
-                  step="any"
-                  min="-90"
-                  max="90"
-                  className={`${input} mt-1`}
-                  value={editForm.geofence_lat}
-                  onChange={(event) =>
-                    setEditForm({ ...editForm, geofence_lat: event.target.value })
-                  }
-                />
-              </label>
-              <label className="text-xs text-muted-foreground">
-                Geofence longitude
-                <input
-                  type="number"
-                  step="any"
-                  min="-180"
-                  max="180"
-                  className={`${input} mt-1`}
-                  value={editForm.geofence_lng}
-                  onChange={(event) =>
-                    setEditForm({ ...editForm, geofence_lng: event.target.value })
-                  }
-                />
-              </label>
-              <label className="text-xs text-muted-foreground sm:col-span-2">
-                Radius (m)
-                <input
-                  type="number"
-                  min="1"
-                  className={`${input} mt-1`}
-                  value={editForm.geofence_radius_m}
-                  onChange={(event) =>
-                    setEditForm({ ...editForm, geofence_radius_m: event.target.value })
-                  }
-                />
-              </label>
+              <fieldset
+                disabled={
+                  editingSession.status !== "scheduled" ||
+                  savingSessionId !== null ||
+                  editingSession.instructor_id !== currentUserId
+                }
+                className="grid gap-3 sm:grid-cols-2"
+              >
+                <label className="text-xs text-muted-foreground sm:col-span-2">
+                  Course
+                  <select
+                    className={`${input} mt-1`}
+                    value={editForm.course_id}
+                    onChange={(event) =>
+                      setEditForm({ ...editForm, course_id: event.target.value })
+                    }
+                    required
+                  >
+                    <option value="">Select course</option>
+                    {availableCourses.map((course) => (
+                      <option key={course.id} value={course.id}>
+                        {course.code} · {course.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-muted-foreground sm:col-span-2">
+                  Room
+                  <input
+                    className={`${input} mt-1`}
+                    value={editForm.room}
+                    onChange={(event) => setEditForm({ ...editForm, room: event.target.value })}
+                    required
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground sm:col-span-2">
+                  Starts at (Singapore time)
+                  <input
+                    type="datetime-local"
+                    className={`${input} mt-1`}
+                    value={editForm.starts_at}
+                    onChange={(event) =>
+                      setEditForm({ ...editForm, starts_at: event.target.value })
+                    }
+                    required
+                  />
+                </label>
+                <div className="rounded-lg border border-border bg-glass px-3 py-2 sm:col-span-2">
+                  <p className="text-xs text-muted-foreground">Expected attendance</p>
+                  <p className="mt-1 text-sm text-foreground">
+                    {selectedCourseEnrollmentCount.isLoading
+                      ? "Loading…"
+                      : selectedCourseEnrollmentCount.isError
+                        ? "Unavailable"
+                        : `${selectedCourseEnrollmentCount.data?.total_enrolled ?? 0} active enrollments`}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    {selectedCourseEnrollmentCount.isError
+                      ? "Could not load this course’s enrollment count"
+                      : "Derived from the selected course"}
+                  </p>
+                </div>
+                <label className="text-xs text-muted-foreground">
+                  Duration (minutes)
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    className={`${input} mt-1`}
+                    value={editForm.duration_minutes}
+                    onChange={(event) =>
+                      setEditForm({ ...editForm, duration_minutes: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Geofence latitude
+                  <input
+                    type="number"
+                    step="any"
+                    min="-90"
+                    max="90"
+                    className={`${input} mt-1`}
+                    value={editForm.geofence_lat}
+                    onChange={(event) =>
+                      setEditForm({ ...editForm, geofence_lat: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Geofence longitude
+                  <input
+                    type="number"
+                    step="any"
+                    min="-180"
+                    max="180"
+                    className={`${input} mt-1`}
+                    value={editForm.geofence_lng}
+                    onChange={(event) =>
+                      setEditForm({ ...editForm, geofence_lng: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground sm:col-span-2">
+                  Radius (m)
+                  <input
+                    type="number"
+                    min="1"
+                    className={`${input} mt-1`}
+                    value={editForm.geofence_radius_m}
+                    onChange={(event) =>
+                      setEditForm({ ...editForm, geofence_radius_m: event.target.value })
+                    }
+                  />
+                </label>
+              </fieldset>
             </form>
           )}
           <DialogFooter>
@@ -810,18 +966,34 @@ export function SessionsPanel({
               type="button"
               onClick={() => setEditingSessionId(null)}
               disabled={savingSessionId !== null}
-              className="rounded-full border border-border bg-glass px-4 py-2 text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+              className="rounded-full border border-border bg-glass px-4 py-2 text-sm text-muted-foreground disabled:opacity-60"
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              form="edit-session-form"
-              disabled={savingSessionId !== null}
-              className="rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition hover:brightness-110 disabled:opacity-60"
-            >
-              {savingSessionId === editingSessionId ? "Saving…" : "Save changes"}
-            </button>
+            {editingSession?.status === "scheduled" && (
+              <button
+                type="submit"
+                form="edit-session-form"
+                disabled={
+                  savingSessionId !== null || editingSession.instructor_id !== currentUserId
+                }
+                className="rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground disabled:opacity-60"
+              >
+                {savingSessionId === editingSessionId ? "Saving?" : "Save changes"}
+              </button>
+            )}
+            {editingSession?.status === "active" && (
+              <button
+                type="button"
+                disabled={
+                  savingSessionId !== null || editingSession.instructor_id !== currentUserId
+                }
+                onClick={() => void cancelSession(editingSession)}
+                className="rounded-full border border-destructive/40 px-4 py-2 text-sm text-destructive disabled:opacity-50"
+              >
+                {savingSessionId === editingSessionId ? "Cancelling…" : "Cancel session"}
+              </button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -843,7 +1015,7 @@ export function SessionsPanel({
             <AlertDialogCancel disabled={savingSessionId !== null}>Go back</AlertDialogCancel>
             <AlertDialogAction
               disabled={!deleteTarget || savingSessionId !== null}
-              onSelect={(event) => {
+              onClick={(event) => {
                 event.preventDefault();
                 if (deleteTarget) void deleteSession(deleteTarget);
               }}

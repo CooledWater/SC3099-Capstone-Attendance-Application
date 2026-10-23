@@ -3,23 +3,33 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchSessions, type SessionRow } from "@/lib/attendance";
 import { formatSingaporeDateTime } from "@/lib/time";
 import { AttendanceTable, type CheckInRow } from "./AttendanceTable";
+import { InstructorCheckIns } from "./InstructorCheckIns";
+import type { CourseRow } from "@/lib/attendance";
 
 export function CheckInsPanel({
   rows,
   loading,
   courseIds,
   sessionRows,
+  instructor,
 }: {
   rows: CheckInRow[];
   loading: boolean;
   courseIds?: Set<string>;
   sessionRows?: SessionRow[];
+  instructor?: {
+    courses: CourseRow[];
+    selectedCourseId: string;
+    onCourseChange: (id: string) => void;
+    userId: string;
+    initialSessionId?: string;
+  };
 }) {
   const [sessionId, setSessionId] = useState("all");
   const sessions = useQuery({
     queryKey: ["sessions"],
     queryFn: fetchSessions,
-    enabled: sessionRows === undefined,
+    enabled: sessionRows === undefined && !instructor,
   });
 
   const list = useMemo(() => {
@@ -28,6 +38,8 @@ export function CheckInsPanel({
   }, [sessions.data, sessionRows, courseIds]);
 
   const visible = sessionId === "all" ? rows : rows.filter((r) => r.sessionId === sessionId);
+
+  if (instructor) return <InstructorCheckIns {...instructor} />;
 
   return (
     <div className="mt-4">
@@ -54,13 +66,14 @@ export function CheckInsPanel({
                   day: "numeric",
                   hour: "2-digit",
                   minute: "2-digit",
-                })} SGT
+                })}{" "}
+                SGT
               </option>
             ))}
           </select>
         </label>
       </div>
-      <AttendanceTable rows={visible} loading={loading} />
+      <AttendanceTable key={sessionId} rows={visible} loading={loading} />
     </div>
   );
 }

@@ -491,6 +491,11 @@ Instructors may change `course_id` only to a course they teach, and only while t
 is scheduled and has no check-ins. `total_enrolled` / expected attendance is derived from
 the course's active enrollments and is not an editable session field.
 
+Timing fields can be changed only while Scheduled; otherwise PATCH returns 409.
+The Sessions calendar reuses GET/POST/PATCH/DELETE sessions: 30-minute move slots,
+duration and check-in windows preserved on moves, confirmation before saving,
+and Scheduled/Active sessions only. Closed history remains in List/Check-ins.
+
 Sessions automatically become `active` at `scheduled_start` and `closed` at
 `scheduled_end`. The backend reconciles persisted schedules at startup, every
 second, and before session mutations, check-ins and motion challenges.
@@ -525,6 +530,59 @@ and a `session_deleted` audit entry is retained in the same transaction.
 **Response:** `204 No Content`
 
 ---
+
+#### GET /sessions/{session_id}/attendance (instructor roster)
+
+Requires JWT authentication with instructor, TA, or admin role. Instructors
+must own the course/session, or the course must have no assigned instructor,
+matching check-in details/review and session export. Unrelated instructors
+receive 403; missing sessions receive 404. The schema has no TA-course assignment
+relation, so existing TA staff visibility remains global; this endpoint cannot
+claim assignment-level TA restrictions.
+
+Returns a complete, unpaginated session roster for local search/filter/pagination:
+`{session_id, course_id, session_status, expected, items, summary, policy}`.
+Each item is `{student_id, student_name, student_email, checkin_id, checked_in_at,
+attendance, status, risk_score}`; risk_score uses the 0–1 scale. Missing check-ins have null checkin_id/time/status/risk_score.
+Attendance is `present` or `absent`; verification
+retains the five documented statuses. Times have an explicit UTC `Z` suffix.
+Summary contains counts for both attendance categories, `attendance_rate`
+as a fraction in [0,1], and `verification` counts for all five statuses.
+These totals are independent of UI filters and pagination.
+
+Timing policy for this tab: Present requires a check-in at or after scheduled_start
+and strictly before closure (the earlier of scheduled_end and recorded actual_end).
+Absent means no qualifying check-in yet, including while the session is active.
+Stored early/out-of-window records remain visible with their verification status,
+but do not count as Present. Verification does not determine presence: pending,
+rejected, flagged, appealed and approved all count when within this interval.
+Review changes verification only. The instructor Check-ins selector lists only
+Active and Closed sessions; Scheduled and Cancelled sessions are excluded.
+Lifecycle includes schedule-based transitions between background scheduler ticks,
+preserving explicit cancellation/closure. Policy includes `present_from`, `present_before`,
+`all_verification_statuses_count`, and `roster_basis`.
+
+The expected roster uses enrollment at scheduled_start (at current time for
+future sessions), reconstructed from immutable enrollment_added/removed events
+where available and the stored enrolled_at/dropped_at interval otherwise.
+Recorded check-ins are always retained, including students who subsequently
+dropped or re-enrolled. Current is_active alone never defines past absence.
+Historical limitation: enrollment intervals overwritten before audit logging
+existed cannot be reconstructed for students without a recorded check-in. No
+new snapshot/history table is introduced or historical completeness promised.
+
+The dashboard's verification multi-select allows individual statuses to be
+selected together. Selecting only Flagged and/or Appealed consumes every page from
+GET /checkins/flagged with course_id/session_id/limit/offset and filters this
+same roster. Review notes remain optional per the existing request schema;
+only approved/rejected decisions are accepted. The detail risk score remains
+on the API's 0–1 scale; factor weights are shown as returned. The dashboard hides
+the entire Risk factors section for approved check-ins.
+
+Export session check-ins reuses GET /export/session/{session_id}?format=csv,
+with the existing documented columns and instructor/admin permissions. It
+exports all submitted records, including pending/rejected, rather than attempts
+or absent students; search, filters, and pagination do not scope the export.
 
 ### Check-ins
 

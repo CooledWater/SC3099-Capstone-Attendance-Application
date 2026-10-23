@@ -74,7 +74,7 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats, invitations
+from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 
@@ -88,6 +88,7 @@ app = FastAPI(
 )
 
 app.include_router(invitations.router)
+app.include_router(attendance_roster.router)
 app.include_router(motion.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
@@ -1559,6 +1560,12 @@ def list_sessions(
 
     query = db.query(SessionModel)
 
+    if current_user.role == "instructor":
+        query = query.join(Course, Course.id == SessionModel.course_id).filter(or_(
+            SessionModel.instructor_id == current_user.id,
+            Course.instructor_id == current_user.id,
+        ))
+
     if status_filter:
         query = query.filter(SessionModel.status == status_filter)
     if course_id:
@@ -1655,6 +1662,10 @@ def get_session(
             detail="Session not found"
         )
 
+    if current_user.role == "instructor":
+        course = db.get(Course, session.course_id)
+        if session.instructor_id != current_user.id and course.instructor_id != current_user.id:
+            raise HTTPException(403, "Insufficient permissions")
     return _serialize_session(db, session)
 
 
@@ -1724,6 +1735,8 @@ def update_session(
 
     timing_fields = {"scheduled_start", "scheduled_end", "checkin_opens_at", "checkin_closes_at"}
     if timing_fields.intersection(updates):
+        if session.status != "scheduled" or updates.get("status") not in (None, "scheduled"):
+            raise HTTPException(409, "Only scheduled sessions can be rescheduled; refresh the session")
         proposed = {field: updates.get(field, getattr(session, field)) for field in timing_fields}
         if any(value is None for value in proposed.values()):
             raise HTTPException(422, "Session times cannot be null")
@@ -2355,6 +2368,12 @@ def list_session_checkins(
             detail="Session not found"
         )
 
+    session, course = (db.query(SessionModel, Course)
+                      .join(Course, Course.id == SessionModel.course_id)
+                      .filter(SessionModel.id == session_id).one())
+    if not _is_session_staff(current_user, session, course):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     results = []
 
     for _, checkin, student in rows:
@@ -2954,7 +2973,15 @@ def _records_csv_response(records: list[dict], filename: str) -> Response:
     writer = csv.writer(buffer)
     writer.writerow(EXPORT_COLUMNS)
     for record in records:
-        writer.writerow([_csv_safe(record[column]) for column in EXPORT_COLUMNS])
+        values = dict(record)
+        if values.get("checked_in_at"):
+            checked_in_at = datetime.fromisoformat(values["checked_in_at"].replace("Z", "+00:00"))
+            if checked_in_at.tzinfo is None:
+                checked_in_at = checked_in_at.replace(tzinfo=timezone.utc)
+            values["checked_in_at"] = checked_in_at.astimezone(
+                timezone(timedelta(hours=8))
+            ).strftime("%b %d, %Y, %I:%M:%S %p SGT")
+        writer.writerow([_csv_safe(values[column]) for column in EXPORT_COLUMNS])
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
