@@ -18,7 +18,7 @@ export function FaceVerification({ videoRef, capture, cameraReady, session, demo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [challenge, setChallenge] = useState<{ challenge_id: string; expires_at: string }>();
-  const [motion, setMotion] = useState(!!session.require_motion_check || session.require_liveness_check !== false);
+  const motion = session.require_motion_check === true;
   const active = useRef(true);
   const captureEpoch = useRef(0);
   const needEnrollment = !enrolled && (motion || session.require_face_match);
@@ -74,7 +74,6 @@ export function FaceVerification({ videoRef, capture, cameraReady, session, demo
   return <div className="step-content">
     <h2>{needEnrollment ? 'Set up face verification' : motion ? 'Blink twice' : 'Capture your check-in photo'}</h2>
     {needEnrollment && <p>Enroll once so future check-ins can match your face. Review your photo before confirming.</p>}
-    {!needEnrollment && !session.require_motion_check && <label className="consent"><input type="checkbox" checked={motion} disabled={busy || face.recording} onChange={event => { face.cancel(); setChallenge(undefined); setPhoto(''); setMotion(event.target.checked); }}/><span>Use a live blink challenge</span></label>}
     <p role="status" aria-live="polite">{face.guidance}</p>
     {(error || face.error) && <div className="inline-error" role="alert">{error || face.error}</div>}
     {enrolled === null ? <p>Checking enrollment…</p> : needEnrollment || !motion ? <>

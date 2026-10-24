@@ -2,7 +2,9 @@
 
 Students enroll once through the existing `POST /api/v1/users/me/face/enroll` endpoint. The frontend reads `/users/me` before deciding whether enrollment is needed. Enrollment uses a manual photo, preview, and retake. It binds a face to the authenticated account; it does not establish school identity independently.
 
-Check-in offers live blink guidance and temporary sequence capture. An optional photo-only path remains for sessions that do not mandate motion. Existing image APIs and session defaults are unchanged. To require motion, the instructor who owns a session (or an admin) sets `require_motion_check: true` through the existing session create/PATCH API. The dashboard has not been changed; configuring this new policy currently uses the API. Required motion includes an enrolled-face match, even if the legacy face-match flag is false.
+The instructor dashboard's New session form includes **Allow single photo check-in**, unchecked for each new session (including calendar creation). Unchecked sends `require_motion_check: true`, requiring the current two-blink challenge. Checked sends `require_motion_check: false`, selecting a photo-only student flow with preview and retake and no motion-challenge calls. Students have no verification-mode checkbox: their flow follows the session's returned `require_motion_check`, independently of `require_liveness_check`. Enrollment remains a separate one-time photo step when motion or face matching requires it.
+
+Existing image APIs and the API's default `require_motion_check: false` are unchanged; the dashboard explicitly sends its choice. Existing sessions retain their stored policy, and absent/false motion requirements select the student photo flow. The existing session create/PATCH API remains available to the owning instructor or an admin. Required motion includes an enrolled-face match, even if the legacy face-match flag is false. The API still accepts optional motion evidence for sessions without this requirement; the student UI offers only the configured flow. Review/submission requires evidence matching that flow and clears evidence when the selected session policy changes. Demo mode explicitly uses the two-blink flow.
 
 ## Additive API
 
@@ -29,7 +31,19 @@ Only two new metadata tables are introduced: `session_motion_policies` and `moti
 
 Run backend tests separately from native Module 3 tests (both modules name their Python package `app`). `new-tests/test_motion_backend.py` launches its isolated cases in a subprocess. The cases use temporary SQLite and a mocked Module 3 transport; they do not prove actual camera/model accuracy. `new-tests/test_motion_sequence.py` covers temporal logic and contract boundaries. Existing public HTTP tests should target an isolated running backend. Real model tests and real-camera trials remain necessary before enabling required motion for students.
 
-### Validation performed for this change
+`node --test new-tests/session-checkin-policy.test.mjs` exercises the instructor checkbox, creation payloads/reset, student photo/blink/enrollment flows, and evidence guards using the real component handlers with isolated hooks and API transports. The backend motion cases also cover persistence of explicit/default session policies, passive photo verification without a motion challenge, and rejection of photo-only submissions for motion-required sessions. These component tests do not replace browser/webcam validation. The files under `docs/` remain unchanged.
+
+### Session-selected check-in validation (2026-10-24)
+
+Validation used temporary source copies inside the existing Docker containers; builds did not replace the running applications. The public suite used a disposable SQLite backend and the running Module 3 service. Existing public test files and everything under `docs/` were left unchanged.
+
+- `python new-tests/run_session_regressions.py tests/public`: **102 passed, 1 skipped**.
+- `node --test new-tests/session-checkin-policy.test.mjs new-tests/student-attendance-restore.test.mjs new-tests/session-calendar.test.mjs`: **29 passed**, including 18 new component cases.
+- `python -m pytest -q new-tests/backend_motion_cases.py`: **29 passed, 4 failed**. All five added backend cases passed. The same four failures reproduce with the original, unchanged test file: the three parameterized `test_session_list_constant_query_count` cases and `test_read_mode_is_scoped_and_write_rollback_still_works` expect two read queries while the current backend executes three. No backend production code or those assertions were changed.
+- Student frontend production build (including Next.js type/lint checks), standalone `npm run typecheck`, dashboard production build, and ESLint on `SessionsPanel.tsx` passed. Existing warnings remain for the `PullToRefresh.tsx` effect dependency and dashboard bundle size.
+- No manual browser/webcam trial was performed for this UI change. The existing blink, identity, and passive-liveness algorithms were not modified.
+
+### Original motion implementation validation
 
 - Existing backend/public contracts, integration, security, privacy, performance, and refresh-cookie tests: **65 passed, 1 skipped**, against a temporary SQLite backend.
 - Existing public face-recognition HTTP tests: **15 passed**, against the real local Module 3 service.

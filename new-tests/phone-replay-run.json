@@ -1,0 +1,26 @@
+{
+  "monitor_since": "2026-10-24T03:43:24.814131+00:00",
+  "created_sgt": "2026-10-24T11:43:24.814131+08:00",
+  "student_email": "wcstudent1@example.com",
+  "course": "SC4000",
+  "strict_security_mode": false,
+  "venue": "LT1A",
+  "latitude": 1.3472192106767371,
+  "longitude": 103.68029662241148,
+  "radius_meters": 100,
+  "risk_threshold": 0.5,
+  "opens_sgt": "2026-10-24T11:43:54.814131+08:00",
+  "closes_sgt": "2026-10-24T13:43:24.814131+08:00",
+  "sessions": [
+    {
+      "label": "real_face_control",
+      "id": "5a257139-7c6b-4c04-9a3d-e58267c33d74",
+      "name": "Phone replay CONTROL real face (24 Oct 11:43 SGT)"
+    },
+    {
+      "label": "phone_screen",
+      "id": "7b7c2ec3-a22f-43dc-9220-6b256e997c4e",
+      "name": "Phone replay TEST phone display (24 Oct 11:43 SGT)"
+    }
+  ]
+}

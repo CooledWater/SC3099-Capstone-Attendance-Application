@@ -77,6 +77,7 @@ from app.auth import JWT_SECRET, ALGORITHM
 from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
+from app import checkin_diagnostics
 
 Base.metadata.create_all(bind=engine)
 
@@ -2108,6 +2109,7 @@ def _combine_checkin_assessment(
 
 
 @app.post("/api/v1/checkins/", status_code=status.HTTP_201_CREATED)
+@checkin_diagnostics.trace_checkin
 def create_checkin(
     checkin_data: CheckInCreate,
     current_user: User = Depends(require_roles("student")),
@@ -2215,6 +2217,23 @@ def create_checkin(
     checkin_id = str(uuid.uuid4())
     checkin_status = assessment["status"]
     checkin_risk_factors = assessment["risk_factors"]
+    module3_risk = biometrics["module3_risk"]
+    checkin_diagnostics.event(
+        "decision", checkin_id=checkin_id, status=checkin_status, risk_score=assessment["risk_score"],
+        venue_risk_score=geo_assessment["risk_score"],
+        module3_risk_score=module3_risk.risk_score if module3_risk else None,
+        effective_threshold=effective_threshold, distance_meters=geo_assessment["distance_from_venue_meters"],
+        radius_meters=venue["radius_meters"], accuracy_meters=checkin_data.location_accuracy_meters,
+        liveness_available=liveness is not None, face_match_available=face_match is not None,
+        module3_risk_available=module3_risk is not None,
+        liveness_passed=liveness.passed if liveness else None,
+        liveness_score=liveness.score if liveness else None,
+        face_match_passed=face_match.passed if face_match else None,
+        face_match_score=face_match.score if face_match else None,
+        reason=("geo_hard_reject" if geo_assessment["hard_reject"] else
+                "liveness_failed" if liveness is not None and liveness.passed is False else
+                "risk_threshold" if checkin_status == "flagged" else "below_threshold"),
+    )
 
     new_checkin = CheckIn(
         id=checkin_id,
@@ -2268,6 +2287,8 @@ def create_checkin(
         if duplicate:
             raise HTTPException(400, 'Already checked in to this session')
         raise
+    checkin_diagnostics.event("attendance_committed", checkin_id=checkin_id,
+                              status=checkin_status, risk_score=assessment["risk_score"])
     prometheus_metrics.record_checkin(checkin_status, assessment["risk_score"])
 
     # Every field below was already known in Python before the insert (no

@@ -1,0 +1,6 @@
+# Use after docker-compose.yml. Empty session allowlist emits no diagnostics.
+services:
+  backend:
+    environment:
+      CHECKIN_DIAGNOSTICS_ENABLED: "${CHECKIN_DIAGNOSTICS_ENABLED:-false}"
+      CHECKIN_DIAGNOSTIC_SESSION_IDS: "${CHECKIN_DIAGNOSTIC_SESSION_IDS:-}"

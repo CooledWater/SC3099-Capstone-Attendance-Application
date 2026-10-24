@@ -113,6 +113,7 @@ export function SessionsPanel({
     starts_at: "",
     duration_minutes: "60",
     geofence_radius_m: "100",
+    allow_single_photo: false,
   });
   const [editForm, setEditForm] = useState({
     course_id: "",
@@ -234,6 +235,7 @@ export function SessionsPanel({
           ).toISOString(),
           venue_name: form.venue,
           geofence_radius_meters: Number(form.geofence_radius_m) || 100,
+          require_motion_check: !form.allow_single_photo,
         }),
       });
     } catch (error) {
@@ -244,7 +246,7 @@ export function SessionsPanel({
     }
     toast.success("Session created.");
     setOpen(false);
-    setForm({ ...form, venue: "", starts_at: "" });
+    setForm({ ...form, venue: "", starts_at: "", allow_single_photo: false });
     qc.invalidateQueries({ queryKey: ["sessions"] });
   }
 
@@ -483,6 +485,7 @@ export function SessionsPanel({
             onClick={() => {
               setForm({
                 ...form,
+                allow_single_photo: false,
                 course_id:
                   selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
               });
@@ -555,6 +558,21 @@ export function SessionsPanel({
               onChange={(e) => setForm({ ...form, geofence_radius_m: e.target.value })}
             />
           </label>
+          <label className="flex items-start gap-2 text-xs text-muted-foreground sm:col-span-2">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={form.allow_single_photo}
+              disabled={saving}
+              onChange={(event) => setForm({ ...form, allow_single_photo: event.target.checked })}
+            />
+            <span>
+              Allow single photo check-in
+              <small className="mt-1 block">
+                When unchecked, students complete a two-blink challenge.
+              </small>
+            </span>
+          </label>
           <div className="flex items-end">
             <button
               disabled={saving}
@@ -595,6 +613,7 @@ export function SessionsPanel({
           onCreate={(instant) => {
             setForm({
               ...form,
+              allow_single_photo: false,
               course_id:
                 selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
               starts_at: toSingaporeDateTimeLocal(new Date(instant).toISOString()),

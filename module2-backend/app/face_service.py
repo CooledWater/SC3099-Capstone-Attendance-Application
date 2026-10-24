@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from app import checkin_diagnostics
 
 logger = logging.getLogger("saiv.face_service")
 
@@ -132,7 +133,13 @@ class FaceServiceClient:
         return self._client
 
     def _post(self, path: str, payload: dict, timeout: float) -> httpx.Response:
-        return self._get_client().post(path, json=payload, timeout=timeout)
+        try:
+            response = self._get_client().post(path, json=payload, timeout=timeout)
+        except httpx.HTTPError:
+            checkin_diagnostics.observe_response(path)
+            raise
+        checkin_diagnostics.observe_response(path, response)
+        return response
 
     # ------------------------------------------------------------------
     # Check-in path - fail open, never fabricate a pass

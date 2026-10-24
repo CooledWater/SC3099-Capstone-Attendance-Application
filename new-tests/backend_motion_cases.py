@@ -64,6 +64,63 @@ def test_required_motion_cannot_be_bypassed(setup):
     assert response.status_code == 400
 
 
+@pytest.mark.parametrize('motion_setting, expected', [(None, False), (False, False), (True, True)])
+def test_session_creation_preserves_explicit_motion_policy_and_api_default(setup, motion_setting, expected):
+    from app.auth import create_access_token
+    client, uid, sid = setup
+    with SessionLocal() as db:
+        db.get(User, uid).role = 'instructor'
+        course_id = db.get(AttendanceSession, sid).course_id
+        db.commit()
+    now = datetime.utcnow()
+    payload = {'course_id': course_id, 'name': 'Check-in policy',
+               'scheduled_start': (now + timedelta(hours=1)).isoformat() + 'Z',
+               'scheduled_end': (now + timedelta(hours=2)).isoformat() + 'Z'}
+    if motion_setting is not None:
+        payload['require_motion_check'] = motion_setting
+    response = client.post('/api/v1/sessions/', json=payload)
+    assert response.status_code == 201, response.text
+    assert response.json()['require_motion_check'] is expected
+    created_id = response.json()['id']
+    detail = client.get(f'/api/v1/sessions/{created_id}', headers={
+        'Authorization': 'Bearer ' + create_access_token(uid, 'instructor')})
+    assert detail.status_code == 200, detail.text
+    assert detail.json()['require_motion_check'] is expected
+    with SessionLocal() as db:
+        policy = db.get(MotionPolicy, created_id)
+        assert bool(policy and policy.required) is expected
+
+
+def test_single_photo_checkin_uses_passive_liveness_without_motion(setup, monkeypatch):
+    from app.face_service import LivenessResult, RiskResult
+    client, _, sid = setup
+    calls = []
+    def passive(image, challenge_type):
+        calls.append((image, challenge_type))
+        return LivenessResult(True, .95, 'passive', None)
+    monkeypatch.setattr(face_service, 'check_liveness', passive)
+    monkeypatch.setattr(face_service, 'assess_risk', lambda signals: RiskResult(.05, 'low', {}, []))
+    response = client.post('/api/v1/checkins/', json=checkin(sid, liveness_challenge_response='test-photo'))
+    assert response.status_code == 201, response.text
+    assert calls == [('test-photo', 'passive')]
+    assert response.json()['liveness_passed'] is True
+    assert response.json()['liveness_challenge_type'] == 'passive'
+    with SessionLocal() as db:
+        assert db.query(MotionChallenge).filter_by(session_id=sid).count() == 0
+
+
+def test_photo_cannot_replace_proof_for_motion_required_session(setup):
+    from app.models import CheckIn
+    client, _, sid = setup
+    with SessionLocal() as db:
+        db.add(MotionPolicy(session_id=sid, required=True)); db.commit()
+    response = client.post('/api/v1/checkins/', json=checkin(sid, liveness_challenge_response='test-photo'))
+    assert response.status_code == 400, response.text
+    assert 'motion challenge' in response.json()['detail']
+    with SessionLocal() as db:
+        assert db.query(CheckIn).filter_by(session_id=sid).count() == 0
+
+
 def test_sequence_then_checkin_and_no_reuse(setup):
     client, _, sid = setup
     start = client.post('/api/v1/motion/challenges', json={'session_id': sid})
