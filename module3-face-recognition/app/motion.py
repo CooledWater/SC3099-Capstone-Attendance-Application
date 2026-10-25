@@ -123,7 +123,8 @@ def analyze_sequence(request, verify_image):
                     return result()
             if index == 0 or index == len(request.frames)-1:
                 detection = detect_face(image)
-                passive = assess_liveness(image, detection.confidence, detection.bbox, 'passive')
+                passive = assess_liveness(image, detection.confidence, detection.bbox,
+                                          'passive', settings.liveness_threshold)
                 passive_scores.append(passive.liveness_score)
                 if not passive.liveness_passed:
                     return result()

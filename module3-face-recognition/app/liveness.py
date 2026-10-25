@@ -19,6 +19,8 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Sequence
 
+from .config import settings
+
 
 COMPONENT_WEIGHTS: dict[str, float] = {
     "depth": 0.30,
@@ -557,13 +559,13 @@ def assess_liveness(
     face_detection_confidence: float = 0.0,
     face_bbox: Any = None,
     challenge_type: str = "passive",
-    threshold: float = 0.60,
+    threshold: float | None = None,
 ) -> LivenessAnalysis:
     """Analyze one detected face and return aggregate liveness evidence."""
 
     if challenge_type not in SUPPORTED_CHALLENGES:
         raise ValueError(f"Unsupported challenge type: {challenge_type}")
-    threshold = _clamp(threshold)
+    threshold = _clamp(settings.liveness_threshold if threshold is None else threshold)
     try:
         confidence = _clamp(float(face_detection_confidence))
     except (TypeError, ValueError, OverflowError):
@@ -582,6 +584,11 @@ def assess_liveness(
             "mesh_plausibility_score": 0.0,
             "texture_analysis_score": 0.0,
             "color_distribution_score": 0.0,
+            "depth_threshold": settings.liveness_depth_threshold,
+            "mesh_threshold": settings.liveness_mesh_threshold,
+            "depth_passed": False,
+            "mesh_passed": False,
+            "pre_gate_liveness_score": 0.0,
             "challenge_evidence_score": 0.0,
             "challenge_integrity_score": 0.0,
             "single_image_challenge_proxy": challenge_type != "passive",
@@ -631,11 +638,18 @@ def assess_liveness(
         if challenge_type == "passive"
         else 0.40 + 0.60 * challenge_evidence
     )
-    score = _clamp(
+    pre_gate_score = _clamp(
         component_score * presentation_integrity * challenge_integrity
     )
-    score = round(score, 6)
-    passed = score >= threshold
+    pre_gate_score = round(pre_gate_score, 6)
+    depth_passed = snapshot.depth_score >= settings.liveness_depth_threshold
+    mesh_passed = snapshot.mesh_score >= settings.liveness_mesh_threshold
+    # The approved geometry minimums cannot be compensated by texture/colour.
+    # Zero the final score on failure so downstream risk sees failed evidence,
+    # while retaining the original weighted result in scalar diagnostics.
+    geometry_passed = depth_passed and mesh_passed
+    score = pre_gate_score if geometry_passed else 0.0
+    passed = geometry_passed and score >= threshold
 
     details = {
         "face_detection_confidence": _round(confidence),
@@ -650,6 +664,11 @@ def assess_liveness(
         "mesh_plausibility_score": _round(snapshot.mesh_score),
         "texture_analysis_score": _round(texture_score),
         "color_distribution_score": _round(color_score),
+        "depth_threshold": settings.liveness_depth_threshold,
+        "mesh_threshold": settings.liveness_mesh_threshold,
+        "depth_passed": depth_passed,
+        "mesh_passed": mesh_passed,
+        "pre_gate_liveness_score": pre_gate_score,
         "weighted_contributions": {name: _round(value, 6) for name, value in weighted.items()},
         "component_weights": dict(COMPONENT_WEIGHTS),
         "weighted_component_score": _round(component_score, 6),

@@ -199,6 +199,52 @@ def test_service_outage_is_not_reported_as_a_liveness_pass(api, records, monkeyp
     assert 'DO_NOT_RECORD_EXCEPTION' not in json.dumps(records())
 
 
+@pytest.mark.parametrize('score,passed,expected', [
+    (0., False, 'rejected'), (.849999, False, 'rejected'), (.85, True, 'approved'),
+])
+def test_liveness_policy_verdict_reaches_saved_attendance_despite_low_risk(
+    api, records, monkeypatch, score, passed, expected
+):
+    from app.database import SessionLocal
+    from app.models import CheckIn
+    client, payload, _ = api
+    def transport(request):
+        bodies = {
+            '/liveness/check': {'liveness_passed': passed, 'liveness_score': score,
+                'liveness_threshold': .85, 'challenge_type': 'passive', 'details': {
+                    'depth_threshold': .8, 'mesh_threshold': .8,
+                    'depth_passed': score != 0., 'mesh_passed': True,
+                    'pre_gate_liveness_score': .95 if score == 0. else score,
+                    'unapproved_field': 'DO_NOT_RECORD'}},
+            '/face/verify': {'match_passed': True, 'match_score': .99, 'match_threshold': .7},
+            '/risk/assess': {'risk_score': .01, 'risk_level': 'LOW'},
+        }
+        return httpx.Response(200, json=bodies[request.url.path])
+    with httpx.Client(transport=httpx.MockTransport(transport), base_url='http://test') as service:
+        monkeypatch.setattr(face_service, '_client', service)
+        response = client.post('/api/v1/checkins/', json=payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body['status'] == expected
+    assert body['liveness_passed'] is passed
+    assert body['face_match_passed'] is True
+    assert body['risk_score'] == .01
+    with SessionLocal() as db:
+        saved = db.get(CheckIn, body['id'])
+        assert saved.status == expected
+        assert saved.liveness_passed is passed
+        assert saved.liveness_score == score
+        assert (saved.verified_at is not None) is passed
+    observed = next(row['values']['details'] for row in records() if row['stage'] == 'liveness')
+    assert observed['depth_threshold'] == observed['mesh_threshold'] == .8
+    assert observed['depth_passed'] is (score != 0.)
+    assert observed['mesh_passed'] is True
+    assert observed['pre_gate_liveness_score'] == (.95 if score == 0. else score)
+    assert 'DO_NOT_RECORD' not in json.dumps(records())
+    assert records()[-1]['stage'] == 'attendance_committed'
+    assert records()[-1]['values']['status'] == expected
+
+
 def test_failed_commit_never_emits_attendance_committed(api, records, monkeypatch):
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import IntegrityError

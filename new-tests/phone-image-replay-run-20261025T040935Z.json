@@ -1,0 +1,40 @@
+{
+  "run_id": "phone-image-replay-20261025T040935Z",
+  "monitor_since": "2026-10-25T04:09:35.870925+00:00",
+  "created_sgt": "2026-10-25T12:09:35.870925+08:00",
+  "student_email": "wcstudent1@example.com",
+  "course": "SC4000",
+  "course_id": "38dc78ce-5726-480f-b588-6be559ce20a7",
+  "strict_security_mode": false,
+  "venue": "Test Venue 25 Oct",
+  "venue_coordinate_source": "participant-provided DMS: 1 deg 16 min 54.1 sec N, 103 deg 50 min 44.3 sec E",
+  "latitude": 1.2816944444444445,
+  "longitude": 103.84563888888889,
+  "radius_meters": 100.0,
+  "risk_threshold": 0.5,
+  "liveness_threshold": 0.6,
+  "face_match_threshold": 0.7,
+  "opens_sgt": "2026-10-25T12:11:35.870925+08:00",
+  "closes_sgt": "2026-10-25T14:11:35.870925+08:00",
+  "sessions": [
+    {
+      "label": "real_face_control",
+      "id": "76e90dc9-ac12-466d-8f38-252c561565ec",
+      "name": "Phone image replay CONTROL real face (25 Oct 12:11 SGT)"
+    },
+    {
+      "label": "phone_screen",
+      "id": "3293c930-1938-4b88-ac4e-2730eb23b24c",
+      "name": "Phone image replay TEST static phone photo (25 Oct 12:11 SGT)"
+    }
+  ],
+  "conditions": {
+    "capture_device_browser": "unknown",
+    "display_phone": "unknown",
+    "lighting": "participant-reported dim lighting; differences between captures unknown",
+    "screen_brightness": "unknown",
+    "camera_distance": "unknown",
+    "visible_borders_reflections": "participant reports visible phone border; reflections unknown",
+    "photo_provenance": "unknown"
+  }
+}

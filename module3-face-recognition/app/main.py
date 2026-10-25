@@ -472,6 +472,11 @@ def _empty_liveness_details(
         "challenge_evidence_score": 0.0,
         "challenge_integrity_score": 0.0,
         "threshold": settings.liveness_threshold,
+        "depth_threshold": settings.liveness_depth_threshold,
+        "mesh_threshold": settings.liveness_mesh_threshold,
+        "depth_passed": False,
+        "mesh_passed": False,
+        "pre_gate_liveness_score": 0.0,
     }
     details.update(extra)
     return details

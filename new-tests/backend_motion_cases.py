@@ -158,6 +158,27 @@ def test_outage_never_issues_verification(setup, monkeypatch):
     assert client.post('/api/v1/checkins/', json=checkin(sid, motion_verification_id=cid)).status_code == 409
 
 
+def test_two_blinks_with_failed_passive_policy_cannot_issue_or_consume_evidence(setup, monkeypatch):
+    from app.models import CheckIn
+    client, uid, sid = setup
+    with SessionLocal() as db:
+        db.add(MotionPolicy(session_id=sid, required=True))
+        db.commit()
+    monkeypatch.setattr(face_service, '_post', lambda *args: SimpleNamespace(status_code=200, json=lambda: {
+        'passed': False, 'blink_count': 2, 'liveness_score': 0., 'face_match_score': .99}))
+    challenge = client.post('/api/v1/motion/challenges', json={'session_id': sid}).json()['challenge_id']
+    response = client.post(f'/api/v1/motion/challenges/{challenge}/verify', json=frames())
+    assert response.status_code == 200, response.text
+    assert response.json()['passed'] is False
+    assert response.json()['blink_count'] == 2
+    assert response.json()['verification_id'] is None
+    response = client.post('/api/v1/checkins/', json=checkin(sid, motion_verification_id=challenge))
+    assert response.status_code == 409
+    with SessionLocal() as db:
+        assert db.get(MotionChallenge, challenge).state == 'failed'
+        assert db.query(CheckIn).filter_by(student_id=uid, session_id=sid).count() == 0
+
+
 def test_invalid_frame_order_rejected_without_pixels(setup):
     client, _, sid = setup
     cid = client.post('/api/v1/motion/challenges', json={'session_id': sid}).json()['challenge_id']
