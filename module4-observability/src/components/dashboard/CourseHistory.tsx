@@ -115,7 +115,7 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
 
   return (
     <>
-      <section className="lg:col-span-8 rounded-2xl border border-border bg-card/60 p-5 shadow-[var(--shadow-glass)] backdrop-blur">
+      <section className="lg:col-span-8 rounded-2xl border border-primary/40 bg-primary/5 p-5 shadow-[var(--shadow-glass)] backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="font-display text-base text-foreground">Check-in history</h2>

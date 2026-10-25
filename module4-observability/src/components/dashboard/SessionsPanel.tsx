@@ -109,11 +109,13 @@ export function SessionsPanel({
   }
   const [form, setForm] = useState({
     course_id: "",
+    session_name: "",
+    session_type: "lecture",
     venue: "",
     starts_at: "",
     duration_minutes: "60",
     geofence_radius_m: "100",
-    allow_single_photo: false,
+    require_liveness_check: true,
   });
   const [editForm, setEditForm] = useState({
     course_id: "",
@@ -203,8 +205,14 @@ export function SessionsPanel({
       toast.error("Choose a course assigned to your account.");
       return;
     }
-    if (!form.course_id || !form.venue || !form.starts_at) {
-      toast.error("Course, venue and start time are required.");
+    if (
+      !form.course_id ||
+      !form.session_name.trim() ||
+      !form.session_type ||
+      !form.venue ||
+      !form.starts_at
+    ) {
+      toast.error("Course, session name, session type, venue and start time are required.");
       return;
     }
     setSaving(true);
@@ -223,8 +231,8 @@ export function SessionsPanel({
         timeoutMs: 60000,
         body: JSON.stringify({
           course_id: form.course_id,
-          name: `${form.venue} session`,
-          session_type: "lecture",
+          name: form.session_name.trim(),
+          session_type: form.session_type,
           scheduled_start: scheduledStart.toISOString(),
           checkin_opens_at: scheduledStart.toISOString(),
           checkin_closes_at: new Date(
@@ -235,7 +243,8 @@ export function SessionsPanel({
           ).toISOString(),
           venue_name: form.venue,
           geofence_radius_meters: Number(form.geofence_radius_m) || 100,
-          require_motion_check: !form.allow_single_photo,
+          require_motion_check: form.require_liveness_check,
+          require_liveness_check: form.require_liveness_check,
         }),
       });
     } catch (error) {
@@ -246,7 +255,14 @@ export function SessionsPanel({
     }
     toast.success("Session created.");
     setOpen(false);
-    setForm({ ...form, venue: "", starts_at: "", allow_single_photo: false });
+    setForm({
+      ...form,
+      session_name: "",
+      session_type: "lecture",
+      venue: "",
+      starts_at: "",
+      require_liveness_check: true,
+    });
     qc.invalidateQueries({ queryKey: ["sessions"] });
   }
 
@@ -312,7 +328,7 @@ export function SessionsPanel({
           method: "PATCH",
           body: JSON.stringify({
             course_id: editForm.course_id,
-            name: `${editForm.venue.trim()} session`,
+            name: session.name,
             scheduled_start: scheduledStart.toISOString(),
             scheduled_end: scheduledEnd.toISOString(),
             checkin_opens_at: shiftedOpen.toISOString(),
@@ -485,7 +501,7 @@ export function SessionsPanel({
             onClick={() => {
               setForm({
                 ...form,
-                allow_single_photo: false,
+                require_liveness_check: true,
                 course_id:
                   selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
               });
@@ -508,6 +524,7 @@ export function SessionsPanel({
             Course
             <select
               className={`${input} mt-1`}
+              required
               value={form.course_id}
               onChange={(e) => setForm({ ...form, course_id: e.target.value })}
             >
@@ -520,9 +537,34 @@ export function SessionsPanel({
             </select>
           </label>
           <label className="text-xs text-muted-foreground">
+            Session name
+            <input
+              required
+              className={`${input} mt-1`}
+              value={form.session_name}
+              onChange={(e) => setForm({ ...form, session_name: e.target.value })}
+              placeholder="Lecture 5: Neural Networks"
+            />
+          </label>
+          <label className="text-xs text-muted-foreground">
+            Session type
+            <select
+              required
+              className={`${input} mt-1`}
+              value={form.session_type}
+              onChange={(e) => setForm({ ...form, session_type: e.target.value })}
+            >
+              <option value="lecture">Lecture</option>
+              <option value="tutorial">Tutorial</option>
+              <option value="lab">Lab</option>
+              <option value="exam">Exam</option>
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground">
             Venue
             <input
               className={`${input} mt-1`}
+              required
               value={form.venue}
               onChange={(e) => setForm({ ...form, venue: e.target.value })}
               placeholder="Lecture Hall B"
@@ -533,6 +575,7 @@ export function SessionsPanel({
             <input
               type="datetime-local"
               className={`${input} mt-1`}
+              required
               value={form.starts_at}
               onChange={(e) => setForm({ ...form, starts_at: e.target.value })}
             />
@@ -558,18 +601,18 @@ export function SessionsPanel({
               onChange={(e) => setForm({ ...form, geofence_radius_m: e.target.value })}
             />
           </label>
-          <label className="flex items-start gap-2 text-xs text-muted-foreground sm:col-span-2">
+          <label className="flex items-start gap-2 text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
             <input
               type="checkbox"
               className="mt-0.5"
-              checked={form.allow_single_photo}
+              checked={form.require_liveness_check}
               disabled={saving}
-              onChange={(event) => setForm({ ...form, allow_single_photo: event.target.checked })}
+              onChange={(event) => setForm({ ...form, require_liveness_check: event.target.checked })}
             />
             <span>
-              Allow single photo check-in
+              Require liveness check
               <small className="mt-1 block">
-                When unchecked, students complete a two-blink challenge.
+                When enabled, students complete the configured liveness challenge before checking in.
               </small>
             </span>
           </label>
@@ -613,7 +656,7 @@ export function SessionsPanel({
           onCreate={(instant) => {
             setForm({
               ...form,
-              allow_single_photo: false,
+              require_liveness_check: true,
               course_id:
                 selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
               starts_at: toSingaporeDateTimeLocal(new Date(instant).toISOString()),

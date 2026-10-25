@@ -33,7 +33,7 @@ export function LiveActivity({ rows, student = false }: { rows: CheckInRow[]; st
     return `Your check-in for ${session} is pending verification`;
   }
   return (
-    <div className="animate-rise rounded-2xl border border-border bg-glass p-5 lg:col-span-4">
+    <div className="animate-rise rounded-2xl border border-primary/40 bg-primary/5 p-5 lg:col-span-4">
       <p className="mb-4 font-display text-sm font-medium text-card-foreground">Live activity</p>
       <div className="space-y-4">
         {rows.length === 0 && (

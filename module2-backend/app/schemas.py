@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from typing import Literal, Optional
 from datetime import datetime
 
@@ -63,8 +63,15 @@ class CourseUpdate(RequestModel):
     require_device_binding: Optional[bool] = None
     risk_threshold: Optional[float] = Field(default=None, ge=0, le=1)
 class EnrollmentCreate(RequestModel):
-    student_id: str
     course_id: str
+    student_id: Optional[str] = None
+    student_email: Optional[EmailStr] = None
+
+    @model_validator(mode="after")
+    def require_one_student_identifier(self):
+        if (self.student_id is None) == (self.student_email is None):
+            raise ValueError("Provide exactly one of student_id or student_email")
+        return self
 class BulkEnrollmentCreate(RequestModel):
     course_id: str
     student_emails: list[EmailStr] = Field(min_length=1)
@@ -133,6 +140,6 @@ class DeviceCreate(RequestModel):
     app_version: Optional[str] = None
     public_key: Optional[str] = None
 class DeviceUpdate(RequestModel):
-    device_name: Optional[str] = None
+    device_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     is_trusted: Optional[bool] = None
     is_active: Optional[bool] = None

@@ -242,10 +242,10 @@ export function EnrollmentsPanel({
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[600px] text-left text-sm">
+              <table className="w-full min-w-[700px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-border text-xs text-muted-foreground">
-                    {["Student", "Email", "Status", ...(canManage ? ["Action"] : [])].map(
+                    {["Student", "Email", "Face enrolled", "Status", ...(canManage ? ["Action"] : [])].map(
                       (label) => (
                         <th key={label} className="px-2 py-3 font-medium">
                           {label}
@@ -259,6 +259,25 @@ export function EnrollmentsPanel({
                     <tr key={student.id}>
                       <td className="px-2 py-5 font-medium">{student.student_name}</td>
                       <td className="px-2 py-5">{student.student_email}</td>
+                      <td className="px-2 py-5">
+                        {student.face_enrolled ? (
+                          <span
+                            className="text-lg font-semibold text-accent"
+                            aria-label="Face enrolled"
+                            title="Face enrolled"
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <span
+                            className="text-lg font-semibold text-destructive"
+                            aria-label="Face not enrolled"
+                            title="Face not enrolled"
+                          >
+                            ✕
+                          </span>
+                        )}
+                      </td>
                       <td className="px-2 py-5">
                         <span
                           className={`rounded-full px-2 py-1 text-xs ${student.is_active ? "bg-accent/10 text-accent" : "bg-secondary text-muted-foreground"}`}
@@ -402,7 +421,7 @@ function AddStudents({
   resending: string;
 }) {
   const [mode, setMode] = useState("single");
-  const [studentId, setStudentId] = useState("");
+  const [studentEmail, setStudentEmail] = useState("");
   const [text, setText] = useState("");
   const [createAccounts, setCreateAccounts] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -420,8 +439,13 @@ function AddStudents({
     setSuccess("");
     try {
       if (mode === "single") {
-        await enrollStudent(course.id, studentId);
-        setStudentId("");
+        const email = studentEmail.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          setError("Enter a valid student email address.");
+          return;
+        }
+        await enrollStudent(course.id, email);
+        setStudentEmail("");
         setSuccess("Student enrolled successfully.");
       } else {
         const response = await bulkEnroll(course.id, parsed.emails, createAccounts);
@@ -483,18 +507,16 @@ function AddStudents({
         <form onSubmit={(event) => void submit(event)} className="space-y-4">
           {mode === "single" ? (
             <label className="block text-xs text-muted-foreground">
-              Existing student ID (account UUID)
+              Student email address
               <input
+                type="email"
                 required
                 className={input}
-                value={studentId}
+                value={studentEmail}
                 disabled={busy}
-                onChange={(event) => setStudentId(event.target.value)}
+                onChange={(event) => setStudentEmail(event.target.value)}
+                placeholder="student@example.edu"
               />
-              <span className="mt-2 block">
-                Use the existing student's account ID. Student lookup is not available to
-                instructors.
-              </span>
             </label>
           ) : (
             <>
@@ -598,7 +620,7 @@ function AddStudents({
               disabled={
                 busy ||
                 (mode === "single"
-                  ? !studentId.trim()
+                  ? !studentEmail.trim()
                   : !parsed.emails.length || parsed.invalid.length > 0)
               }
             >

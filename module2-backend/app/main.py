@@ -1049,6 +1049,29 @@ def _create_enrollment(
     return new_enrollment
 
 
+def _resolve_enrollment_student(
+    db: Session, student_id: str | None, student_email: str | None
+) -> str:
+    """Resolve the submitted student identifier on the server.
+
+    Email lookup is case-insensitive and locks the account row before the
+    enrollment transaction continues. The client never gets to choose a
+    different student ID after the email has been resolved.
+    """
+    if student_email is not None:
+        normalized_email = str(student_email).strip().lower()
+        student = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .with_for_update()
+            .first()
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student account not found")
+        return student.id
+    return student_id  # type: ignore[return-value]
+
+
 @app.post("/api/v1/enrollments/", status_code=status.HTTP_201_CREATED)
 def create_enrollment(
     enrollment_data: EnrollmentCreate,
@@ -1072,7 +1095,12 @@ def create_enrollment(
         )
 
     new_enrollment = _create_enrollment(
-        db, enrollment_data.student_id, enrollment_data.course_id, current_user.id
+        db,
+        _resolve_enrollment_student(
+            db, enrollment_data.student_id, enrollment_data.student_email
+        ),
+        enrollment_data.course_id,
+        current_user.id,
     )
 
     return _serialize_enrollment(new_enrollment)
@@ -1244,7 +1272,12 @@ def create_enrollment_admin(
         )
 
     new_enrollment = _create_enrollment(
-        db, enrollment_data.student_id, enrollment_data.course_id, current_user.id
+        db,
+        _resolve_enrollment_student(
+            db, enrollment_data.student_id, enrollment_data.student_email
+        ),
+        enrollment_data.course_id,
+        current_user.id,
     )
 
     return _serialize_enrollment(new_enrollment)

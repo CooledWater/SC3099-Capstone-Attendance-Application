@@ -100,37 +100,42 @@ function instructor() {
   view.render();
   const change = (label, value) => { view.input(label).props.onChange({ target: { value } }); view.render(); };
   const open = () => { view.button('New session').props.onClick(); view.render(); };
-  const allowPhoto = checked => { view.input('Allow single photo check-in').props.onChange({ target: { checked } }); view.render(); };
+  const requireLiveness = checked => { view.input('Require liveness check').props.onChange({ target: { checked } }); view.render(); };
   const submit = async () => {
+    change('Session name', 'Neural Networks Lecture');
+    change('Session type', 'lecture');
     change('Venue', 'Lecture Hall'); change('Starts at', '2099-06-01T10:00');
     await view.find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
     view.render();
   };
-  return { ...view, requests, open, allowPhoto, submit };
+  return { ...view, requests, open, requireLiveness, submit };
 }
 
-for (const allowPhoto of [false, true]) {
-  test(`instructor creation sends require_motion_check=${!allowPhoto}`, async () => {
+for (const requireLivenessValue of [false, true]) {
+  test(`instructor creation sends the session name, type, and liveness policy (${requireLivenessValue})`, async () => {
     const view = instructor(); view.open();
-    assert.equal(view.input('Allow single photo check-in').props.checked, false);
-    view.allowPhoto(allowPhoto); await view.submit();
+    assert.equal(view.input('Require liveness check').props.checked, true);
+    view.requireLiveness(requireLivenessValue); await view.submit();
     assert.equal(view.requests.length, 1);
     assert.equal(view.requests[0].path, '/sessions/');
-    assert.equal(view.requests[0].body.require_motion_check, !allowPhoto);
+    assert.equal(view.requests[0].body.name, 'Neural Networks Lecture');
+    assert.equal(view.requests[0].body.session_type, 'lecture');
+    assert.equal(view.requests[0].body.require_liveness_check, requireLivenessValue);
+    assert.equal(view.requests[0].body.require_motion_check, requireLivenessValue);
     view.open();
-    assert.equal(view.input('Allow single photo check-in').props.checked, false);
+    assert.equal(view.input('Require liveness check').props.checked, true);
   });
 }
 
-test('cancel/reopen and calendar creation reset the checkbox to unchecked', () => {
-  const view = instructor(); view.open(); view.allowPhoto(true);
+test('cancel/reopen and calendar creation reset the checkbox to checked', () => {
+  const view = instructor(); view.open(); view.requireLiveness(false);
   view.button('Cancel').props.onClick(); view.render(); view.open();
-  assert.equal(view.input('Allow single photo check-in').props.checked, false);
-  view.allowPhoto(true);
+  assert.equal(view.input('Require liveness check').props.checked, true);
+  view.requireLiveness(false);
   view.button('Calendar').props.onClick(); view.render();
   view.find(node => node.type === 'SessionCalendar').props.onCreate(Date.now() + 86400000);
   view.render();
-  assert.equal(view.input('Allow single photo check-in').props.checked, false);
+  assert.equal(view.input('Require liveness check').props.checked, true);
 });
 
 function verification(session, initiallyEnrolled = true) {

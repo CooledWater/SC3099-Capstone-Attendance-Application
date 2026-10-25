@@ -3,10 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { StudentOverviewCards } from "./StudentOverview";
 import { CourseHistory } from "./CourseHistory";
 import { LiveActivity } from "./LiveActivity";
+import { MyDevicesPanel } from "./MyDevicesPanel";
 import { fetchMyCheckIns, fetchMyEnrollments, toRows } from "@/lib/attendance";
 import { formatSingaporeDateTime } from "@/lib/time";
 
 export function StudentView({ userId = "" }: { userId?: string } = {}) {
+  const [tab, setTab] = useState<"dashboard" | "devices">("dashboard");
   const [overviewCourse, setOverviewCourse] = useState("");
   const [historyFilter, setHistoryFilter] = useState({ courseId: "all", statuses: [] as string[], revision: 0 });
   function showHistory(courseId: string, statuses: string[]) {
@@ -26,13 +28,26 @@ export function StudentView({ userId = "" }: { userId?: string } = {}) {
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+      <div className="mb-4 flex flex-wrap items-center gap-1 rounded-full border border-border bg-glass p-1">
+        {(["dashboard", "devices"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={tab === value}
+            onClick={() => setTab(value)}
+            className={`rounded-full px-3.5 py-1.5 text-xs transition ${tab === value ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            {value === "dashboard" ? "Overview" : "My devices"}
+          </button>
+        ))}
+      </div>
+      {tab === "devices" ? <MyDevicesPanel /> : <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <StudentOverviewCards userId={userId} courseId={overviewCourse} onCourseChange={setOverviewCourse} onAttendance={showHistory} />
         <div id="student-history" className="lg:col-span-8 scroll-mt-4">
           <CourseHistory key={historyFilter.revision} rows={rows} enrolledCourses={enrollments.data ?? []} initialCourseId={historyFilter.courseId} initialStatuses={historyFilter.statuses} />
         </div>
         <LiveActivity rows={rows} student />
-        <section className="lg:col-span-12 rounded-2xl border border-border bg-glass p-5" aria-labelledby="student-enrollments-heading">
+        <section className="lg:col-span-12 rounded-2xl border border-primary/40 bg-primary/5 p-5" aria-labelledby="student-enrollments-heading">
           <h2 id="student-enrollments-heading" className="font-display text-base text-foreground">
             My course enrollments
           </h2>
@@ -71,7 +86,7 @@ export function StudentView({ userId = "" }: { userId?: string } = {}) {
             </div>
           )}
         </section>
-      </div>
+      </div>}
     </>
   );
 }
