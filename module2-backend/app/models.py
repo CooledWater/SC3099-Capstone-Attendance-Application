@@ -326,6 +326,44 @@ Index(
 )
 
 
+class Venue(Base):
+    """Admin-maintained catalogue of lecture halls instructors pick from.
+
+    Not in DATABASE-SCHEMA.md (user-approved extension, 2026-10-25). The live
+    Supabase table was created by hand with matching SQL, so create_all() only
+    builds it on fresh/test databases. Sessions copy a venue's coordinates into
+    their own venue_* columns, so geofencing never reads this table.
+    """
+
+    __tablename__ = "venues"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    code = Column(String(20), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    default_radius_meters = Column(Float, nullable=False, default=100.0)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
+
+
 class CheckIn(Base):
     """A student's attendance record for a session.
 

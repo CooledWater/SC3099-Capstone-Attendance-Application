@@ -75,7 +75,7 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview
+from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 from app import checkin_diagnostics
@@ -92,6 +92,7 @@ app = FastAPI(
 app.include_router(invitations.router)
 app.include_router(attendance_roster.router)
 app.include_router(student_overview.router)
+app.include_router(venues.router)
 app.include_router(motion.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
@@ -1532,6 +1533,14 @@ def create_session(
             detail="checkin_closes_at must be after checkin_opens_at"
         )
 
+    venue_fields = {
+        "venue_name": session_data.venue_name,
+        "venue_latitude": session_data.venue_latitude,
+        "venue_longitude": session_data.venue_longitude,
+        "geofence_radius_meters": session_data.geofence_radius_meters,
+    }
+    venues.apply_venue_selection(db, venue_fields)
+
     new_session = SessionModel(
         course_id=session_data.course_id,
         instructor_id=current_user.id,
@@ -1542,10 +1551,10 @@ def create_session(
         scheduled_end=scheduled_end,
         checkin_opens_at=checkin_opens_at,
         checkin_closes_at=checkin_closes_at,
-        venue_latitude=session_data.venue_latitude,
-        venue_longitude=session_data.venue_longitude,
-        venue_name=session_data.venue_name,
-        geofence_radius_meters=session_data.geofence_radius_meters,
+        venue_latitude=venue_fields["venue_latitude"],
+        venue_longitude=venue_fields["venue_longitude"],
+        venue_name=venue_fields["venue_name"],
+        geofence_radius_meters=venue_fields["geofence_radius_meters"],
         require_liveness_check=session_data.require_liveness_check,
         require_face_match=session_data.require_face_match,
         risk_threshold=session_data.risk_threshold
@@ -1861,6 +1870,10 @@ def update_session(
             raise HTTPException(400, "scheduled_end must be after scheduled_start")
         if proposed["checkin_closes_at"] <= proposed["checkin_opens_at"]:
             raise HTTPException(400, "checkin_closes_at must be after checkin_opens_at")
+
+    venues.apply_venue_selection(
+        db, updates, previous_name=session.venue_name, fill_default_radius=False
+    )
 
     motion_required = updates.pop("require_motion_check", None)
     if motion_required is not None:
