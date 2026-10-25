@@ -31,13 +31,14 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func
 from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.database import get_read_db
 from app.models import CheckIn, Course, Enrollment, Session as SessionModel, User
 from app import prometheus_metrics
+from app.permissions import assists, teaches
 
 router = APIRouter(prefix="/api/v1", tags=["stats"])
 
@@ -88,13 +89,11 @@ def _iso_day(value) -> str:
 
 
 def _can_view_course(user: User, course_instructor_id: str | None) -> bool:
-    """Admins see everything; instructors see their own courses.
+    """Admins see everything; instructors see only courses assigned to them.
 
-    Courses with no assigned instructor (admin-created via POST /courses/
-    without one) are visible to every instructor, matching how the other
-    read endpoints (enrollments, session check-ins) treat them.
+    Courses with no assigned instructor are admin-only (app/permissions.py).
     """
-    return user.role == "admin" or course_instructor_id in (None, user.id)
+    return user.role == "admin" or teaches(user, course_instructor_id)
 
 
 def _course_scope(user: User, course_id: str | None) -> list:
@@ -104,9 +103,7 @@ def _course_scope(user: User, course_id: str | None) -> list:
     if course_id:
         conditions.append(Course.id == course_id)
     if user.role != "admin":
-        conditions.append(
-            or_(Course.instructor_id == user.id, Course.instructor_id.is_(None))
-        )
+        conditions.append(Course.instructor_id == user.id)
     return conditions
 
 
@@ -314,9 +311,6 @@ def stats_session(
     current_user: User = Depends(require_roles("instructor", "ta", "admin", read_only=True)),
     db: Session = Depends(get_read_db),
 ):
-    # There is no TA<->course assignment model, so a TA cannot be scoped to
-    # "their" courses; TAs get the same session-level read access they
-    # already have on GET /checkins/session/{id}.
     enrolled = (
         db.query(func.count(Enrollment.id))
         .filter(
@@ -338,10 +332,9 @@ def stats_session(
     session, course, total_enrolled = row
     total_enrolled = int(total_enrolled)
 
-    if current_user.role == "instructor" and not (
-        session.instructor_id == current_user.id
-        or _can_view_course(current_user, course.instructor_id)
-    ):
+    if current_user.role == "instructor" and not _can_view_course(current_user, course.instructor_id):
+        raise _forbidden()
+    if current_user.role == "ta" and not assists(db, current_user, course.id):
         raise _forbidden()
 
     checkins = (

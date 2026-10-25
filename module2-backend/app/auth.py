@@ -19,6 +19,7 @@ pwd_context = CryptContext(
 )
 
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 validate_settings()
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -134,6 +135,23 @@ def get_read_current_user(
 ):
     # Reuse every existing token/account check; only the session binding differs.
     return get_current_user(credentials, db)
+
+
+def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+    db: Session = Depends(get_db),
+):
+    """None for anonymous callers; a supplied token is still fully validated (401 if bad)."""
+    if credentials is None:
+        return None
+    return get_current_user(credentials, db)
+
+
+def get_optional_read_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+    db: Session = Depends(get_read_db),
+):
+    return get_optional_current_user(credentials, db)
 
 
 def require_roles(*roles: str, read_only: bool = False):

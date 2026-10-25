@@ -223,6 +223,50 @@ Index(
 )
 
 
+class CourseAssistant(Base):
+    """TA <-> course assignment used for course-level RBAC.
+
+    Not listed in DATABASE-SCHEMA.md (no TA assignment model is documented).
+    Additive many-to-many table, so startup create_all() creates it without
+    touching existing columns.
+    """
+
+    __tablename__ = "course_assistants"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    course_id = Column(
+        String(36),
+        ForeignKey("courses.id"),
+        nullable=False
+    )
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow
+    )
+
+
+Index(
+    "ix_course_assistants_course_user",
+    CourseAssistant.course_id,
+    CourseAssistant.user_id,
+    unique=True
+)
+
+
 class Session(Base):
     """A class meeting where students check in.
 

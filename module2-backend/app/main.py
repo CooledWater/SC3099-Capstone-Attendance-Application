@@ -69,13 +69,16 @@ from app.auth import (
     create_access_token,
     create_refresh_token,
     get_current_user,
+    get_optional_current_user,
+    get_optional_read_current_user,
     get_read_current_user,
     require_roles
 )
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues
+from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues, course_assistants
+from app.permissions import assigned_course_scope, assists, can_staff_course, teaches
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 from app import checkin_diagnostics
@@ -93,6 +96,7 @@ app.include_router(invitations.router)
 app.include_router(attendance_roster.router)
 app.include_router(student_overview.router)
 app.include_router(venues.router)
+app.include_router(course_assistants.router)
 app.include_router(motion.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
@@ -755,16 +759,15 @@ def get_user(
         )
 
     # Spec: admin, or an instructor for students enrolled in their courses
-    # (same course visibility rule as _instructor_checkin_scope).
+    # (assigned courses only, see app/permissions.py).
     if current_user.role == "instructor":
         teaches_student = (
             db.query(Enrollment.id)
             .join(Course, Course.id == Enrollment.course_id)
-            .outerjoin(SessionModel, SessionModel.course_id == Course.id)
             .filter(
                 Enrollment.student_id == user.id,
                 Enrollment.is_active == True,  # noqa: E712
-                *_instructor_checkin_scope(current_user)
+                *assigned_course_scope(current_user)
             )
             .first()
         )
@@ -847,6 +850,15 @@ def _serialize_course(
     }
 
 
+CATALOGUE_COURSE_FIELDS = ("id", "code", "name", "semester", "instructor_name", "is_active", "created_at")
+
+
+def _serialize_course_catalogue(db: Session, course: Course, instructor_names: dict | None = None) -> dict:
+    """Directory entry for students: no venue, geofence, security settings or user IDs."""
+    full = _serialize_course(db, course, instructor_names)
+    return {field: full[field] for field in CATALOGUE_COURSE_FIELDS}
+
+
 @app.post("/api/v1/courses/", status_code=status.HTTP_201_CREATED)
 def create_course(
     course_data: CourseCreate,
@@ -875,13 +887,50 @@ def create_course(
 @app.get("/api/v1/courses/")
 def list_courses(
     is_active: bool = True,
+    instructor_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
+    # Anonymous callers get no courses.
+    if current_user is None:
+        return {"items": [], "total": 0, "limit": limit, "offset": offset}
+
+    filters = [Course.is_active == is_active]
+    if current_user.role in ("instructor", "ta"):
+        filters.extend(assigned_course_scope(current_user))
+    elif current_user.role == "admin" and instructor_id:
+        # Spec: the instructor_id filter is admin only; others are already scoped.
+        filters.append(Course.instructor_id == instructor_id)
+
+    serialize = (
+        _serialize_course_catalogue if current_user.role == "student" else _serialize_course
+    )
+    return _course_page(db, filters, limit, offset, serialize)
+
+
+# Declared before /courses/{course_id} so "my-courses" is not read as a course ID.
+@app.get("/api/v1/courses/my-courses")
+def list_my_courses(
+    is_active: bool = True,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Courses the caller is assigned to: enrolled (student), teaching
+    (instructor), assisting (TA), or every course (admin)."""
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    filters = [Course.is_active == is_active, *assigned_course_scope(current_user)]
+    return _course_page(db, filters, limit, offset, _serialize_course)
+
+
+def _course_page(db: Session, filters: list, limit: int, offset: int, serialize) -> dict:
     # Single round trip: page of courses, each course's instructor name
     # (LEFT JOIN instead of a separate batch SELECT), and the total
     # matching count (COUNT(*) OVER() window column instead of a separate
@@ -889,7 +938,7 @@ def list_courses(
     rows = (
         db.query(Course, User.full_name, func.count().over().label("total_count"))
         .outerjoin(User, Course.instructor_id == User.id)
-        .filter(Course.is_active == is_active)
+        .filter(*filters)
         .order_by(Course.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -902,7 +951,7 @@ def list_courses(
         # COUNT(*) OVER() only appears on returned rows, so an out-of-range
         # offset (or a genuinely empty result set) leaves no row to read it
         # from - fall back to a plain count() only in that rare case.
-        total = db.query(Course).filter(Course.is_active == is_active).count()
+        total = db.query(Course).filter(*filters).count()
 
     instructor_names = {
         course.instructor_id: full_name
@@ -912,7 +961,7 @@ def list_courses(
 
     return {
         "items": [
-            _serialize_course(db, course, instructor_names) for course, _, _ in rows
+            serialize(db, course, instructor_names) for course, _, _ in rows
         ],
         "total": total,
         "limit": limit,
@@ -932,6 +981,33 @@ def get_course(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Course not found"
+        )
+
+    if current_user.role == "student":
+        enrolled = db.query(Enrollment.id).filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.course_id == course.id,
+            Enrollment.is_active == True,  # noqa: E712
+        ).first()
+        if not enrolled:
+            # Unenrolled students still see the directory entry, as on GET /courses/.
+            return _serialize_course_catalogue(db, course)
+    elif current_user.role == "instructor":
+        if course.instructor_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+    elif current_user.role == "ta":
+        if not assists(db, current_user, course.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+    elif current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
         )
 
     return _serialize_course(db, course)
@@ -1330,9 +1406,8 @@ def list_course_enrollments(
         raise HTTPException(404, "Course not found")
     if current_user.role == "instructor" and course.instructor_id != current_user.id:
         raise HTTPException(403, "Insufficient permissions")
-    if current_user.role == "ta":
-        # Fail closed until an explicit assignment mechanism is configured.
-        raise HTTPException(403, "No TA course assignment is available")
+    if current_user.role == "ta" and not assists(db, current_user, course.id):
+        raise HTTPException(403, "Insufficient permissions")
 
     counts = dict(db.query(Enrollment.is_active, func.count(Enrollment.id)).filter(
         Enrollment.course_id == course_id,
@@ -1448,6 +1523,19 @@ def _serialize_session(db: Session, session: SessionModel, context=None) -> dict
     }
 
 
+SESSION_METADATA_FIELDS = (
+    "id", "course_id", "name", "session_type", "status",
+    "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+    "checkin_opens_at", "checkin_closes_at", "created_at",
+)
+
+
+def _serialize_session_metadata(session: SessionModel) -> dict:
+    """Schedule-only view for students outside the session's course: no venue,
+    geofence, verification policy, risk threshold or instructor ID."""
+    return {field: getattr(session, field) for field in SESSION_METADATA_FIELDS}
+
+
 def _session_summary_context(db, sessions):
     course_ids = {session.course_id for session in sessions}
     session_ids = [session.id for session in sessions]
@@ -1474,6 +1562,11 @@ def _serialize_session_summary(db: Session, session: SessionModel, context=None)
         "course_name": course.name if course else None,
         "total_enrolled": context["enrolled"].get(session.course_id, 0),
     }
+
+
+def _teaches_session_course(db: Session, user: User, session: SessionModel) -> bool:
+    course = db.get(Course, session.course_id)
+    return teaches(user, course.instructor_id if course else None)
 
 
 def _apply_status_transition(session: SessionModel, new_status: str) -> None:
@@ -1575,14 +1668,28 @@ def create_session(
 
 
 @app.get("/api/v1/sessions/active")
-def list_active_sessions(db: Session = Depends(get_read_db)):
+def list_active_sessions(
+    current_user: User | None = Depends(get_optional_read_current_user),
+    db: Session = Depends(get_read_db)
+):
+    # No login is required, but only callers with a course relationship see
+    # sessions (students: active enrollment, the same rule as POST /checkins/).
+    if current_user is None:
+        return []
+
     now = datetime.utcnow()
 
-    sessions = db.query(SessionModel).filter(
-        SessionModel.status == "active",
-        SessionModel.checkin_opens_at <= now,
-        SessionModel.checkin_closes_at >= now
-    ).all()
+    sessions = (
+        db.query(SessionModel)
+        .join(Course, Course.id == SessionModel.course_id)
+        .filter(
+            SessionModel.status == "active",
+            SessionModel.checkin_opens_at <= now,
+            SessionModel.checkin_closes_at >= now,
+            *assigned_course_scope(current_user)
+        )
+        .all()
+    )
 
     context = _session_summary_context(db, sessions)
     return [_serialize_session_summary(db, session, context) for session in sessions]
@@ -1605,11 +1712,10 @@ def list_sessions(
 
     query = db.query(SessionModel)
 
-    if current_user.role == "instructor":
-        query = query.join(Course, Course.id == SessionModel.course_id).filter(or_(
-            SessionModel.instructor_id == current_user.id,
-            Course.instructor_id == current_user.id,
-        ))
+    if current_user.role in ("instructor", "ta"):
+        query = query.join(Course, Course.id == SessionModel.course_id).filter(
+            *assigned_course_scope(current_user)
+        )
 
     if status_filter:
         query = query.filter(SessionModel.status == status_filter)
@@ -1723,12 +1829,11 @@ def list_my_sessions(
         context = _session_summary_context(db, sessions)
         return [_serialize_session_summary(db, session, context) for session in sessions]
     else:
-        # Spec covers students (enrolled) and instructors (teaching). Staff of
-        # any other role get the sessions they own or whose course they teach.
-        query = query.join(Course, Course.id == SessionModel.course_id).filter(or_(
-            Course.instructor_id == current_user.id,
-            SessionModel.instructor_id == current_user.id
-        ))
+        # Spec covers students (enrolled) and instructors (teaching); TAs get
+        # the courses they assist. Admins get courses they teach, as before.
+        scope = (assigned_course_scope(current_user) if current_user.role in ("instructor", "ta")
+                 else [Course.instructor_id == current_user.id])
+        query = query.join(Course, Course.id == SessionModel.course_id).filter(*scope)
 
     if status_filter:
         query = query.filter(SessionModel.status == status_filter)
@@ -1774,7 +1879,7 @@ def get_session(
             Enrollment.course_id == session.course_id,
         ).first()
         if enrollment is None:
-            raise HTTPException(403, "Insufficient permissions")
+            return _serialize_session_metadata(session)
         history = [
             (timestamp, action)
             for timestamp, action in db.query(AuditLog.timestamp, AuditLog.action)
@@ -1787,10 +1892,10 @@ def get_session(
             .all()
         ]
         if not student_overview.eligible(enrollment, history, session.scheduled_start):
-            raise HTTPException(403, "Insufficient permissions")
-    elif current_user.role == "instructor":
+            return _serialize_session_metadata(session)
+    elif current_user.role in ("instructor", "ta"):
         course = db.get(Course, session.course_id)
-        if session.instructor_id != current_user.id and course.instructor_id != current_user.id:
+        if not course or not can_staff_course(db, current_user, course):
             raise HTTPException(403, "Insufficient permissions")
     return _serialize_session(db, session)
 
@@ -1810,7 +1915,11 @@ def update_session(
             detail="Session not found"
         )
 
-    if current_user.role != "admin" and session.instructor_id != current_user.id:
+    # Instructors must own the session and still be assigned to its course.
+    if current_user.role != "admin" and (
+        session.instructor_id != current_user.id
+        or not _teaches_session_course(db, current_user, session)
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -1914,7 +2023,10 @@ def delete_session(
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    if current_user.role != "admin" and session.instructor_id != current_user.id:
+    if current_user.role != "admin" and (
+        session.instructor_id != current_user.id
+        or not _teaches_session_course(db, current_user, session)
+    ):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     if session.status != "scheduled":
         raise HTTPException(status_code=400, detail="Only scheduled sessions can be deleted")
@@ -2529,7 +2641,7 @@ def list_session_checkins(
     session, course = (db.query(SessionModel, Course)
                       .join(Course, Course.id == SessionModel.course_id)
                       .filter(SessionModel.id == session_id).one())
-    if not _is_session_staff(current_user, session, course):
+    if not can_staff_course(db, current_user, course):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     results = []
@@ -2564,22 +2676,6 @@ def list_session_checkins(
 CHECKIN_STATUSES = ("pending", "approved", "flagged", "rejected", "appealed")
 
 
-def _instructor_checkin_scope(user: User) -> list:
-    """WHERE conditions limiting an instructor to their own sessions/courses.
-
-    Same visibility rule as app/stats.py: a course's instructor, the session's
-    owner, or any instructor for a course with no instructor assigned. Admins
-    and TAs are unscoped (there is no TA<->course assignment model).
-    """
-    if user.role != "instructor":
-        return []
-    return [or_(
-        Course.instructor_id == user.id,
-        Course.instructor_id.is_(None),
-        SessionModel.instructor_id == user.id
-    )]
-
-
 def _checkin_listing(
     db: Session, user: User, filters: list, limit: int, offset: int,
     include_appeal: bool = False
@@ -2589,7 +2685,7 @@ def _checkin_listing(
         .join(SessionModel, SessionModel.id == CheckIn.session_id)
         .join(Course, Course.id == SessionModel.course_id)
         .join(User, User.id == CheckIn.student_id)
-        .filter(*_instructor_checkin_scope(user), *filters)
+        .filter(*assigned_course_scope(user), *filters)
     )
 
     total = query.count()
@@ -2708,18 +2804,6 @@ APPEALABLE_STATUSES = ("flagged", "rejected")
 REVIEWABLE_STATUSES = ("flagged", "appealed")
 
 
-def _is_session_staff(user: User, session: SessionModel, course: Course) -> bool:
-    """Staff visibility for one check-in, matching _instructor_checkin_scope."""
-    if user.role in ("admin", "ta"):
-        return True
-    if user.role == "instructor":
-        return (
-            session.instructor_id == user.id
-            or course.instructor_id in (None, user.id)
-        )
-    return False
-
-
 def _load_checkin(db: Session, checkin_id: str, lock: bool = False):
     query = (
         db.query(CheckIn, SessionModel, Course)
@@ -2749,7 +2833,7 @@ def get_checkin(
 ):
     checkin, session, course = _load_checkin(db, checkin_id)
 
-    if checkin.student_id != current_user.id and not _is_session_staff(current_user, session, course):
+    if checkin.student_id != current_user.id and not can_staff_course(db, current_user, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -2859,7 +2943,7 @@ def review_checkin(
 ):
     checkin, session, course = _load_checkin(db, checkin_id, lock=True)
 
-    if not _is_session_staff(current_user, session, course):
+    if not can_staff_course(db, current_user, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -3169,11 +3253,8 @@ def export_session_attendance(
     session, course = row
     actor_id = current_user.id
 
-    # Same visibility rule as the stats endpoints (see _instructor_checkin_scope).
-    if current_user.role == "instructor" and not (
-        session.instructor_id == actor_id
-        or course.instructor_id in (None, actor_id)
-    ):
+    # Assigned course instructor only (app/permissions.py).
+    if current_user.role == "instructor" and not teaches(current_user, course.instructor_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"

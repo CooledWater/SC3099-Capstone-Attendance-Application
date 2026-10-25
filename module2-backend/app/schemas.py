@@ -72,6 +72,15 @@ class EnrollmentCreate(RequestModel):
         if (self.student_id is None) == (self.student_email is None):
             raise ValueError("Provide exactly one of student_id or student_email")
         return self
+class TAAssignmentCreate(RequestModel):
+    user_id: Optional[str] = None
+    email: Optional[EmailStr] = None
+
+    @model_validator(mode="after")
+    def require_one_ta_identifier(self):
+        if (self.user_id is None) == (self.email is None):
+            raise ValueError("Provide exactly one of user_id or email")
+        return self
 class BulkEnrollmentCreate(RequestModel):
     course_id: str
     student_emails: list[EmailStr] = Field(min_length=1)
