@@ -394,6 +394,15 @@ function CheckInDetail({
       ? detail.data
       : undefined;
   const reviewable = record?.status === "flagged" || record?.status === "appealed";
+  const appealedReview = record?.status === "appealed";
+  const reviewEvidence = useQuery({
+    queryKey: ["checkin-review-evidence", userId, courseId, session.id, entry.checkin_id],
+    queryFn: ({ signal }) => fetchFlaggedSession(courseId, session.id, signal),
+    enabled: appealedReview,
+    staleTime: 30_000,
+  });
+  const evidenceRows = Array.isArray(reviewEvidence.data) ? reviewEvidence.data : [];
+  const evidence = evidenceRows.find((item) => item.id === entry.checkin_id) ?? record;
   async function decide(status: "approved" | "rejected") {
     if (busy.current || !record || !reviewable) return;
     busy.current = true;
@@ -489,7 +498,7 @@ function CheckInDetail({
                 {record.risk_score} <span className="text-sm text-muted-foreground">/ 1</span>
               </p>
             </div>
-            {reviewable && (
+            {appealedReview && (
               <div className="rounded-xl bg-secondary/40 p-3">
                 <p className="text-xs text-muted-foreground">Student explanation</p>
                 <p className="mt-1 whitespace-pre-wrap break-words text-sm">
@@ -498,7 +507,12 @@ function CheckInDetail({
               </div>
             )}
           </div>
-          {record.status !== "approved" && (
+          {appealedReview && reviewEvidence.isFetching && (
+            <p role="status" className="mt-5 text-xs text-muted-foreground">
+              Loading review evidence…
+            </p>
+          )}
+          {appealedReview && !reviewEvidence.isFetching && (
             <>
               <h4 className="mt-5 text-sm font-semibold">Risk factors</h4>
               <div className="mt-2 overflow-x-auto">
@@ -513,14 +527,14 @@ function CheckInDetail({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {!record.risk_factors.length && (
+                    {!evidence?.risk_factors?.length && (
                       <tr>
                         <td colSpan={3} className="py-4">
                           No risk factors returned.
                         </td>
                       </tr>
                     )}
-                    {record.risk_factors.map((factor, i) => {
+                    {(evidence?.risk_factors ?? []).map((factor, i) => {
                       const item = typeof factor === "string" ? { type: factor } : factor;
                       const severity = item.severity ?? "unknown";
                       return (

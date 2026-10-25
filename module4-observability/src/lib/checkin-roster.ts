@@ -41,9 +41,13 @@ export type RiskFactor = {
 export type CheckInDetails = RawCheckIn & {
   course_id: string;
   student_id: string;
-  risk_factors: (RiskFactor | string)[];
+  risk_factors?: (RiskFactor | string)[];
   appeal_reason: string | null;
   review_notes: string | null;
+};
+export type FlaggedCheckIn = RawCheckIn & {
+  risk_factors: (RiskFactor | string)[];
+  appeal_reason?: string | null;
 };
 export const attendanceLabels: Record<Attendance, string> = {
   present: "Present",
@@ -79,7 +83,7 @@ export const fetchSessionAttendance = (session: string, signal?: AbortSignal) =>
     signal: signal ?? null,
   });
 export const fetchFlaggedSession = (course: string, session: string, signal?: AbortSignal) =>
-  allPages<RawCheckIn>(
+  allPages<FlaggedCheckIn>(
     `/checkins/flagged?course_id=${encodeURIComponent(course)}&session_id=${encodeURIComponent(session)}`,
     signal,
   );

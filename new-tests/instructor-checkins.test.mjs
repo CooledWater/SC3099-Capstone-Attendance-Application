@@ -184,14 +184,15 @@ function detailHarness(initialStatus = "flagged") {
   return { calls, invalidations, get record() { return record; }, render() { state.reset(); return context.exports.Detail(props); }, setHandler(fn) { handler = fn; }, exports: context.exports };
 }
 
-test("details render actual risk score and weights, conditional explanation, and green approval", () => {
+test("details render actual risk score and keep appeal evidence only for appealed records", () => {
   for (const status of Object.keys(labels)) {
     const h = detailHarness(status), tree = h.render();
     assert.match(text(tree), /0.40123/);
-    assert.equal(text(tree).includes("Risk factors"), status !== "approved");
-    assert.equal(text(tree).includes("Outside permitted location"), status !== "approved");
-    const reviewable = status === "flagged" || status === "appealed";
-    assert.equal(text(tree).includes("Student explanation"), reviewable);
+    const appealed = status === "appealed";
+    assert.equal(text(tree).includes("Risk factors"), appealed);
+    assert.equal(text(tree).includes("Outside permitted location"), appealed);
+    const reviewable = status === "flagged" || appealed;
+    assert.equal(text(tree).includes("Student explanation"), appealed);
     assert.equal(!!button(tree, "Approve"), reviewable);
     if (reviewable) assert.match(button(tree, "Approve").props.className, /emerald/);
   }
