@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
-import { submitCheckInAppeal, fetchMyCheckInsPage, toRows, HISTORY_PAGE_SIZE, type EnrollmentRow } from "@/lib/attendance";
+import { submitCheckInAppeal, fetchCheckInDetail, fetchMyCheckInsPage, fetchMySessions, toRows, HISTORY_PAGE_SIZE, type EnrollmentRow } from "@/lib/attendance";
 import { parseApiDateTime } from "@/lib/time";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,10 @@ function formatSessionTime(value: string) {
   const day = sessionDayFormat.format(date);
   const time = sessionClockFormat.format(date);
   return `${day}, ${time}`;
+}
+
+function formatMetric(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
 }
 
 const statusLabel: Record<CheckInRow["status"], string> = {
@@ -68,7 +72,13 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
     staleTime: 15000,
     refetchInterval: 30000,
   });
+  const sessions = useQuery({
+    queryKey: ["my-sessions"],
+    queryFn: fetchMySessions,
+    staleTime: 15000,
+  });
   const [selectedCheckIn, setSelectedCheckIn] = useState<CheckInRow | null>(null);
+  const [selectedDetails, setSelectedDetails] = useState<CheckInRow | null>(null);
   const [appealReason, setAppealReason] = useState("");
   const queryClient = useQueryClient();
   const appeal = useMutation({
@@ -112,6 +122,25 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
       : appeal.error instanceof Error
         ? appeal.error.message
         : null;
+
+  function prefetchDetails(row: CheckInRow) {
+    void queryClient.prefetchQuery({
+      queryKey: ["my-check-in-detail", row.id],
+      queryFn: ({ signal }) => fetchCheckInDetail(row.id, signal),
+      staleTime: 60_000,
+    });
+  }
+
+  const details = useQuery({
+    queryKey: ["my-check-in-detail", selectedDetails?.id],
+    queryFn: ({ signal }) => fetchCheckInDetail(selectedDetails!.id, signal),
+    enabled: selectedDetails !== null,
+    retry: false,
+    staleTime: 60_000,
+  });
+  const selectedSession = selectedDetails
+    ? sessions.data?.find((session) => session.id === selectedDetails.sessionId)
+    : undefined;
 
   return (
     <>
@@ -161,7 +190,22 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
             <tbody>
               {filtered.map((r) => {
                 return (
-                  <tr key={r.id} className="border-t border-border/60">
+                  <tr
+                    key={r.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`View details for ${r.sessionName ?? "this check-in"}`}
+                    className="cursor-pointer border-t border-border/60 outline-none transition hover:bg-primary/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                    onMouseEnter={() => prefetchDetails(r)}
+                    onFocus={() => prefetchDetails(r)}
+                    onClick={() => setSelectedDetails(r)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedDetails(r);
+                      }
+                    }}
+                  >
                     <td className="py-2.5 pr-3 text-foreground">{r.course}</td>
                     <td className="py-2.5 pr-3 text-muted-foreground">
                       {formatSessionTime(r.time)}
@@ -181,7 +225,8 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
                           variant="outline"
                           size="sm"
                           disabled={updating}
-                          onClick={() => {
+                          onClick={(event) => {
+                            event.stopPropagation();
                             setSelectedCheckIn(r);
                             setAppealReason("");
                             appeal.reset();
@@ -271,6 +316,30 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={selectedDetails !== null} onOpenChange={(open) => { if (!open) setSelectedDetails(null); }}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto border-border bg-card text-card-foreground">
+          <DialogHeader>
+            <DialogTitle className="font-display">Check-in details</DialogTitle>
+          </DialogHeader>
+          {details.isPending ? (
+            <p role="status" className="text-sm text-muted-foreground">Loading check-in details...</p>
+          ) : details.isError ? (
+            <p role="alert" className="text-sm text-destructive">Could not load check-in details. Please close this dialog and try again.</p>
+          ) : details.data && selectedDetails ? (
+            <div className="space-y-5 text-sm">
+              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div><dt className="text-xs text-muted-foreground">Session name</dt><dd className="mt-1">{details.data.session_name ?? selectedDetails.sessionName ?? "—"}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Location</dt><dd className="mt-1">{selectedSession?.venue_name ?? "—"}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Check-in closed at</dt><dd className="mt-1">{selectedSession?.checkin_closes_at ? formatSessionTime(selectedSession.checkin_closes_at) : "—"}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Liveness</dt><dd className="mt-1">{details.data.liveness_passed == null ? "Not available" : `${details.data.liveness_passed ? "Passed" : "Failed"} · score ${formatMetric(details.data.liveness_score)}`}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Face match</dt><dd className="mt-1">{details.data.face_match_passed == null ? "Not available" : `${details.data.face_match_passed ? "Passed" : "Failed"} · score ${formatMetric(details.data.face_match_score)}`}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Risk score</dt><dd className="mt-1">{formatMetric(details.data.risk_score)}</dd></div>
+              </dl>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </>

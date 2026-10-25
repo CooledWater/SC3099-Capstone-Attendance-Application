@@ -324,6 +324,22 @@ def test_my_sessions_for_enrolled_student_and_teaching_instructor(api, world):
     assert session_id in [s["id"] for s in teacher_view.json()]
 
 
+def test_student_my_sessions_supports_overlap_range_pagination_and_course_scope(api, world):
+    session = world["session"]
+    start = _start_of(session) - timedelta(minutes=1)
+    end = _start_of(session) + timedelta(hours=2, minutes=1)
+    response = api.get("/api/v1/sessions/my-sessions", headers=world["students"]["approved"]["headers"], params={
+        "start_date": _iso(start), "end_date": _iso(end), "limit": 1, "offset": 0,
+    })
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [session["id"]]
+
+    forbidden = api.get("/api/v1/sessions/my-sessions", headers=world["students"]["approved"]["headers"], params={
+        "course_id": world["other_course_id"],
+    })
+    assert forbidden.status_code == 403
+
+
 def test_my_sessions_excludes_unrelated_users_and_filters(api, world):
     session_id = world["session"]["id"]
     for viewer in (world["outsider"], world["other"]):
@@ -398,7 +414,7 @@ def test_checkin_detail_access(api, world):
         response = api.get(f"/api/v1/checkins/{checkin_id}", headers=viewer["headers"])
         assert response.status_code == 200, response.text
         data = response.json()
-        assert data["id"] == checkin_id and "risk_factors" in data
+        assert data["id"] == checkin_id and "risk_factors" not in data
         assert "face_embedding_hash" not in data
     for viewer in (world["students"]["approved"], world["other"]):
         assert api.get(f"/api/v1/checkins/{checkin_id}", headers=viewer["headers"]).status_code == 403

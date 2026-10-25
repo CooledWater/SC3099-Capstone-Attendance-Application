@@ -18,13 +18,15 @@ const statusColor: Record<CheckInRow["status"], string> = {
 };
 
 export function LiveActivity({ rows, student = false }: { rows: CheckInRow[]; student?: boolean }) {
+  const approvedAppeal = (row: CheckInRow) => row.status === "approved" && !!row.appealedAt && !!row.reviewedAt;
   const rejectedAppeal = (row: CheckInRow) => row.status === "rejected" && !!row.appealedAt && !!row.reviewedAt;
-  const activityTime = (row: CheckInRow) => rejectedAppeal(row) ? row.reviewedAt! : row.status === "appealed" ? row.appealedAt ?? row.time : row.time;
+  const activityTime = (row: CheckInRow) => approvedAppeal(row) || rejectedAppeal(row) ? row.reviewedAt! : row.status === "appealed" ? row.appealedAt ?? row.time : row.time;
   const activities = student
     ? [...rows].sort((a, b) => parseApiDateTime(activityTime(b)).getTime() - parseApiDateTime(activityTime(a)).getTime()).slice(0, 4)
     : rows;
   function studentMessage(row: CheckInRow) {
     const session = `${row.course}, ${row.sessionName ?? "Unnamed session"}`;
+    if (approvedAppeal(row)) return `Your appeal for ${session} was approved. Verification status updated.`;
     if (rejectedAppeal(row)) return `Your appeal was rejected for ${session}`;
     if (row.status === "appealed") return `You submitted an appeal for ${session}`;
     if (row.status === "approved") return `You checked in for ${session}`;

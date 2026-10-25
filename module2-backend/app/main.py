@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
@@ -35,7 +36,7 @@ from sqlalchemy.orm import Session
 from app.database import engine, Base, get_db, get_read_db
 from app.session_lifecycle import session_lifespan, get_session_db
 from app import models
-from app.models import User, Course, Enrollment, Session as SessionModel, CheckIn, Device
+from app.models import AuditLog, User, Course, Enrollment, Session as SessionModel, CheckIn, Device
 from app.schemas import (
     UserRegister,
     UserLogin,
@@ -1645,21 +1646,73 @@ def list_my_sessions(
         default=None, alias="status"
     ),
     upcoming: bool = False,
+    course_id: str | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     limit: int = 50,
+    offset: int = 0,
     current_user: User = Depends(get_read_current_user),
     db: Session = Depends(get_read_db)
 ):
     limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    range_start = _to_naive_utc(start_date) if start_date else None
+    range_end = _to_naive_utc(end_date) if end_date else None
+    if range_start is not None and range_end is not None and range_start >= range_end:
+        raise HTTPException(422, "start_date must be before end_date")
 
     query = db.query(SessionModel)
 
     if current_user.role == "student":
-        query = query.join(
-            Enrollment, Enrollment.course_id == SessionModel.course_id
-        ).filter(
+        enrollments = db.query(Enrollment).filter(
             Enrollment.student_id == current_user.id,
-            Enrollment.is_active == True  # noqa: E712
-        )
+        ).all()
+        enrollment_by_course = {enrollment.course_id: enrollment for enrollment in enrollments}
+        if course_id and course_id not in enrollment_by_course:
+            raise HTTPException(403, "Choose one of your authorised courses")
+
+        course_ids = [course_id] if course_id else list(enrollment_by_course)
+        if not course_ids:
+            return []
+
+        query = query.filter(SessionModel.course_id.in_(course_ids))
+        if range_start is not None:
+            query = query.filter(SessionModel.scheduled_end > range_start)
+        if range_end is not None:
+            query = query.filter(SessionModel.scheduled_start < range_end)
+        if status_filter:
+            query = query.filter(SessionModel.status == status_filter)
+        if upcoming:
+            query = query.filter(SessionModel.scheduled_start > datetime.utcnow())
+
+        sessions = query.order_by(SessionModel.scheduled_start.asc(), SessionModel.id).all()
+        events = defaultdict(list)
+        enrollment_ids = [enrollment.id for enrollment in enrollments]
+        if enrollment_ids:
+            for enrollment_id, action, timestamp in (
+                db.query(AuditLog.resource_id, AuditLog.action, AuditLog.timestamp)
+                .filter(
+                    AuditLog.resource_id.in_(enrollment_ids),
+                    AuditLog.success.is_(True),
+                    AuditLog.action.in_(("enrollment_added", "enrollment_removed")),
+                )
+                .order_by(AuditLog.timestamp, AuditLog.id)
+                .all()
+            ):
+                events[enrollment_id].append((timestamp, action))
+
+        eligible_sessions = [
+            session for session in sessions
+            if student_overview.eligible(
+                enrollment_by_course[session.course_id],
+                events[enrollment_by_course[session.course_id].id],
+                session.scheduled_start,
+            )
+        ]
+        sessions = eligible_sessions[offset:offset + limit]
+        context = _session_summary_context(db, sessions)
+        return [_serialize_session_summary(db, session, context) for session in sessions]
     else:
         # Spec covers students (enrolled) and instructors (teaching). Staff of
         # any other role get the sessions they own or whose course they teach.
@@ -1673,11 +1726,20 @@ def list_my_sessions(
 
     if upcoming:
         query = query.filter(SessionModel.scheduled_start > datetime.utcnow())
+
+    if course_id:
+        query = query.filter(SessionModel.course_id == course_id)
+    if range_start is not None:
+        query = query.filter(SessionModel.scheduled_end > range_start)
+    if range_end is not None:
+        query = query.filter(SessionModel.scheduled_start < range_end)
+
+    if upcoming:
         query = query.order_by(SessionModel.scheduled_start.asc(), SessionModel.id)
     else:
         query = query.order_by(SessionModel.scheduled_start.desc(), SessionModel.id)
 
-    sessions = query.limit(limit).all()
+    sessions = query.offset(offset).limit(limit).all()
 
     context = _session_summary_context(db, sessions)
     return [_serialize_session_summary(db, session, context) for session in sessions]
@@ -1697,7 +1759,27 @@ def get_session(
             detail="Session not found"
         )
 
-    if current_user.role == "instructor":
+    if current_user.role == "student":
+        enrollment = db.query(Enrollment).filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.course_id == session.course_id,
+        ).first()
+        if enrollment is None:
+            raise HTTPException(403, "Insufficient permissions")
+        history = [
+            (timestamp, action)
+            for timestamp, action in db.query(AuditLog.timestamp, AuditLog.action)
+            .filter(
+                AuditLog.resource_id == enrollment.id,
+                AuditLog.success.is_(True),
+                AuditLog.action.in_(("enrollment_added", "enrollment_removed")),
+            )
+            .order_by(AuditLog.timestamp, AuditLog.id)
+            .all()
+        ]
+        if not student_overview.eligible(enrollment, history, session.scheduled_start):
+            raise HTTPException(403, "Insufficient permissions")
+    elif current_user.role == "instructor":
         course = db.get(Course, session.course_id)
         if session.instructor_id != current_user.id and course.instructor_id != current_user.id:
             raise HTTPException(403, "Insufficient permissions")
@@ -2687,7 +2769,6 @@ def get_checkin(
         "face_match_score": checkin.face_match_score,
         "qr_code_verified": checkin.qr_code_verified,
         "risk_score": checkin.risk_score,
-        "risk_factors": json.loads(checkin.risk_factors) if checkin.risk_factors else [],
         "reviewed_by_id": checkin.reviewed_by_id,
         "reviewed_at": checkin.reviewed_at,
         "review_notes": checkin.review_notes,

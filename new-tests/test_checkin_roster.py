@@ -84,7 +84,7 @@ def test_review_changes_verification_only_and_leaves_timing(world, decision):
         assert before["summary"][name] == after["summary"][name]
     detail = client.get("/api/v1/checkins/c2", headers=headers()).json()
     assert detail["review_notes"] == "Verified explanation"
-    assert detail["risk_factors"][0]["weight"] == 0.15
+    assert "risk_factors" not in detail
     repeated = client.post("/api/v1/checkins/c2/review", headers=headers(), json={"status": decision})
     assert repeated.status_code == 400
 

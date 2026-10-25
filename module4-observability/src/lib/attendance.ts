@@ -77,6 +77,20 @@ export type ApiSession = {
   geofence_radius_meters?: number | null;
 };
 
+export type CheckInDetail = RawCheckIn & {
+  device_id?: string | null;
+  verified_at?: string | null;
+  location_accuracy_meters?: number | null;
+  distance_from_venue_meters?: number | null;
+  liveness_passed?: boolean | null;
+  liveness_challenge_type?: string | null;
+  face_match_passed?: boolean | null;
+  qr_code_verified?: boolean | null;
+  reviewed_by_id?: string | null;
+  review_notes?: string | null;
+  appeal_reason?: string | null;
+};
+
 export async function fetchSessions() {
   const items: ApiSession[] = [];
   while (true) {
@@ -87,6 +101,33 @@ export async function fetchSessions() {
     if (!result.items.length || result.total == null || items.length >= result.total) break;
   }
   return items.map(toSessionRow);
+}
+
+export async function fetchMySessions(options: {
+  startDate?: string;
+  endDate?: string;
+  courseId?: string;
+  signal?: AbortSignal;
+} = {}) {
+  const result: ApiSession[] = [];
+  const limit = 100;
+  let offset = 0;
+  while (true) {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (options.startDate) params.set("start_date", options.startDate);
+    if (options.endDate) params.set("end_date", options.endDate);
+    if (options.courseId && options.courseId !== "all") params.set("course_id", options.courseId);
+    const page = await api.request<ApiSession[]>(`/sessions/my-sessions?${params}`, {
+      signal: options.signal ?? null,
+    });
+    result.push(...page);
+    offset += page.length;
+    if (page.length < limit) return result;
+  }
+}
+
+export function fetchCheckInDetail(checkInId: string, signal?: AbortSignal) {
+  return api.request<CheckInDetail>(`/checkins/${encodeURIComponent(checkInId)}`, { signal });
 }
 
 export function toSessionRow(s: ApiSession): SessionRow {
