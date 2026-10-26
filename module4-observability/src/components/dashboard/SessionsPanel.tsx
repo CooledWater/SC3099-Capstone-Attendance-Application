@@ -45,6 +45,12 @@ import {
 import type { CheckInRow } from "./AttendanceTable";
 import { statusStyle } from "./AttendanceTable";
 
+type Venue = { code: string; name: string };
+
+function venueCode(venues: Venue[], value: string) {
+  return venues.find((venue) => venue.code === value || venue.name === value)?.code ?? "";
+}
+
 export function SessionsPanel({
   rows,
   canCreate,
@@ -72,6 +78,23 @@ export function SessionsPanel({
     queryKey: ["courses"],
     queryFn: fetchCourses,
   });
+  const venues = useQuery({
+    queryKey: ["venues", currentUserId],
+    queryFn: ({ signal }) => api.request<{ items: Venue[] }>("/venues/", { signal }),
+    enabled: canCreate,
+  });
+  const venueOptions = venues.data?.items ?? [];
+  const venuePlaceholder = venues.isPending
+    ? "Loading venues…"
+    : venues.isError
+      ? "Could not load venues"
+      : venueOptions.length ? "Select venue" : "No venues available";
+  const venueFeedback = venues.isError ? (
+    <span role="alert" className="mt-1 block text-xs text-destructive">
+      Could not load venues.{" "}
+      <button type="button" className="underline" onClick={() => void venues.refetch()}>Retry</button>
+    </span>
+  ) : null;
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<"list" | "calendar">("list");
   const [week, setWeek] = useState(() => mondayOf(Date.now()));
@@ -209,7 +232,7 @@ export function SessionsPanel({
       !form.course_id ||
       !form.session_name.trim() ||
       !form.session_type ||
-      !form.venue ||
+      !venueCode(venueOptions, form.venue) || venues.isError ||
       !form.starts_at
     ) {
       toast.error("Course, session name, session type, venue and start time are required.");
@@ -241,7 +264,7 @@ export function SessionsPanel({
           scheduled_end: new Date(
             scheduledStart.getTime() + Number(form.duration_minutes) * 60000,
           ).toISOString(),
-          venue_name: form.venue,
+          venue_name: venueCode(venueOptions, form.venue),
           geofence_radius_meters: Number(form.geofence_radius_m) || 100,
           require_motion_check: form.require_liveness_check,
           require_liveness_check: form.require_liveness_check,
@@ -290,7 +313,7 @@ export function SessionsPanel({
     if (
       session.status !== "scheduled" ||
       !editForm.course_id ||
-      !editForm.venue.trim() ||
+      !venueCode(venueOptions, editForm.venue) || venues.isError ||
       !editForm.starts_at
     ) {
       toast.error("Choose a course, venue and start time for this scheduled session.");
@@ -333,7 +356,7 @@ export function SessionsPanel({
             scheduled_end: scheduledEnd.toISOString(),
             checkin_opens_at: shiftedOpen.toISOString(),
             checkin_closes_at: shiftedClose.toISOString(),
-            venue_name: editForm.venue.trim(),
+            venue_name: venueCode(venueOptions, editForm.venue),
             geofence_radius_meters: Number(editForm.geofence_radius_m) || 100,
           }),
         },
@@ -562,13 +585,19 @@ export function SessionsPanel({
           </label>
           <label className="text-xs text-muted-foreground">
             Venue
-            <input
+            <select
               className={`${input} mt-1`}
               required
-              value={form.venue}
+              disabled={venues.isPending || venues.isError || !venueOptions.length}
+              value={venueCode(venueOptions, form.venue)}
               onChange={(e) => setForm({ ...form, venue: e.target.value })}
-              placeholder="Lecture Hall B"
-            />
+            >
+              <option value="">{venuePlaceholder}</option>
+              {venueOptions.map((venue) => (
+                <option key={venue.code} value={venue.code}>{venue.code} · {venue.name}</option>
+              ))}
+            </select>
+            {venueFeedback}
           </label>
           <label className="text-xs text-muted-foreground">
             Starts at (Singapore time)
@@ -904,12 +933,19 @@ export function SessionsPanel({
                 </label>
                 <label className="text-xs text-muted-foreground sm:col-span-2">
                   Venue
-                  <input
+                  <select
                     className={`${input} mt-1`}
-                    value={editForm.venue}
+                    value={venueCode(venueOptions, editForm.venue)}
+                    disabled={venues.isPending || venues.isError || !venueOptions.length}
                     onChange={(event) => setEditForm({ ...editForm, venue: event.target.value })}
                     required
-                  />
+                  >
+                    <option value="">{venuePlaceholder}</option>
+                    {venueOptions.map((venue) => (
+                      <option key={venue.code} value={venue.code}>{venue.code} · {venue.name}</option>
+                    ))}
+                  </select>
+                  {venueFeedback}
                 </label>
                 <label className="text-xs text-muted-foreground sm:col-span-2">
                   Starts at (Singapore time)
@@ -932,11 +968,11 @@ export function SessionsPanel({
                         ? "Unavailable"
                         : `${selectedCourseEnrollmentCount.data?.total_enrolled ?? 0} active enrollments`}
                   </p>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    {selectedCourseEnrollmentCount.isError
-                      ? "Could not load this course’s enrollment count"
-                      : "Derived from the selected course"}
-                  </p>
+                  {selectedCourseEnrollmentCount.isError && (
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      Could not load this course’s enrollment count
+                    </p>
+                  )}
                 </div>
                 <label className="text-xs text-muted-foreground">
                   Duration (minutes)

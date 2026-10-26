@@ -161,7 +161,7 @@ test("Risk column preserves decimal scores and sorts numerically both ways with 
 });
 
 function detailHarness(initialStatus = "flagged") {
-  const state = hooks(), invalidations = [], calls = [];
+  const state = hooks(), invalidations = [], calls = [], queries = [], evidenceCalls = [];
   let record = { ...entry(1), id: "c1", session_id: "s", course_id: "c", student_id: "s1", status: initialStatus, risk_score: 0.40123,
     risk_factors: [{ type: "geo_out_of_bounds", severity: "high", weight: 0.40123 }], appeal_reason: null };
   let handler = async (id, status) => ({ id, status });
@@ -170,10 +170,11 @@ function detailHarness(initialStatus = "flagged") {
     if (name === "react") return state.react;
     if (name === "react/jsx-runtime") return jsx;
     if (name === "@tanstack/react-query") return {
-      useQuery: () => ({ data: record, isFetching: false, isError: false }),
+      useQuery: options => { queries.push(options); return { data: record, isFetching: false, isError: false }; },
       useQueryClient: () => ({ setQueryData(key, data) { record = data; }, invalidateQueries({ queryKey }) { invalidations.push(queryKey); return Promise.resolve(); } }),
     };
-    if (name.endsWith("/checkin-roster")) return { ...helpers, async reviewCheckIn(...args) { calls.push(args); return handler(...args); } };
+    if (name.endsWith("/checkin-roster")) return { ...helpers, async fetchFlaggedSession(...args) { evidenceCalls.push(args); return []; }, async reviewCheckIn(...args) { calls.push(args); return handler(...args); } };
+    if (name.endsWith("/api")) return { api: { async request(...args) { evidenceCalls.push(args); return []; } } };
     if (name.endsWith("/attendance")) return { statusText: labels };
     if (name.endsWith("/time")) return { formatSingaporeDateTime: value => value };
     if (name.endsWith("/AttendanceTable")) return { VerificationBadge: ({ status }) => labels[status] };
@@ -181,16 +182,35 @@ function detailHarness(initialStatus = "flagged") {
   } };
   vm.runInNewContext(moduleCode("components/dashboard/InstructorCheckIns.tsx") + "\nexports.Detail = CheckInDetail; exports.Breakdown = AttendanceBreakdown; exports.Summary = ReviewSummary; exports.Course = CourseCheckIns;", context);
   const props = { entry: entry(1, initialStatus, "present"), session: { id: "s", scheduled_start: "2026-01-10T09:00:00Z", name: "Lecture 9" }, courseId: "c", userId: "i", onClose() {} };
-  return { calls, invalidations, get record() { return record; }, render() { state.reset(); return context.exports.Detail(props); }, setHandler(fn) { handler = fn; }, exports: context.exports };
+  return { calls, invalidations, queries, evidenceCalls, get record() { return record; }, render() { state.reset(); return context.exports.Detail(props); }, setHandler(fn) { handler = fn; }, exports: context.exports };
 }
 
-test("details render actual risk score and keep appeal evidence only for appealed records", () => {
+test("rejected evidence uses session check-ins while reviewable records use the flagged queue", async () => {
+  for (const status of Object.keys(labels)) {
+    const h = detailHarness(status);
+    h.render();
+    const query = h.queries[1];
+    assert.equal(query.enabled, ["flagged", "appealed", "rejected"].includes(status));
+    if (!query.enabled) continue;
+    const signal = new AbortController().signal;
+    await query.queryFn({ signal });
+    if (status === "rejected") {
+      assert.equal(h.evidenceCalls[0][0], "/checkins/session/s");
+      assert.equal(h.evidenceCalls[0][1].signal, signal);
+    } else {
+      assert.deepEqual(h.evidenceCalls[0], ["c", "s", signal]);
+    }
+  }
+});
+
+test("details show risk factors for flagged, appealed and rejected records and explanations only for appeals", () => {
   for (const status of Object.keys(labels)) {
     const h = detailHarness(status), tree = h.render();
     assert.match(text(tree), /0.40123/);
     const appealed = status === "appealed";
-    assert.equal(text(tree).includes("Risk factors"), appealed);
-    assert.equal(text(tree).includes("Outside permitted location"), appealed);
+    const hasRiskFactors = ["flagged", "appealed", "rejected"].includes(status);
+    assert.equal(text(tree).includes("Risk factors"), hasRiskFactors);
+    assert.equal(text(tree).includes("Outside permitted location"), hasRiskFactors);
     const reviewable = status === "flagged" || appealed;
     assert.equal(text(tree).includes("Student explanation"), appealed);
     assert.equal(!!button(tree, "Approve"), reviewable);

@@ -85,7 +85,8 @@ function instructor() {
   }, {
     '@tanstack/react-query': {
       useQuery: ({ queryKey }) => ({ isSuccess: true, data: queryKey[0] === 'courses'
-        ? [{ id: 'course', code: 'SC3099', instructor_id: 'instructor' }] : [] }),
+        ? [{ id: 'course', code: 'SC3099', instructor_id: 'instructor' }]
+        : queryKey[0] === 'venues' ? { items: [{ code: 'LT1', name: 'Lecture Hall' }] } : [] }),
       useQueryClient: () => ({ invalidateQueries() {} }),
     },
     '@/lib/api': { api: { request: async (path, options) => { requests.push({ path, body: JSON.parse(options.body) }); } } },
@@ -104,7 +105,7 @@ function instructor() {
   const submit = async () => {
     change('Session name', 'Neural Networks Lecture');
     change('Session type', 'lecture');
-    change('Venue', 'Lecture Hall'); change('Starts at', '2099-06-01T10:00');
+    change('Venue', 'LT1'); change('Starts at', '2099-06-01T10:00');
     await view.find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
     view.render();
   };
@@ -115,11 +116,15 @@ for (const requireLivenessValue of [false, true]) {
   test(`instructor creation sends the session name, type, and liveness policy (${requireLivenessValue})`, async () => {
     const view = instructor(); view.open();
     assert.equal(view.input('Require liveness check').props.checked, true);
+    assert.equal(view.input('Venue').type, 'select');
     view.requireLiveness(requireLivenessValue); await view.submit();
     assert.equal(view.requests.length, 1);
     assert.equal(view.requests[0].path, '/sessions/');
     assert.equal(view.requests[0].body.name, 'Neural Networks Lecture');
     assert.equal(view.requests[0].body.session_type, 'lecture');
+    assert.equal(view.requests[0].body.venue_name, 'LT1');
+    assert.equal('venue_latitude' in view.requests[0].body, false);
+    assert.equal('venue_longitude' in view.requests[0].body, false);
     assert.equal(view.requests[0].body.require_liveness_check, requireLivenessValue);
     assert.equal(view.requests[0].body.require_motion_check, requireLivenessValue);
     view.open();

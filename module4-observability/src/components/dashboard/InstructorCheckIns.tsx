@@ -14,6 +14,7 @@ import {
   fetchSessionAttendance,
   reviewCheckIn,
   type CheckInDetails,
+  type FlaggedCheckIn,
   type RosterEntry,
   type RosterSession,
   type SessionAttendance,
@@ -395,10 +396,14 @@ function CheckInDetail({
       : undefined;
   const reviewable = record?.status === "flagged" || record?.status === "appealed";
   const appealedReview = record?.status === "appealed";
+  const showRiskFactors = reviewable || record?.status === "rejected";
   const reviewEvidence = useQuery({
-    queryKey: ["checkin-review-evidence", userId, courseId, session.id, entry.checkin_id],
-    queryFn: ({ signal }) => fetchFlaggedSession(courseId, session.id, signal),
-    enabled: appealedReview,
+    queryKey: ["checkin-review-evidence", userId, courseId, session.id, entry.checkin_id, record?.status],
+    queryFn: ({ signal }) =>
+      record?.status === "rejected"
+        ? api.request<FlaggedCheckIn[]>(`/checkins/session/${encodeURIComponent(session.id)}`, { signal })
+        : fetchFlaggedSession(courseId, session.id, signal),
+    enabled: showRiskFactors,
     staleTime: 30_000,
   });
   const evidenceRows = Array.isArray(reviewEvidence.data) ? reviewEvidence.data : [];
@@ -507,12 +512,20 @@ function CheckInDetail({
               </div>
             )}
           </div>
-          {appealedReview && reviewEvidence.isFetching && (
+          {showRiskFactors && reviewEvidence.isFetching && (
             <p role="status" className="mt-5 text-xs text-muted-foreground">
               Loading review evidence…
             </p>
           )}
-          {appealedReview && !reviewEvidence.isFetching && (
+          {showRiskFactors && reviewEvidence.isError && (
+            <p role="alert" className="mt-5 text-sm text-destructive">
+              Could not load risk factors. {message(reviewEvidence.error)}{" "}
+              <button className={control} onClick={() => void reviewEvidence.refetch()}>
+                Retry risk factors
+              </button>
+            </p>
+          )}
+          {showRiskFactors && !reviewEvidence.isFetching && !reviewEvidence.isError && (
             <>
               <h4 className="mt-5 text-sm font-semibold">Risk factors</h4>
               <div className="mt-2 overflow-x-auto">
