@@ -81,6 +81,7 @@ from app import device_binding, audit, motion, prometheus_metrics, stats, invita
 from app.permissions import assigned_course_scope, assists, can_staff_course, teaches
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
+from app.password_policy import PASSWORD_REQUIREMENTS
 from app import checkin_diagnostics
 
 Base.metadata.create_all(bind=engine)
@@ -111,7 +112,7 @@ app.add_middleware(audit.AuditContextMiddleware)
 @app.exception_handler(RequestValidationError)
 async def safe_motion_validation(request: Request, exc: RequestValidationError):
     if request.url.path.startswith('/api/v1/auth/invitations/'):
-        return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. Passwords must contain 8 to 72 characters.'})
+        return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. ' + PASSWORD_REQUIREMENTS + ' Maximum 72 UTF-8 bytes.'})
     if request.url.path.startswith('/api/v1/motion/'):
         return JSONResponse(status_code=422, content={'detail': 'Invalid motion sequence. Capture again.'})
     # Validation failures must not echo passwords/images or attempt to JSON-encode NaN.

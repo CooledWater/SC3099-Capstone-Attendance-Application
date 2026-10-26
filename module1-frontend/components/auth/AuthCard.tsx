@@ -3,9 +3,10 @@
 import { AppLogo } from '@/components/AppLogo';
 import { FormEvent, useState } from 'react';
 import { login, register } from '@/lib/api/auth';
+import { PASSWORD_REQUIREMENTS, newPasswordError } from '@/lib/password-policy';
 import type { User } from '@/types/api';
 
-export function AuthCard({ onAuthenticated, onDemo }: { onAuthenticated: (user: User) => void; onDemo: () => void }) {
+export function AuthCard({ onAuthenticated }: { onAuthenticated: (user: User) => void }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [form, setForm] = useState({ fullName: '', email: '', password: '' });
   const [busy, setBusy] = useState(false);
@@ -15,6 +16,8 @@ export function AuthCard({ onAuthenticated, onDemo }: { onAuthenticated: (user: 
     event.preventDefault(); setBusy(true); setMessage('');
     try {
       if (mode === 'register') {
+        const error = newPasswordError(form.password);
+        if (error) { setMessage(error); return; }
         await register(form.fullName.trim(), form.email.trim(), form.password);
         setMode('login'); setMessage('Account created. Sign in to continue.');
       } else onAuthenticated(await login(form.email.trim(), form.password));
@@ -40,10 +43,9 @@ export function AuthCard({ onAuthenticated, onDemo }: { onAuthenticated: (user: 
         <form onSubmit={submit} className="form-stack">
           {mode === 'register' && <label>Full name<input required autoComplete="name" value={form.fullName} onChange={e => setForm({ ...form, fullName: e.target.value })}/></label>}
           <label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })}/></label>
-          <label>Password<input required minLength={8} type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}/><small>Minimum 8 characters</small></label>
+          <label>Password<input required minLength={mode === 'register' ? 8 : undefined} type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}/>{mode === 'register' && <small>{PASSWORD_REQUIREMENTS}</small>}</label>
           <button className="button primary" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in securely' : 'Create account'}</button>
         </form>
-        {process.env.NEXT_PUBLIC_ENABLE_DEMO_MODE !== 'false' && <><div className="divider"><span>or preview locally</span></div><button className="button secondary" onClick={onDemo}>Continue in demo mode</button></>}
       </div>
     </section>
   </main>;

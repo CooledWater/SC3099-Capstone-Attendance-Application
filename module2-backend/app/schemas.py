@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from typing import Literal, Optional
 from datetime import datetime
+from app.password_policy import validate_new_password
 
 
 class RequestModel(BaseModel):
@@ -23,6 +24,12 @@ class UserRegister(PasswordRequest):
     full_name: str
     password: str = Field(min_length=8, max_length=72)
     role: Literal["student", "ta", "instructor", "admin"] = "student"
+
+    @field_validator('password')
+    @classmethod
+    def strong_new_password(cls, value):
+        return validate_new_password(value)
+
 class UserLogin(PasswordRequest):
     email: EmailStr
 class RefreshTokenRequest(RequestModel):

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { PASSWORD_REQUIREMENTS, newPasswordError } from "@/lib/password-policy";
 import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/setup-account")({
@@ -64,6 +65,10 @@ function SetupAccount() {
     setMessage("");
     if (valid && password !== confirmation) {
       setError("Passwords do not match.");
+      return;
+    }
+    if (valid && newPasswordError(password)) {
+      setError(newPasswordError(password));
       return;
     }
     if (valid && new TextEncoder().encode(password).length > 72) {
@@ -150,6 +155,7 @@ function SetupAccount() {
                 {valid ? (
                   <>
                     <p>{email}</p>
+                    <p className="text-sm text-muted-foreground">{PASSWORD_REQUIREMENTS}</p>
                     <label className="grid gap-2 text-sm">
                       Password
                       <input
