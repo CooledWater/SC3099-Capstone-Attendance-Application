@@ -255,9 +255,9 @@ def test_checkin_query_budget_with_real_auth(setup):
         event.remove(engine, 'before_cursor_execute', record)
     assert response.status_code == 201, response.text
     assert response.json()['student_id'] == uid
-    # The four check-in queries plus two lifecycle UPDATEs and the user reload
-    # after lifecycle commit. Keep a fixed upper bound to catch N+1 regressions.
-    assert len(statements) <= 7, statements
+    # Original seven statements plus account lock, browser lookup and slot count.
+    # Signed proofs have separate coverage; this legacy request has no proof.
+    assert len(statements) <= 10, statements
 
 
 @pytest.mark.parametrize('role,active,token_kind,expected', [

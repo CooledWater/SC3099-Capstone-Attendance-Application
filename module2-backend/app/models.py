@@ -441,9 +441,8 @@ class CheckIn(Base):
         index=True
     )
 
-    # devices table does not exist yet (Week 4 device management is out of
-    # scope this round), so this is intentionally NOT a ForeignKey - adding
-    # one would fail table creation against a nonexistent target table.
+    # Nullable for legacy attendance. Device binding now populates this ID;
+    # device removal retains a disabled row to preserve historical references.
     device_id = Column(String(36), nullable=True)
 
     status = Column(
@@ -529,6 +528,8 @@ class Device(Base):
         index=True
     )
 
+    # Unique account-registration fingerprint. The canonical browser key and
+    # its separate account associations live in browser_identities/registrations.
     device_fingerprint = Column(
         String(64),
         unique=True,

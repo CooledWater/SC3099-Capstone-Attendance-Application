@@ -11,6 +11,7 @@ import { SessionsPanel } from "./SessionsPanel";
 import { CheckInsPanel } from "./CheckInsPanel";
 import { AuditLogs } from "./AuditLogs";
 import { MetricsPanel } from "./MetricsPanel";
+import { DeviceApprovals } from "./DeviceApprovals";
 import { Tabs } from "./Tabs";
 import { fetchCheckIns, fetchCourses, fetchSessions, toRows, trendOf } from "@/lib/attendance";
 
@@ -19,6 +20,7 @@ const tabs = [
   { id: "sessions", label: "Sessions" },
   { id: "checkins", label: "Check-ins" },
   { id: "enrollments", label: "Enrollments" },
+  { id: "devices", label: "Devices" },
   { id: "audit", label: "Audit logs" },
   { id: "metrics", label: "Metrics" },
 ] as const;
@@ -97,6 +99,7 @@ export function AdminView() {
       )}
 
       {tab === "sessions" && <SessionsPanel rows={rows} canCreate selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} />}
+      {tab === "devices" && <DeviceApprovals />}
       {tab === "checkins" && <CheckInsPanel rows={rows} loading={checkIns.isLoading} />}
       {tab === "enrollments" && <EnrollmentsPanel courses={courses.data ?? []} loading={courses.isLoading} error={courses.isError} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} canManage />}
       {tab === "audit" && <AuditLogs />}

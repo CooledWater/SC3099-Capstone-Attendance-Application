@@ -3,6 +3,9 @@ import { api } from "@/lib/api";
 export type Device = {
   id: string;
   device_fingerprint: string;
+  browser_fingerprint?: string | null;
+  shared_browser?: boolean;
+  browser_identity_verified?: boolean;
   device_name: string | null;
   platform: "ios" | "android" | "web" | "desktop" | null;
   browser?: string | null;
@@ -33,22 +36,21 @@ class DeviceIdentificationUnsupportedError extends Error {
   }
 }
 
-// Keep this in sync with module1-frontend/lib/device.ts so a browser registered
-// by the check-in flow can be matched without exposing its fingerprint in UI.
+// Read the key already created by the attendance PWA on this origin.
+// A separate dashboard origin cannot access the PWA's IndexedDB.
 export async function createDeviceFingerprint() {
-  if (!globalThis.crypto?.subtle || typeof globalThis.navigator === "undefined") {
-    throw new DeviceIdentificationUnsupportedError();
-  }
-
-  const signals = [
-    navigator.userAgent,
-    navigator.language,
-    navigator.platform,
-    screen.width,
-    screen.height,
-  ].join("|");
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(signals));
-  return btoa(String.fromCharCode(...Array.from(new Uint8Array(digest))));
+  if (!globalThis.indexedDB) throw new DeviceIdentificationUnsupportedError();
+  return new Promise<string>((resolve, reject) => {
+    const request = indexedDB.open('saiv-device-keys', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('identities');
+    request.onerror = () => reject(new DeviceIdentificationUnsupportedError());
+    request.onsuccess = () => {
+      const db = request.result;
+      const record = db.transaction('identities').objectStore('identities').get('browser-installation-v1');
+      record.onsuccess = () => { db.close(); record.result?.fingerprint ? resolve(record.result.fingerprint) : reject(new DeviceIdentificationUnsupportedError()); };
+      record.onerror = () => { db.close(); reject(new DeviceIdentificationUnsupportedError()); };
+    };
+  });
 }
 
 export function isDeviceIdentificationUnsupported(error: unknown) {

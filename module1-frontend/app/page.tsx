@@ -6,6 +6,9 @@ import { SavedSessions } from '@/components/check-in/SavedSessions';
 import { PullToRefresh } from '@/components/PullToRefresh';
 import { PwaUpdates } from '@/components/PwaUpdates';
 import { AppLogo } from '@/components/AppLogo';
+import { MyDevices } from '@/components/MyDevices';
+import { registerCurrentDevice } from '@/lib/device';
+import { PermissionSettings } from '@/components/PermissionSettings';
 import { PwaInstall } from '@/components/PwaInstall';
 import { getMe, logout } from '@/lib/api/auth';
 import { ApiError, clearTokens, refreshAccessToken } from '@/lib/api/client';
@@ -24,6 +27,15 @@ export default function Home() {
   const [retry, setRetry] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [deviceError, setDeviceError] = useState('');
+  const [deviceRetry, setDeviceRetry] = useState(0);
+  useEffect(() => {
+    if (!user || demo || !online) return;
+    let active = true;
+    setDeviceError('');
+    void registerCurrentDevice(user.id).then(device => { if (active && !device.is_active) setDeviceError('This device is disabled. Enable it under Profile → My devices before checking in.'); }).catch(cause => { if (active) setDeviceError(cause instanceof Error ? cause.message : 'Device registration failed.'); });
+    return () => { active = false; };
+  }, [user, demo, online, deviceRetry]);
   const signedOut = useRef(false);
   const authenticated = useCallback((account: User) => {
     signedOut.current = false;
@@ -90,17 +102,19 @@ export default function Home() {
     setProfileOpen(false); setDemo(false); setOfflineView(false); setSnapshot(null); setUser(undefined); setBusy(false);
   }
 
-  return <><PullToRefresh busy={busy || restoring}/><PwaUpdates busy={busy || restoring}/><section hidden={!user || !profileOpen || offlineView} className="profile-screen">
+  return <>{user && deviceError && <div className="pwa-banner" role="alert"><span>Device registration: {deviceError}</span><button className="button" onClick={() => setDeviceRetry(value => value + 1)}>Retry</button></div>}<PullToRefresh busy={busy || restoring}/><PwaUpdates busy={busy || restoring}/><section hidden={!user || !profileOpen || offlineView} className="profile-screen">
     <button className="button secondary" onClick={() => setProfileOpen(false)}>← Back to check-in</button>
     <div className="profile-card"><AppLogo size={80}/><h1>Your profile</h1>
       {user && <dl><dt>Name</dt><dd>{user.full_name}</dd><dt>Email</dt><dd>{user.email}</dd><dt>Account</dt><dd>{demo ? 'Demo student' : user.role}</dd></dl>}
       {!demo && <p><a className="button primary" href="/dashboard" target="_blank" rel="noopener noreferrer">Open dashboard in browser ↗</a></p>}
+      {user && <PermissionSettings user={user} demo={demo} onChange={setUser}/>}
+      {user && <MyDevices userId={user.id} demo={demo} visible={profileOpen} onRegistered={() => setDeviceError('')}/>}
       <PwaInstall busy={busy || restoring}/>
     </div>
   </section>{
     offlineView ? <SavedSessions snapshot={snapshot} online={online} loading={restoring} onRetry={() => setRetry(value => value + 1)} onExit={() => void signOut()}/>
     : restoring && !user ? <main className="loading-screen"><AppLogo size={72}/><p>Preparing your secure session…</p></main>
     : !user ? <AuthCard onAuthenticated={authenticated} onDemo={() => { setDemo(true); setUser(demoUser); }}/>
-    : <div hidden={profileOpen}><StudentDashboard user={user} demo={demo} onLogout={signOut} onBusyChange={setBusy} onOpenProfile={() => setProfileOpen(true)}/></div>
+    : <div hidden={profileOpen}><StudentDashboard user={user} demo={demo} onLogout={signOut} onBusyChange={setBusy} profileOpen={profileOpen} registrationError={deviceError} onOpenProfile={() => setProfileOpen(true)}/></div>
   }</>;
 }

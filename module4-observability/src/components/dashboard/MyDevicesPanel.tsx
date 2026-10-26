@@ -88,7 +88,7 @@ export function MyDevicesPanel() {
   const [renameError, setRenameError] = useState("");
 
   const currentDevice = useMemo(
-    () => devices.data?.find((device) => device.device_fingerprint === fingerprint.data),
+    () => devices.data?.find((device) => (device.browser_fingerprint ?? device.device_fingerprint) === fingerprint.data),
     [devices.data, fingerprint.data],
   );
   const orderedDevices = useMemo(() => {
@@ -245,7 +245,7 @@ export function MyDevicesPanel() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove device?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove <strong>{removeTarget?.device_name ?? "this device"}</strong> from your registered devices. Future device-required check-ins may require registration again.
+              This will remove <strong>{removeTarget?.device_name ?? "this device"}</strong> from active use. Check-in on it will be blocked until you explicitly enable it in the attendance app’s Profile → My devices. Admin approval will then be required again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -77,7 +77,7 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues, course_assistants
+from app import device_binding, audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues, course_assistants
 from app.permissions import assigned_course_scope, assists, can_staff_course, teaches
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
@@ -98,6 +98,7 @@ app.include_router(student_overview.router)
 app.include_router(venues.router)
 app.include_router(course_assistants.router)
 app.include_router(motion.router)
+app.include_router(device_binding.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
 app.include_router(prometheus_metrics.router)
@@ -2418,12 +2419,7 @@ def create_checkin(
             detail="Already checked in to this session"
         )
 
-    # Decision inputs: (1) the venue-distance geofence, which only Module 2
-    # can compute, and (2) the biometric signals the session requires,
-    # obtained from Module 3 via app.face_service. device trust / network
-    # heuristics and the risk_signals table remain out of scope this round;
-    # device_fingerprint is accepted per the frontend contract but not yet
-    # linked to a device record.
+    device, device_verified, shared_browser = device_binding.resolve(db, current_user, checkin_data)
     venue = _effective_venue(session, course)
     geo_assessment = _assess_checkin_geofence(
         checkin_data.latitude,
@@ -2447,9 +2443,25 @@ def create_checkin(
     effective_threshold = (
         venue["risk_threshold"] if venue["risk_threshold"] is not None else 0.5
     )
+    device_trusted, device_contribution = device_binding.apply_risk(biometrics, device, device_verified, shared_browser)
     assessment = _combine_checkin_assessment(
         geo_assessment, biometrics, effective_threshold
     )
+
+    if not device_trusted:
+        assessment['risk_score'] = max(assessment['risk_score'], device_contribution)
+        assessment['risk_factors'].append({'type': 'device_shared' if shared_browser else 'attestation_failed' if device and device.is_trusted else 'device_unknown', 'severity': 'medium', 'weight': device_contribution})
+        if assessment['status'] != 'rejected':
+            assessment['status'] = 'flagged'
+    # A device approval must never turn missing/failed required identity evidence into an approval.
+    identity_incomplete = ((session.require_face_match and (not biometrics['face_match'] or not biometrics['face_match'].passed))
+                           or (session.require_liveness_check and not biometrics['liveness']))
+    if identity_incomplete and assessment['status'] != 'rejected':
+        assessment['status'] = 'flagged'
+        assessment['risk_factors'].append({'type': 'identity_unverified', 'severity': 'high', 'weight': 0.0})
+    if device:
+        device.last_seen_at = now
+        device.total_checkins += 1
 
     liveness = biometrics["liveness"]
     face_match = biometrics["face_match"]
@@ -2477,6 +2489,7 @@ def create_checkin(
 
     new_checkin = CheckIn(
         id=checkin_id,
+        device_id=device.id if device else None,
         session_id=checkin_data.session_id,
         student_id=current_user.id,
         status=checkin_status,
@@ -2507,11 +2520,11 @@ def create_checkin(
     }
     create_audit_log(
         db, "checkin_attempted", student_id, checkin_id,
-        details=audit_details, timestamp=now
+        details=audit_details, device_id=device.id if device else None, timestamp=now
     )
     create_audit_log(
         db, f"checkin_{checkin_status}", student_id, checkin_id,
-        details=audit_details, success=checkin_status != "rejected",
+        details=audit_details, device_id=device.id if device else None, success=checkin_status != "rejected",
         timestamp=now + timedelta(microseconds=1)
     )
     try:
@@ -2992,11 +3005,11 @@ def review_checkin(
     return result
 
 
-def _serialize_device(device: Device) -> dict:
+def _serialize_device(device: Device, metadata: dict | None = None) -> dict:
     return {
         "id": device.id,
         "user_id": device.user_id,
-        "device_fingerprint": device.device_fingerprint,
+        "device_fingerprint": (metadata or {}).get("browser_fingerprint") or device.device_fingerprint,
         "device_name": device.device_name,
         "platform": device.platform,
         "browser": device.browser,
@@ -3005,7 +3018,10 @@ def _serialize_device(device: Device) -> dict:
         "is_active": device.is_active,
         "first_seen_at": device.first_seen_at,
         "last_seen_at": device.last_seen_at,
-        "total_checkins": device.total_checkins
+        "total_checkins": device.total_checkins,
+        "browser_fingerprint": (metadata or {}).get("browser_fingerprint"),
+        "shared_browser": (metadata or {}).get("shared_browser", False),
+        "browser_identity_verified": (metadata or {}).get("browser_identity_verified", False),
     }
 
 
@@ -3016,57 +3032,43 @@ def register_device(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    existing = db.query(Device).filter(
-        Device.device_fingerprint == device_data.device_fingerprint
-    ).first()
-
+    fingerprint = device_data.device_fingerprint
+    if device_data.public_key and device_binding.key_fingerprint(device_data.public_key) != fingerprint:
+        raise HTTPException(400, 'Fingerprint must be the SHA-256 hash of the registered public key')
+    device_binding.lock_account(db, current_user.id)
+    existing = device_binding.find_device(db, current_user.id, fingerprint)
+    if existing is None:
+        device_binding.require_slot(db, current_user.id)
+    proven = device_binding.consume_registration_proof(db, current_user.id, device_data)
     if existing:
-        if existing.user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Device fingerprint already registered to another user"
-            )
-
-        # Re-registration from the device's owner (e.g. re-login on the same
-        # browser) - refresh metadata and reactivate instead of erroring.
+        if existing.public_key and device_data.public_key and existing.public_key != device_data.public_key:
+            raise HTTPException(409, 'Device key cannot be replaced; register a new device')
         existing.device_name = device_data.device_name or existing.device_name
         existing.platform = device_data.platform or existing.platform
         existing.browser = device_data.browser or existing.browser
         existing.os_version = device_data.os_version or existing.os_version
         existing.app_version = device_data.app_version or existing.app_version
         existing.public_key = device_data.public_key or existing.public_key
-        existing.is_active = True
         existing.last_seen_at = datetime.utcnow()
-
-        db.commit()
-        db.refresh(existing)
-
-        return _serialize_device(existing)
-
-    now = datetime.utcnow()
-    new_device = Device(
-        user_id=current_user.id,
-        device_fingerprint=device_data.device_fingerprint,
-        device_name=device_data.device_name,
-        platform=device_data.platform,
-        browser=device_data.browser,
-        os_version=device_data.os_version,
-        app_version=device_data.app_version,
-        public_key=device_data.public_key,
-        first_seen_at=now,
-        last_seen_at=now
-    )
-
-    db.add(new_device)
-    db.flush()  # assigns new_device.id so the audit row can reference it
-    create_audit_log(
-        db, "device_registered", current_user.id, new_device.id,
-        device_id=new_device.id
-    )
-    db.commit()
-    db.refresh(new_device)
-
-    return _serialize_device(new_device)
+        device = existing
+    else:
+        now = datetime.utcnow()
+        device = Device(user_id=current_user.id,
+            device_fingerprint=device_binding.account_fingerprint(current_user.id, fingerprint) if device_data.public_key else fingerprint,
+            device_name=device_data.device_name, platform=device_data.platform, browser=device_data.browser,
+            os_version=device_data.os_version, app_version=device_data.app_version, public_key=device_data.public_key,
+            first_seen_at=now, last_seen_at=now, public_key_created_at=now if device_data.public_key else None)
+        db.add(device)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(409, 'Registration changed concurrently. Please refresh devices and retry.')
+        create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id)
+    if device_data.public_key:
+        device_binding.attach_browser(db, device, fingerprint, device_data.public_key, verified=proven)
+    db.commit(); db.refresh(device)
+    return _serialize_device(device, device_binding.browser_metadata(db, [device]).get(device.id))
 
 
 @app.get("/api/v1/devices/my-devices")
@@ -3078,7 +3080,8 @@ def list_my_devices(
         Device.user_id == current_user.id
     ).all()
 
-    return [_serialize_device(device) for device in devices]
+    metadata = device_binding.browser_metadata(db, devices)
+    return [_serialize_device(device, metadata.get(device.id)) for device in devices]
 
 
 @app.get("/api/v1/devices/")
@@ -3111,9 +3114,10 @@ def list_all_devices(
         .all()
     )
 
+    metadata = device_binding.browser_metadata(db, [device for device, _ in rows])
     return {
         "items": [
-            {**_serialize_device(device), "user_email": email}
+            {**_serialize_device(device, metadata.get(device.id)), "user_email": email}
             for device, email in rows
         ],
         "total": total,
@@ -3143,12 +3147,21 @@ def update_device(
             detail="Insufficient permissions"
         )
 
+    device_binding.lock_account(db, device.user_id)
+    db.refresh(device)
+    if device_data.is_active is True and not device.is_active:
+        device_binding.require_slot(db, device.user_id)
+    if device_data.is_trusted is True and device_binding.active_count(db, device.user_id) > device_binding.MAX_ACTIVE_DEVICES:
+        raise HTTPException(409, device_binding.LIMIT_MESSAGE)
+
     if device_data.is_trusted is not None:
         if current_user.role != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only admins can change device trust status"
             )
+        if device_data.is_trusted and (not device.public_key or not device.is_active):
+            raise HTTPException(400, 'Only an active device with a registered public key can be approved')
         device.is_trusted = device_data.is_trusted
         device.trust_score = "high" if device_data.is_trusted else "low"
 
@@ -3157,11 +3170,19 @@ def update_device(
 
     if device_data.is_active is not None:
         device.is_active = device_data.is_active
+        if not device.is_active:
+            device.is_trusted = False
+            device.trust_score = 'low'
+            device.revoked_at = datetime.utcnow()
+        else:
+            device.revoked_at = None
+    create_audit_log(db, 'device_registered', current_user.id, device.id,
+        device_id=device.id, details={'event': 'device_updated', 'changes': device_data.model_dump(exclude_unset=True)})
 
     db.commit()
     db.refresh(device)
 
-    return _serialize_device(device)
+    return _serialize_device(device, device_binding.browser_metadata(db, [device]).get(device.id))
 
 
 @app.delete("/api/v1/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -3184,7 +3205,14 @@ def delete_device(
             detail="Insufficient permissions"
         )
 
-    db.delete(device)
+    device_binding.lock_account(db, device.user_id)
+    db.refresh(device)
+    # Preserve historical attendance and prevent automatic registration undoing removal.
+    device.is_active = False
+    device.is_trusted = False
+    device.trust_score = 'low'
+    device.revoked_at = datetime.utcnow()
+    create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id, details={'event': 'device_removed'})
     db.commit()
 
     return None

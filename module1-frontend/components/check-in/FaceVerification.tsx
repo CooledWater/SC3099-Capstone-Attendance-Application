@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFaceGuidance } from '@/features/camera/useFaceGuidance';
 import { enrollFace, startMotion, verifyMotion } from '@/lib/api/checkins';
-import { getMe, updateConsent } from '@/lib/api/auth';
+import { getMe } from '@/lib/api/auth';
 import type { CheckInRequest, Session } from '@/types/api';
 
 export type FaceEvidence = Pick<CheckInRequest, 'liveness_challenge_response' | 'motion_verification_id'>;
@@ -34,9 +34,9 @@ export function FaceVerification({ videoRef, capture, cameraReady, session, demo
   async function enroll() {
     setBusy(true); setError('');
     try {
-      // Only camera consent changes here; preserve the existing location preference.
+      // Verify saved consent without re-enabling permissions during enrollment.
       const me = await getMe();
-      await updateConsent(true, !!me.geolocation_consent);
+      if (!me.camera_consent || !me.geolocation_consent) throw new Error('Camera and location verification are blocked. Enable them in Profile settings.');
       await enrollFace(photo);
       if (active.current) { setEnrolled(true); setPhoto(''); }
     } catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : 'Enrollment failed'); }
@@ -47,7 +47,7 @@ export function FaceVerification({ videoRef, capture, cameraReady, session, demo
     setError(''); setBusy(true); face.cancel(); setChallenge(undefined);
     try {
       if (demo) { face.start(); return; }
-      const me = await getMe(); await updateConsent(true, !!me.geolocation_consent);
+      const me = await getMe(); if (!me.camera_consent || !me.geolocation_consent) throw new Error('Camera and location verification are blocked. Enable them in Profile settings.');
       const next = await startMotion(session.id);
       if (active.current && epoch === captureEpoch.current) { setChallenge(next); face.start(); }
     } catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : 'Could not start challenge'); }

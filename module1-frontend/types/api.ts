@@ -32,6 +32,8 @@ export type CheckInRequest = {
   longitude: number;
   location_accuracy_meters: number;
   device_fingerprint: string;
+  device_challenge_id?: string;
+  device_signature?: string;
   liveness_challenge_response?: string;
   motion_verification_id?: string;
 };

@@ -127,7 +127,9 @@ class CheckInCreate(RequestModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     location_accuracy_meters: Optional[float] = Field(default=None, ge=0)
-    device_fingerprint: str
+    device_fingerprint: str = Field(min_length=1, max_length=64)
+    device_challenge_id: Optional[str] = Field(default=None, max_length=36)
+    device_signature: Optional[str] = Field(default=None, max_length=1024)
     motion_verification_id: Optional[str] = Field(default=None, max_length=36)
     liveness_challenge_response: Optional[str] = None
     qr_code: Optional[str] = None
@@ -147,7 +149,9 @@ class DeviceCreate(RequestModel):
     browser: Optional[str] = None
     os_version: Optional[str] = None
     app_version: Optional[str] = None
-    public_key: Optional[str] = None
+    public_key: Optional[str] = Field(default=None, max_length=1024)
+    registration_challenge_id: Optional[str] = Field(default=None, max_length=36)
+    registration_signature: Optional[str] = Field(default=None, max_length=1024)
 class DeviceUpdate(RequestModel):
     device_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     is_trusted: Optional[bool] = None
