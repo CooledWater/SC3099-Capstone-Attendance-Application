@@ -67,13 +67,13 @@ test('check-in restores saved consent and blocks collection after consent is wit
   const props = { user: { id: 'student', full_name: 'Alex Tan', camera_consent: true, geolocation_consent: true }, demo: true, profileOpen: false, onBusyChange() {}, onOpenProfile() {}, onLogout() {} };
   let renderer;
   await act(async () => { renderer = create(React.createElement(context.exports.StudentDashboard, props)); });
-  const button = renderer.root.findAllByType('button').find(item => item.children.includes('Proceed to check in'));
+  const button = renderer.root.findAllByType('button').find(item => item.children.includes('Start camera'));
   assert.ok(button);
   act(() => button.props.onClick());
   assert.equal(starts, 1);
   await act(async () => { renderer.update(React.createElement(context.exports.StudentDashboard, { ...props, user: { ...props.user, camera_consent: false } })); });
   assert.ok(stops > 0);
   assert.ok(renderer.root.findAllByType('h2').some(item => item.children.includes('Permission required')));
-  assert.ok(!renderer.root.findAllByType('button').some(item => item.children.includes('Proceed to check in')));
+  assert.ok(!renderer.root.findAllByType('button').some(item => item.children.includes('Start camera')));
   act(() => renderer.unmount());
 });

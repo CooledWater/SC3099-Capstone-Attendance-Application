@@ -62,56 +62,58 @@ function mount(permission = 'granted') {
     unmount: () => act(() => renderer.unmount()),
   };
 }
-for (const permission of ['granted', 'unsupported']) test(`one action prepares both inputs with ${permission} permission queries`, () => {
+for (const permission of ['granted', 'unsupported']) test(`four stages require separate camera and location actions (${permission})`, () => {
   const app = mount(permission);
   try {
-    app.click('Proceed to check in');
+    app.click(permission === 'granted' ? 'Start camera' : 'Allow camera access');
     assert.equal(app.requests.camera.length, 1);
-    assert.equal(app.requests.location.length, 1);
+    assert.equal(app.requests.location.length, 0, 'location must wait for its own action');
     app.camera('ready');
-    assert.equal(app.liveness(), false, 'camera alone must not advance');
+    assert.equal(app.liveness(), false);
+    assert.ok(JSON.stringify(app.renderer.toJSON()).includes('Confirm your location'));
+    app.click(permission === 'granted' ? 'Use current location' : 'Share precise location');
+    assert.equal(app.requests.location.length, 1);
     app.location('ready');
     assert.equal(app.liveness(), true);
-    assert.ok(!JSON.stringify(app.renderer.toJSON()).includes('Confirm your location'));
   } finally { app.unmount(); }
 });
-test('location failure stays in preparation and can retry without skipping fresh capture', () => {
+test('location timeout stays at location and allows another capture', () => {
   const app = mount();
   try {
-    app.click('Proceed to check in'); app.camera('ready'); app.location('timeout');
+    app.click('Start camera'); app.camera('ready'); app.click('Use current location'); app.location('timeout');
     assert.equal(app.liveness(), false);
     assert.ok(JSON.stringify(app.renderer.toJSON()).includes('Location timed out'));
-    app.click('Retry preparation');
-    assert.equal(app.requests.camera.length, 2);
+    app.click('Retry location');
+    assert.equal(app.requests.camera.length, 1);
     assert.equal(app.requests.location.length, 2);
-    app.location('ready');
-    assert.equal(app.liveness(), false);
-    app.camera('ready'); assert.equal(app.liveness(), true);
+    app.location('ready'); assert.equal(app.liveness(), true);
   } finally { app.unmount(); }
 });
-test('camera denial never advances even when location succeeds', () => {
+test('camera denial stays at camera and never requests location', () => {
   const app = mount();
   try {
-    app.click('Proceed to check in'); app.location('ready'); app.camera('denied');
+    app.click('Start camera'); app.camera('denied');
+    assert.equal(app.requests.location.length, 0);
     assert.equal(app.liveness(), false);
     assert.ok(JSON.stringify(app.renderer.toJSON()).includes('Camera access is blocked'));
   } finally { app.unmount(); }
 });
-test('cancel invalidates preparation and late callbacks do not advance', () => {
+test('cancel invalidates location capture and late callbacks do not advance', () => {
   const app = mount();
   try {
-    app.click('Proceed to check in'); app.click('Cancel');
-    app.camera('ready'); app.location('ready');
+    app.click('Start camera'); app.camera('ready'); app.click('Use current location'); app.click('Cancel');
+    app.location('ready');
     assert.equal(app.liveness(), false);
-    assert.ok(JSON.stringify(app.renderer.toJSON()).includes('Proceed to check in'));
+    assert.ok(JSON.stringify(app.renderer.toJSON()).includes('Start camera'));
   } finally { app.unmount(); }
 });
-test('opening Profile cancels preparation', () => {
+test('opening Profile cancels pending camera access', () => {
   const app = mount();
   try {
-    app.click('Proceed to check in');
+    app.click('Start camera');
     app.update({ profileOpen: true });
-    app.camera('ready'); app.location('ready');
+    app.camera('ready');
+    assert.equal(app.requests.location.length, 0);
     assert.equal(app.liveness(), false);
   } finally { app.unmount(); }
 });
