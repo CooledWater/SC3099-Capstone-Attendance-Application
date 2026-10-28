@@ -39,6 +39,7 @@ export function SessionCalendar({
   onWeekChange,
   onEdit,
   onCreate,
+  readOnly = false,
 }: {
   courseId: string;
   courseIds: Set<string> | undefined;
@@ -47,6 +48,7 @@ export function SessionCalendar({
   onWeekChange: (week: number) => void;
   onEdit: (row: SessionRow) => void;
   onCreate: (instant: number) => void;
+  readOnly?: boolean;
 }) {
   const qc = useQueryClient();
   const [move, setMove] = useState<{ session: SessionRow; start: number } | null>(null);
@@ -89,7 +91,7 @@ export function SessionCalendar({
     day: "2-digit",
   });
   async function confirmMove() {
-    if (!move || busy.current) return;
+    if (readOnly || !move || busy.current) return;
     busy.current = true;
     setSaving(true);
     setError(null);
@@ -122,6 +124,7 @@ export function SessionCalendar({
     }
   }
   function drop(event: React.DragEvent, instant: number) {
+    if (readOnly) return;
     event.preventDefault();
     const row = sessions.find((item) => item.id === event.dataTransfer.getData("text/plain"));
     if (!row || row.status !== "scheduled" || row.instructor_id !== userId) return;
@@ -143,14 +146,20 @@ export function SessionCalendar({
         key={row.id}
         data-session-id={row.id}
         type="button"
-        draggable={scheduled && row.instructor_id === userId && !saving}
+        draggable={!readOnly && scheduled && row.instructor_id === userId && !saving}
         onDragStart={(event) => {
+          if (readOnly) {
+            event.preventDefault();
+            return;
+          }
           event.dataTransfer.setData("text/plain", row.id);
           event.dataTransfer.effectAllowed = "move";
         }}
-        onClick={() => onEdit(row)}
+        onClick={() => {
+          if (!readOnly) onEdit(row);
+        }}
         aria-label={`${row.courses?.code ?? "Course"} ${row.name}, ${clock(row.starts_at)} to ${clock(row.ends_at)}, ${scheduled ? "Scheduled" : "Active"}`}
-        title={`${row.name} · ${duration} min · ${scheduled ? "Scheduled — drag to move or click to edit" : "Active — timing locked"}`}
+        title={`${row.name} · ${duration} min · ${readOnly ? (scheduled ? "Scheduled" : "Active") : scheduled ? "Scheduled — drag to move or click to edit" : "Active — timing locked"}`}
         className={`${calendar ? "absolute z-10" : "w-full"} overflow-auto rounded-md border-l-[3px] p-2 text-left text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${scheduled ? "border-violet-300 bg-violet-400/25" : "border-emerald-300 bg-emerald-400/20"}`}
         style={
           calendar
@@ -223,7 +232,8 @@ export function SessionCalendar({
       )}
       {query.isSuccess && !sessions.length && (
         <p role="status" className="mb-4 text-xs text-muted-foreground">
-          No Scheduled or Active sessions this week. Choose an empty slot to create one.
+          No Scheduled or Active sessions this week.
+          {!readOnly && " Choose an empty slot to create one."}
         </p>
       )}
       <div className="hidden max-h-[650px] overflow-auto rounded-xl border border-border md:block">
@@ -264,14 +274,17 @@ export function SessionCalendar({
                   data-calendar-slot={new Date(day + offset).toISOString()}
                   type="button"
                   className="block h-8 w-full border-t border-border/50 hover:bg-primary/10 focus-visible:bg-primary/15 focus-visible:outline-none"
-                  aria-label={`New session ${formatSingaporeDateTime(new Date(day + offset).toISOString())} SGT`}
-                  onClick={() => onCreate(day + offset)}
+                  aria-label={`${readOnly ? "Time slot" : "New session"} ${formatSingaporeDateTime(new Date(day + offset).toISOString())} SGT`}
+                  onClick={() => {
+                    if (!readOnly) onCreate(day + offset);
+                  }}
                   onDragOver={(event) => {
+                    if (readOnly) return;
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
                   }}
                   onDrop={(event) => drop(event, day + offset)}
-                  disabled={query.isPending || query.isError}
+                  disabled={readOnly || query.isPending || query.isError}
                 />
               ))}
               {segments[index]!.map((block) => blockButton(block, true, day))}
@@ -294,15 +307,17 @@ export function SessionCalendar({
               {!segments[index]!.length && (
                 <p className="text-xs text-muted-foreground">No sessions</p>
               )}
-              <button className={control} onClick={() => onCreate(day + 10 * 3600000)}>
-                New session on this day
-              </button>
+              {!readOnly && (
+                <button className={control} onClick={() => onCreate(day + 10 * 3600000)}>
+                  New session on this day
+                </button>
+              )}
             </div>
           </section>
         ))}
       </div>
       <AlertDialog
-        open={!!move}
+        open={!readOnly && !!move}
         onOpenChange={(open) => {
           if (!open && !saving) {
             setMove(null);

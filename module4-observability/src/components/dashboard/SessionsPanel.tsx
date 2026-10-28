@@ -59,6 +59,8 @@ export function SessionsPanel({
   selectedCourseId: controlledCourseId,
   onCourseChange,
   onViewSession,
+  assignedCourses,
+  readOnly = false,
 }: {
   rows: CheckInRow[];
   canCreate: boolean;
@@ -67,6 +69,8 @@ export function SessionsPanel({
   selectedCourseId?: string;
   onCourseChange?: (id: string) => void;
   onViewSession?: (session: SessionRow) => void;
+  assignedCourses?: import("@/lib/attendance").CourseRow[];
+  readOnly?: boolean;
 }) {
   const qc = useQueryClient();
   const sessions = useQuery({
@@ -77,22 +81,27 @@ export function SessionsPanel({
   const courses = useQuery({
     queryKey: ["courses"],
     queryFn: fetchCourses,
+    enabled: assignedCourses === undefined,
   });
   const venues = useQuery({
     queryKey: ["venues", currentUserId],
     queryFn: ({ signal }) => api.request<{ items: Venue[] }>("/venues/", { signal }),
-    enabled: canCreate,
+    enabled: canCreate && !readOnly,
   });
   const venueOptions = venues.data?.items ?? [];
   const venuePlaceholder = venues.isPending
     ? "Loading venues…"
     : venues.isError
       ? "Could not load venues"
-      : venueOptions.length ? "Select venue" : "No venues available";
+      : venueOptions.length
+        ? "Select venue"
+        : "No venues available";
   const venueFeedback = venues.isError ? (
     <span role="alert" className="mt-1 block text-xs text-destructive">
       Could not load venues.{" "}
-      <button type="button" className="underline" onClick={() => void venues.refetch()}>Retry</button>
+      <button type="button" className="underline" onClick={() => void venues.refetch()}>
+        Retry
+      </button>
     </span>
   ) : null;
   const [open, setOpen] = useState(false);
@@ -165,8 +174,9 @@ export function SessionsPanel({
   }, [sessions.data, courseIds, selectedCourseId]);
 
   const editingSession = list.find((session) => session.id === editingSessionId) ?? null;
-  const availableCourses = (courses.isSuccess ? courses.data : []).filter(
-    (course) => !currentUserId || course.instructor_id === currentUserId,
+  const availableCourses = (assignedCourses ?? (courses.isSuccess ? courses.data : [])).filter(
+    (course) =>
+      assignedCourses !== undefined || !currentUserId || course.instructor_id === currentUserId,
   );
   const bySession = useMemo(() => {
     const m = new Map<string, CheckInRow[]>();
@@ -232,7 +242,8 @@ export function SessionsPanel({
       !form.course_id ||
       !form.session_name.trim() ||
       !form.session_type ||
-      !venueCode(venueOptions, form.venue) || venues.isError ||
+      !venueCode(venueOptions, form.venue) ||
+      venues.isError ||
       !form.starts_at
     ) {
       toast.error("Course, session name, session type, venue and start time are required.");
@@ -313,7 +324,8 @@ export function SessionsPanel({
     if (
       session.status !== "scheduled" ||
       !editForm.course_id ||
-      !venueCode(venueOptions, editForm.venue) || venues.isError ||
+      !venueCode(venueOptions, editForm.venue) ||
+      venues.isError ||
       !editForm.starts_at
     ) {
       toast.error("Choose a course, venue and start time for this scheduled session.");
@@ -519,7 +531,7 @@ export function SessionsPanel({
             ))}
           </div>
         )}
-        {canCreate && (!currentUserId || availableCourses.length > 0) && (
+        {canCreate && !readOnly && (!currentUserId || availableCourses.length > 0) && (
           <button
             onClick={() => {
               setForm({
@@ -537,7 +549,7 @@ export function SessionsPanel({
         )}
       </div>
 
-      {canCreate && (!currentUserId || availableCourses.length > 0) && open && (
+      {canCreate && !readOnly && (!currentUserId || availableCourses.length > 0) && open && (
         <form
           ref={newFormRef}
           onSubmit={createSession}
@@ -594,7 +606,9 @@ export function SessionsPanel({
             >
               <option value="">{venuePlaceholder}</option>
               {venueOptions.map((venue) => (
-                <option key={venue.code} value={venue.code}>{venue.code} · {venue.name}</option>
+                <option key={venue.code} value={venue.code}>
+                  {venue.code} · {venue.name}
+                </option>
               ))}
             </select>
             {venueFeedback}
@@ -636,12 +650,15 @@ export function SessionsPanel({
               className="mt-0.5"
               checked={form.require_liveness_check}
               disabled={saving}
-              onChange={(event) => setForm({ ...form, require_liveness_check: event.target.checked })}
+              onChange={(event) =>
+                setForm({ ...form, require_liveness_check: event.target.checked })
+              }
             />
             <span>
               Require liveness check
               <small className="mt-1 block">
-                When enabled, students complete the configured liveness challenge before checking in.
+                When enabled, students complete the configured liveness challenge before checking
+                in.
               </small>
             </span>
           </label>
@@ -679,6 +696,7 @@ export function SessionsPanel({
           courseId={selectedCourseId}
           courseIds={courseIds}
           userId={currentUserId}
+          readOnly={readOnly}
           week={week}
           onWeekChange={setWeek}
           onEdit={(row) => startEditing(row)}
@@ -694,7 +712,13 @@ export function SessionsPanel({
           }}
         />
       )}
-      <div className={view === "calendar" ? "hidden" : "space-y-4 px-5 py-4"}>
+      <div
+        className={
+          view === "calendar"
+            ? "hidden"
+            : `space-y-4 px-5 py-4 ${currentUserId || readOnly ? "max-h-[60vh] overflow-y-auto" : ""}`
+        }
+      >
         {sessions.isLoading && (
           <p className="py-2 text-sm text-muted-foreground">Loading sessions…</p>
         )}
@@ -725,7 +749,8 @@ export function SessionsPanel({
               {group.sessions.map((s) => {
                 const sessionRows = bySession.get(s.id) ?? [];
                 const isOpen = !onViewSession && expanded === s.id;
-                const canManage = currentUserId !== undefined && s.instructor_id === currentUserId;
+                const canManage =
+                  !readOnly && currentUserId !== undefined && s.instructor_id === currentUserId;
                 return (
                   <div key={s.id} className="rounded-xl border border-border bg-card/40 px-5 py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -782,59 +807,60 @@ export function SessionsPanel({
                         >
                           {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
                         </span>
-                        {((canManage && (s.status === "scheduled" || s.status === "active")) ||
-                          s.status === "closed") && (
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <button
-                                type="button"
-                                aria-label={`More actions for ${s.name}`}
-                                disabled={savingSessionId !== null}
-                                className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-glass text-muted-foreground transition hover:text-foreground disabled:opacity-60"
-                              >
-                                <MoreHorizontal className="size-4" aria-hidden="true" />
-                              </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              {s.status === "scheduled" && (
-                                <>
-                                  <DropdownMenuItem onSelect={() => startEditing(s)}>
-                                    Edit
+                        {!readOnly &&
+                          ((canManage && (s.status === "scheduled" || s.status === "active")) ||
+                            s.status === "closed") && (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  type="button"
+                                  aria-label={`More actions for ${s.name}`}
+                                  disabled={savingSessionId !== null}
+                                  className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-glass text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+                                >
+                                  <MoreHorizontal className="size-4" aria-hidden="true" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                {s.status === "scheduled" && (
+                                  <>
+                                    <DropdownMenuItem onSelect={() => startEditing(s)}>
+                                      Edit
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onSelect={() => setDeleteTarget(s)}
+                                      className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                    >
+                                      Delete
+                                    </DropdownMenuItem>
+                                  </>
+                                )}
+                                {s.status === "active" && (
+                                  <DropdownMenuItem onSelect={() => void closeSession(s)}>
+                                    {savingSessionId === s.id ? "Closing…" : "Close session"}
                                   </DropdownMenuItem>
+                                )}
+                                {s.status === "closed" && (
                                   <DropdownMenuItem
-                                    onSelect={() => setDeleteTarget(s)}
+                                    disabled={exportingSessionId !== null}
+                                    onSelect={() => void exportSession(s)}
+                                  >
+                                    {exportingSessionId === s.id
+                                      ? "Exporting…"
+                                      : "Export session CSV"}
+                                  </DropdownMenuItem>
+                                )}
+                                {canManage && (s.status === "active" || s.status === "closed") && (
+                                  <DropdownMenuItem
+                                    onSelect={() => void cancelSession(s)}
                                     className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                                   >
-                                    Delete
+                                    {savingSessionId === s.id ? "Cancelling…" : "Cancel session"}
                                   </DropdownMenuItem>
-                                </>
-                              )}
-                              {s.status === "active" && (
-                                <DropdownMenuItem onSelect={() => void closeSession(s)}>
-                                  {savingSessionId === s.id ? "Closing…" : "Close session"}
-                                </DropdownMenuItem>
-                              )}
-                              {s.status === "closed" && (
-                                <DropdownMenuItem
-                                  disabled={exportingSessionId !== null}
-                                  onSelect={() => void exportSession(s)}
-                                >
-                                  {exportingSessionId === s.id
-                                    ? "Exporting…"
-                                    : "Export session CSV"}
-                                </DropdownMenuItem>
-                              )}
-                              {canManage && (s.status === "active" || s.status === "closed") && (
-                                <DropdownMenuItem
-                                  onSelect={() => void cancelSession(s)}
-                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                >
-                                  {savingSessionId === s.id ? "Cancelling…" : "Cancel session"}
-                                </DropdownMenuItem>
-                              )}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        )}
+                                )}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          )}
                       </div>
                     </div>
 
@@ -942,7 +968,9 @@ export function SessionsPanel({
                   >
                     <option value="">{venuePlaceholder}</option>
                     {venueOptions.map((venue) => (
-                      <option key={venue.code} value={venue.code}>{venue.code} · {venue.name}</option>
+                      <option key={venue.code} value={venue.code}>
+                        {venue.code} · {venue.name}
+                      </option>
                     ))}
                   </select>
                   {venueFeedback}

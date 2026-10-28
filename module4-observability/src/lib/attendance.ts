@@ -253,8 +253,16 @@ export async function fetchCourses() {
   return items;
 }
 export const fetchMyEnrollments = () => api.request<EnrollmentRow[]>("/enrollments/my-enrollments");
-export async function fetchMyAssignedCourses() {
-  return (await api.request<{ items: CourseRow[] }>("/courses/my-courses?limit=100")).items;
+export async function fetchMyAssignedCourses(options: { signal?: AbortSignal } = {}) {
+  const items: CourseRow[] = [];
+  while (true) {
+    const page = await api.request<{ items: CourseRow[]; total: number }>(
+      `/courses/my-courses?limit=100&offset=${items.length}`,
+      { signal: options.signal ?? null },
+    );
+    items.push(...page.items);
+    if (!page.items.length || items.length >= page.total) return items;
+  }
 }
 
 export function toRows(list: RawCheckIn[]): CheckInRow[] {

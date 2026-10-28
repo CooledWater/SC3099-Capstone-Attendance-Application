@@ -1032,6 +1032,184 @@ Get attendance statistics for a course. **Requires auth (instructor for course, 
 }
 ```
 
+#### GET /stats/courses/{course_id}/overview
+
+**Added by: ishita.**
+
+Full route: `GET /api/v1/stats/courses/{course_id}/overview`.
+Get course-scoped aggregates for the instructor overview dashboard.
+**Requires auth (instructor for course, or admin).**
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `start_date` | ISO8601 datetime | None | Inclusive lower bound on session `scheduled_start` |
+| `end_date` | ISO8601 datetime | None | Exclusive upper bound on session `scheduled_start` |
+
+Pass both bounds for a selected reporting period. For October 2026 in Singapore,
+use `start_date=2026-10-01T00:00:00+08:00` and
+`end_date=2026-11-01T00:00:00+08:00`; URL-encode the values, including `+` as `%2B`.
+When both bounds are supplied, `start_date` must be strictly before `end_date`.
+Unlike `GET /stats/courses/{course_id}`, this endpoint's end bound is exclusive.
+An omitted bound leaves that side of the session aggregation unrestricted.
+If either bound is omitted, the trend instead starts at today's local midnight
+and spans 31 days; supply both bounds to align the trend with the other aggregates.
+
+**Response:** `200 OK`
+
+Illustrative response for five currently enrolled students, one closed session,
+and one active session. Datetime response fields are currently serialized as
+UTC without a timezone suffix. Trend dates and `today.date` use `timezone`
+(`APP_TIMEZONE`, default `Asia/Singapore`).
+
+```json
+{
+  "course_id": "course-uuid",
+  "course_code": "CS6101",
+  "course_name": "Advanced Topics in CS",
+  "timezone": "Asia/Singapore",
+  "start_date": "2026-09-30T16:00:00",
+  "end_date": "2026-10-31T16:00:00",
+  "attendance": {
+    "recorded": 7,
+    "expected": 10,
+    "rate": 0.7,
+    "held_sessions": 2,
+    "active_sessions": 1,
+    "approval_rate": 0.7143,
+    "status_counts": {
+      "approved": 5,
+      "flagged": 1,
+      "appealed": 1,
+      "rejected": 0,
+      "pending": 0
+    },
+    "historical_enrollment_limited": true
+  },
+  "outstanding": {
+    "flagged": 1,
+    "appealed": 1
+  },
+  "today": {
+    "date": "2026-10-28",
+    "total": 1,
+    "breakdown": {
+      "scheduled": 0,
+      "active": 1,
+      "closed": 0,
+      "cancelled": 0
+    }
+  },
+  "low_participation": {
+    "threshold": 0.4,
+    "total": 1,
+    "students": [
+      {
+        "student_id": "student-uuid",
+        "student_name": "John Doe",
+        "student_email": "john@example.com",
+        "submitted_sessions": 0,
+        "expected_sessions": 1,
+        "participation_rate": 0
+      }
+    ]
+  },
+  "risk_distribution": {
+    "scored_count": 7,
+    "bins": [
+      { "label": "0.0–<0.1", "min": 0, "max": 0.1, "count": 3 },
+      { "label": "0.1–<0.2", "min": 0.1, "max": 0.2, "count": 1 },
+      { "label": "0.2–<0.3", "min": 0.2, "max": 0.3, "count": 1 },
+      { "label": "0.3–<0.4", "min": 0.3, "max": 0.4, "count": 1 },
+      { "label": "0.4–<0.5", "min": 0.4, "max": 0.5, "count": 0 },
+      { "label": "0.5–<0.6", "min": 0.5, "max": 0.6, "count": 1 },
+      { "label": "0.6–<0.7", "min": 0.6, "max": 0.7, "count": 0 },
+      { "label": "0.7–<0.8", "min": 0.7, "max": 0.8, "count": 0 },
+      { "label": "0.8–<0.9", "min": 0.8, "max": 0.9, "count": 0 },
+      { "label": "0.9–1.0", "min": 0.9, "max": 1, "count": 0 }
+    ]
+  },
+  "trend": [
+    {
+      "start": "2026-10-01",
+      "end": "2026-10-08",
+      "recorded": 4,
+      "expected": 5,
+      "rate": 0.8,
+      "provisional": false
+    },
+    {
+      "start": "2026-10-08",
+      "end": "2026-10-15",
+      "recorded": 0,
+      "expected": 0,
+      "rate": null,
+      "provisional": false
+    },
+    {
+      "start": "2026-10-15",
+      "end": "2026-10-22",
+      "recorded": 0,
+      "expected": 0,
+      "rate": null,
+      "provisional": false
+    },
+    {
+      "start": "2026-10-22",
+      "end": "2026-11-01",
+      "recorded": 3,
+      "expected": 5,
+      "rate": 0.6,
+      "provisional": true
+    }
+  ],
+  "recent_sessions": [
+    {
+      "session_id": "session-uuid",
+      "name": "Lecture 1",
+      "status": "closed",
+      "scheduled_start": "2026-10-05T06:00:00",
+      "scheduled_end": "2026-10-05T08:00:00",
+      "recorded": 4,
+      "expected": 5,
+      "rate": 0.8
+    }
+  ]
+}
+```
+
+**Aggregation rules:**
+
+- Attendance includes `active` and `closed` sessions in the selected period,
+  counting check-ins regardless of verification status. `expected` is the current
+  active enrollment count multiplied by held sessions. `rate` is recorded / expected,
+  capped at `1` and rounded to four decimal places, or `0` when expected is zero.
+  `approval_rate` is approved / all held-session
+  check-ins, or `null` when there are none.
+- `historical_enrollment_limited` is `true`: expected attendance uses current
+  active enrollments rather than enrollment history at each session date.
+- `outstanding` counts flagged and appealed check-ins across the whole course,
+  independent of the selected period. `today` counts sessions by status for the
+  current local day, also independent of the selected period.
+- Low participation includes currently active enrollees with check-ins in
+  **40% or fewer of the selected closed sessions**. Any check-in status counts
+  as submitted. With no eligible closed sessions, the list is empty.
+- Risk distribution includes only non-null scores from selected held sessions.
+  The API returns ten width-0.1 bins; each is lower-inclusive and upper-exclusive,
+  except the final bin includes `1.0`. The dashboard combines these into
+  **Low `<0.3`**, **Medium `0.3–<0.5`**, and **High `≥0.5`**.
+- With both bounds supplied, periods longer than seven days use four buckets:
+  the first three span seven days each, and the fourth spans the remaining days.
+  Periods up to seven days use daily buckets. Bucket ends are exclusive; rates
+  use summed recorded / expected totals and are `null` when expected is zero.
+  `provisional` indicates a bucket containing an active session.
+- `recent_sessions` returns up to five selected closed sessions, ordered by
+  scheduled end descending, then scheduled start descending.
+
+**Errors:** `400` for `start_date >= end_date`, `403` for an authenticated user
+without access, `404` for an unknown course, and `422` for invalid datetime input.
+
 #### GET /stats/students/{student_id}
 Get attendance statistics for a specific student. **Requires auth (instructor for student's courses, or admin).**
 

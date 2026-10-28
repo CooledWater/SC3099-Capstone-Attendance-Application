@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useSessionValue } from "@/hooks/useSessionValue";
 import { useRole, roleLabel, type AppRole } from "@/hooks/useRole";
 import { StudentView } from "@/components/dashboard/StudentView";
 import { TaView } from "@/components/dashboard/TaView";
@@ -58,7 +59,10 @@ function Dashboard() {
   const { session, user, loading } = useAuth();
   const { role, loading: roleLoading } = useRole(user);
   const [now, setNow] = useState(() => Date.now());
-  const [viewAs, setViewAs] = useState<AppRole>("admin");
+  const [savedViewAs, setViewAs] = useSessionValue("dashboard:role-preview", "admin");
+  const viewAs: AppRole = ["admin", "instructor", "ta", "student"].includes(savedViewAs)
+    ? (savedViewAs as AppRole)
+    : "admin";
 
   useEffect(() => {
     if (!loading && !session) navigate({ to: "/auth" });

@@ -25,10 +25,13 @@ Definitions used throughout (the spec is silent, so they are fixed here):
 * Rates are fractions in [0, 1]; ``0.0`` when the denominator is 0.
 """
 import math
+import json
+import os
 import random
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, case, func
@@ -36,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.database import get_read_db
-from app.models import CheckIn, Course, Enrollment, Session as SessionModel, User
+from app.models import AuditLog, CheckIn, Course, Enrollment, Session as SessionModel, User
 from app import prometheus_metrics
 from app.permissions import assists, teaches
 
@@ -56,6 +59,43 @@ LOW_ATTENDANCE_THRESHOLD = 0.75
 
 RECENT_CHECKINS_LIMIT = 10
 TIMELINE_BUCKET_MINUTES = 5
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Singapore")
+SGT = timezone(timedelta(hours=8))
+
+
+def _app_zone() -> tzinfo:
+    # Match student_overview.py and the export handlers. Singapore is UTC+8
+    # without daylight saving, so its current reporting needs no tzdata package.
+    if APP_TIMEZONE == "Asia/Singapore":
+        return SGT
+    try:
+        return ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        return SGT
+
+
+def _effective_timezone_name() -> str:
+    if APP_TIMEZONE == "Asia/Singapore":
+        return APP_TIMEZONE
+    try:
+        ZoneInfo(APP_TIMEZONE)
+        return APP_TIMEZONE
+    except Exception:
+        return "Asia/Singapore"
+
+
+def _local_day_bounds(day: date) -> tuple[datetime, datetime]:
+    zone = _app_zone()
+    start = datetime.combine(day, datetime.min.time(), tzinfo=zone)
+    end = start + timedelta(days=1)
+    return (
+        start.astimezone(timezone.utc).replace(tzinfo=None),
+        end.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def _local_date(value: datetime) -> date:
+    return value.replace(tzinfo=timezone.utc).astimezone(_app_zone()).date()
 
 
 # --------------------------------------------------------------------------
@@ -302,6 +342,292 @@ def stats_overview(
 
 
 # --------------------------------------------------------------------------
+# GET /stats/courses/{course_id}/overview
+# --------------------------------------------------------------------------
+
+@router.get("/stats/courses/{course_id}/overview")
+def stats_course_overview(
+    course_id: str,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    current_user: User = Depends(require_roles("instructor", "admin", read_only=True)),
+    db: Session = Depends(get_read_db),
+):
+    """Return one consistent, course-scoped aggregation for the instructor view.
+
+    ``start_date`` is inclusive and ``end_date`` is exclusive. Session dates
+    are evaluated in APP_TIMEZONE (Asia/Singapore by default), then converted
+    to UTC-naive values for the database. Expected attendance uses the current
+    active enrollment set, matching the existing stats contract; immutable
+    historical enrollment events are not available in this model.
+    """
+    start = _naive_utc(start_date) if start_date else None
+    end = _naive_utc(end_date) if end_date else None
+    if start and end and start >= end:
+        raise HTTPException(status_code=400, detail="start_date must be before end_date")
+
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise _not_found("Course")
+    if not _can_view_course(current_user, course.instructor_id):
+        raise _forbidden()
+
+    period_filters = [SessionModel.course_id == course_id]
+    if start:
+        period_filters.append(SessionModel.scheduled_start >= start)
+    if end:
+        period_filters.append(SessionModel.scheduled_start < end)
+
+    enrolled_count = (
+        db.query(func.count(Enrollment.id))
+        .filter(Enrollment.course_id == course_id, Enrollment.is_active == True)  # noqa: E712
+        .scalar()
+    ) or 0
+
+    # One row per session. The unique session/student index makes the check-in
+    # count retry-safe; every verification status is intentionally included.
+    session_rows = (
+        db.query(
+            SessionModel.id,
+            SessionModel.name,
+            SessionModel.status,
+            SessionModel.scheduled_start,
+            SessionModel.scheduled_end,
+            func.count(CheckIn.id),
+        )
+        .outerjoin(CheckIn, CheckIn.session_id == SessionModel.id)
+        .filter(*period_filters)
+        .group_by(
+            SessionModel.id,
+            SessionModel.name,
+            SessionModel.status,
+            SessionModel.scheduled_start,
+            SessionModel.scheduled_end,
+        )
+        .order_by(SessionModel.scheduled_end.desc(), SessionModel.scheduled_start.desc())
+        .all()
+    )
+    held_rows = [row for row in session_rows if row[2] in HELD_STATUSES]
+    closed_rows = [row for row in session_rows if row[2] == "closed"]
+    recorded = sum(int(row[5]) for row in held_rows)
+    expected = enrolled_count * len(held_rows)
+
+    status_counts = {name: 0 for name in CHECKIN_STATUSES}
+    period_checkins = (
+        db.query(CheckIn.status, func.count(CheckIn.id))
+        .join(SessionModel, SessionModel.id == CheckIn.session_id)
+        .filter(*period_filters, SessionModel.status.in_(HELD_STATUSES))
+        .group_by(CheckIn.status)
+        .all()
+    )
+    for checkin_status, count in period_checkins:
+        status_name = getattr(checkin_status, "value", checkin_status)
+        status_counts[status_name] = int(count)
+    all_period_checkins = sum(status_counts.values())
+    approval_rate = None if all_period_checkins == 0 else _rate(
+        status_counts["approved"], all_period_checkins
+    )
+
+    today = _local_date(datetime.utcnow())
+    today_start, today_end = _local_day_bounds(today)
+    today_rows = (
+        db.query(SessionModel.status, func.count(SessionModel.id))
+        .filter(
+            SessionModel.course_id == course_id,
+            SessionModel.scheduled_start >= today_start,
+            SessionModel.scheduled_start < today_end,
+        )
+        .group_by(SessionModel.status)
+        .all()
+    )
+    today_breakdown = {"scheduled": 0, "active": 0, "closed": 0, "cancelled": 0}
+    for session_status, count in today_rows:
+        today_breakdown[session_status] = int(count)
+
+    # Closed-session participation is calculated in one grouped query. A
+    # student with no eligible closed sessions is absent from the result.
+    participation_rows = (
+        db.query(
+            User.id,
+            User.full_name,
+            User.email,
+            func.count(func.distinct(SessionModel.id)),
+            func.count(func.distinct(CheckIn.session_id)),
+        )
+        .select_from(Enrollment)
+        .join(User, User.id == Enrollment.student_id)
+        .join(
+            SessionModel,
+            and_(
+                SessionModel.course_id == Enrollment.course_id,
+                SessionModel.status == "closed",
+                *( [SessionModel.scheduled_start >= start] if start else [] ),
+                *( [SessionModel.scheduled_start < end] if end else [] ),
+            ),
+        )
+        .outerjoin(
+            CheckIn,
+            and_(
+                CheckIn.session_id == SessionModel.id,
+                CheckIn.student_id == Enrollment.student_id,
+            ),
+        )
+        .filter(Enrollment.course_id == course_id, Enrollment.is_active == True)  # noqa: E712
+        .group_by(User.id, User.full_name, User.email)
+        .having(
+            func.count(func.distinct(CheckIn.session_id)) * 100
+            <= func.count(func.distinct(SessionModel.id)) * 40
+        )
+        .all()
+    )
+    low_participation = []
+    for student_id, name, email, eligible, submitted in participation_rows:
+        eligible, submitted = int(eligible), int(submitted)
+        ratio = submitted / eligible if eligible else None
+        if ratio is not None:
+            low_participation.append({
+                "student_id": student_id,
+                "student_name": name,
+                "student_email": email,
+                "submitted_sessions": submitted,
+                "expected_sessions": eligible,
+                "participation_rate": round(ratio, 4),
+            })
+    low_participation.sort(key=lambda item: (item["participation_rate"], item["student_name"]))
+
+    # Course overview uses equal-width numerical bins on the backend's 0–1
+    # risk scale. The final bin includes 1.0; all others are half-open.
+    risk_bins = [
+        {
+            "label": f"{index / 10:.1f}–<{(index + 1) / 10:.1f}",
+            "min": index / 10,
+            "max": (index + 1) / 10,
+            "count": 0,
+        }
+        for index in range(10)
+    ]
+    risk_bins[-1]["label"] = "0.9–1.0"
+    risk_index = case(
+        *[
+            (CheckIn.risk_score < (index + 1) / 10, index)
+            for index in range(len(risk_bins) - 1)
+        ],
+        else_=len(risk_bins) - 1,
+    ).label("risk_bin")
+    scored_bins = (
+        db.query(risk_index, func.count(CheckIn.id))
+        .join(SessionModel, SessionModel.id == CheckIn.session_id)
+        .filter(*period_filters, SessionModel.status.in_(HELD_STATUSES), CheckIn.risk_score.isnot(None))
+        .group_by(risk_index)
+        .all()
+    )
+    scored_count = 0
+    for index, count in scored_bins:
+        risk_bins[int(index)]["count"] = int(count)
+        scored_count += int(count)
+
+    # Expose the dashboard's three bands without another query. Keep the
+    # numerical bins for existing consumers; their boundaries align exactly.
+    band_counts = {"low": 0, "medium": 0, "high": 0}
+    for item in risk_bins:
+        key = "low" if item["max"] <= MEDIUM_RISK else "medium" if item["max"] <= HIGH_RISK else "high"
+        band_counts[key] += item["count"]
+    risk_bands = [{"key": key, "count": count} for key, count in band_counts.items()]
+
+    # Aggregate trend buckets from recorded/expected totals, never from an
+    # average of session percentages. Future buckets remain null.
+    is_monthly = bool(start and end and (end - start).days > 7)
+    if start and end:
+        local_start = start.replace(tzinfo=timezone.utc).astimezone(_app_zone())
+        local_end = end.replace(tzinfo=timezone.utc).astimezone(_app_zone())
+    else:
+        local_start = datetime.now(_app_zone()).replace(hour=0, minute=0, second=0, microsecond=0)
+        local_end = local_start + timedelta(days=31)
+    final_day = local_end.date()
+    if is_monthly:
+        # Monthly reporting uses four month-relative buckets. This keeps W1
+        # anchored to the first day selected by the user instead of adding a
+        # partial calendar-week bucket from the previous month.
+        month_start = local_start.date()
+        bucket_days = [month_start + timedelta(days=7 * index) for index in range(4)]
+    else:
+        bucket_days = []
+        cursor = local_start.date()
+        while cursor < final_day:
+            bucket_days.append(cursor)
+            cursor += timedelta(days=1)
+    trend = []
+    for bucket_start in bucket_days:
+        bucket_end = bucket_start + (timedelta(days=7) if is_monthly else timedelta(days=1))
+        if is_monthly and bucket_start == bucket_days[-1]:
+            bucket_end = final_day
+        rows = [row for row in held_rows if bucket_start <= _local_date(row[3]) < bucket_end]
+        bucket_recorded = sum(int(row[5]) for row in rows)
+        bucket_expected = enrolled_count * len(rows)
+        trend.append({
+            "start": bucket_start.isoformat(),
+            "end": min(bucket_end, final_day).isoformat(),
+            "recorded": bucket_recorded,
+            "expected": bucket_expected,
+            "rate": None if bucket_expected == 0 else _rate(bucket_recorded, bucket_expected),
+            "provisional": any(row[2] == "active" for row in rows),
+        })
+
+    outstanding_counts = (
+        db.query(CheckIn.status, func.count(CheckIn.id))
+        .join(SessionModel, SessionModel.id == CheckIn.session_id)
+        .filter(
+            SessionModel.course_id == course_id,
+            CheckIn.status.in_(("flagged", "appealed")),
+        )
+        .group_by(CheckIn.status)
+        .all()
+    )
+    outstanding = {"flagged": 0, "appealed": 0}
+    for checkin_status, count in outstanding_counts:
+        status_name = getattr(checkin_status, "value", checkin_status)
+        if status_name in outstanding:
+            outstanding[status_name] = int(count)
+
+    return {
+        "course_id": course.id,
+        "course_code": course.code,
+        "course_name": course.name,
+        "timezone": _effective_timezone_name(),
+        "start_date": start,
+        "end_date": end,
+        "attendance": {
+            "recorded": recorded,
+            "expected": expected,
+            "rate": _rate(recorded, expected),
+            "held_sessions": len(held_rows),
+            "active_sessions": sum(1 for row in held_rows if row[2] == "active"),
+            "approval_rate": approval_rate,
+            "status_counts": status_counts,
+            "historical_enrollment_limited": True,
+        },
+        "outstanding": outstanding,
+        "today": {"date": today.isoformat(), "total": sum(today_breakdown.values()), "breakdown": today_breakdown},
+        "low_participation": {"threshold": 0.4, "total": len(low_participation), "students": low_participation},
+        "risk_distribution": {"scored_count": scored_count, "bins": risk_bins, "bands": risk_bands},
+        "trend": trend,
+        "recent_sessions": [
+            {
+                "session_id": row[0],
+                "name": row[1],
+                "status": row[2],
+                "scheduled_start": row[3],
+                "scheduled_end": row[4],
+                "recorded": int(row[5]),
+                "expected": enrolled_count,
+                "rate": _rate(int(row[5]), enrolled_count),
+            }
+            for row in closed_rows[:5]
+        ],
+    }
+
+
+# --------------------------------------------------------------------------
 # GET /stats/sessions/{session_id}
 # --------------------------------------------------------------------------
 
@@ -352,18 +678,19 @@ def stats_session(
     risk_distribution = {"low": 0, "medium": 0, "high": 0}
     timeline: dict[int, int] = {}
     risks, distances, minutes = [], [], []
+    pre_opening_count = 0
 
     for checkin_status, risk, distance, checked_in_at in checkins:
         by_status[checkin_status] = by_status.get(checkin_status, 0) + 1
 
-        risk = risk or 0.0
-        risks.append(risk)
-        if risk >= HIGH_RISK:
-            risk_distribution["high"] += 1
-        elif risk >= MEDIUM_RISK:
-            risk_distribution["medium"] += 1
-        else:
-            risk_distribution["low"] += 1
+        if risk is not None:
+            risks.append(risk)
+            if risk >= HIGH_RISK:
+                risk_distribution["high"] += 1
+            elif risk >= MEDIUM_RISK:
+                risk_distribution["medium"] += 1
+            else:
+                risk_distribution["low"] += 1
 
         if distance is not None:
             distances.append(distance)
@@ -371,11 +698,50 @@ def stats_session(
         # Measured from when check-in opened: students may check in before
         # scheduled_start, which would make the delta negative.
         elapsed = max(0.0, (checked_in_at - session.checkin_opens_at).total_seconds() / 60)
+        pre_opening_count += int(checked_in_at < session.checkin_opens_at)
         minutes.append(elapsed)
         bucket = int(elapsed // TIMELINE_BUCKET_MINUTES) * TIMELINE_BUCKET_MINUTES
         timeline[bucket] = timeline.get(bucket, 0) + 1
 
     checked_in = len(checkins)
+
+    now = datetime.utcnow()
+    today = _local_date(now)
+    today_start, today_end = _local_day_bounds(today)
+    today_counts = {"scheduled": 0, "active": 0, "closed": 0, "cancelled": 0}
+    for lifecycle, count in (
+        db.query(SessionModel.status, func.count(SessionModel.id))
+        .filter(SessionModel.course_id == course.id,
+                SessionModel.scheduled_start >= today_start,
+                SessionModel.scheduled_start < today_end)
+        .group_by(SessionModel.status).all()
+    ):
+        today_counts[lifecycle] = int(count)
+
+    # Return only a small, session-scoped review summary, never general audit
+    # metadata (IPs, identities, notes). Filter before LIMIT; no N+1 lookups.
+    review_activity = []
+    events = (
+        db.query(AuditLog)
+        .join(CheckIn, CheckIn.id == AuditLog.resource_id)
+        .filter(CheckIn.session_id == session.id,
+                AuditLog.resource_type == "checkin",
+                AuditLog.action == "checkin_reviewed")
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(5).all()
+    )
+    for event in events:
+        try:
+            details = json.loads(event.details or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(details, dict) or details.get("decision") not in ("approved", "rejected"):
+            continue
+        review_activity.append({
+            "id": event.id, "session_id": session.id, "session_name": session.name,
+            "action": "checkin_reviewed", "decision": details["decision"],
+            "previous_status": details.get("previous_status"),
+            "timestamp": event.timestamp.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+        })
 
     return {
         "session_id": session.id,
@@ -394,6 +760,19 @@ def stats_session(
         "rejected_count": by_status["rejected"],
         "pending_count": by_status["pending"],
         "appealed_count": by_status["appealed"],
+        "submitted_count": checked_in,
+        "expected_count": total_enrolled,
+        "scored_count": len(risks),
+        "timezone": _effective_timezone_name(),
+        "server_time": now.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "checkin_opens_at": session.checkin_opens_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "checkin_closes_at": session.checkin_closes_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "scheduled_end": session.scheduled_end,
+        "actual_end": session.actual_end,
+        "timeline_bucket_minutes": TIMELINE_BUCKET_MINUTES,
+        "pre_opening_count": pre_opening_count,
+        "today": {"date": today.isoformat(), "total": sum(today_counts.values()), "breakdown": today_counts},
+        "recent_review_activity": review_activity,
         "average_risk_score": _avg(sum(risks) / len(risks)) if risks else 0.0,
         "average_distance_meters": _avg(sum(distances) / len(distances), 2) if distances else None,
         "average_checkin_time_minutes": _avg(sum(minutes) / len(minutes), 2) if minutes else None,
@@ -560,6 +939,10 @@ def stats_student(
     if not student:
         raise _not_found("Student")
 
+    # Sharing one course grants access only to that instructor's course data.
+    # Apply the scope before aggregation and before the recent-record limit.
+    scope = _course_scope(current_user, None)
+
     held_sessions = (
         db.query(SessionModel.id, SessionModel.course_id)
         .filter(SessionModel.status.in_(HELD_STATUSES))
@@ -588,6 +971,7 @@ def stats_student(
         .outerjoin(held_sessions, held_sessions.c.course_id == Course.id)
         .outerjoin(own_checkins, own_checkins.c.session_id == held_sessions.c.id)
         .filter(Enrollment.student_id == student_id, Enrollment.is_active == True)  # noqa: E712
+        .filter(*scope)
         .group_by(Course.id, Course.code, Course.instructor_id)
         .order_by(Course.code)
         .all()
@@ -612,6 +996,7 @@ def stats_student(
         .join(SessionModel, SessionModel.id == CheckIn.session_id)
         .join(Course, Course.id == SessionModel.course_id)
         .filter(CheckIn.student_id == student_id)
+        .filter(*scope)
         .order_by(CheckIn.checked_in_at.desc())
         .limit(RECENT_CHECKINS_LIMIT)
         .all()

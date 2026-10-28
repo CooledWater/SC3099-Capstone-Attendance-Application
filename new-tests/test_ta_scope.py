@@ -179,6 +179,7 @@ def test_review_requires_assignment(world):
     ("PATCH", "/sessions/m_a", {"name": "x"}),
     ("DELETE", "/sessions/m_a", None),
     ("POST", "/enrollments/", {"course_id": "A", "student_id": "sb"}),
+    ("DELETE", "/enrollments/e_a", None),
     ("PUT", "/courses/A", {"name": "x"}),
 ])
 def test_assigned_ta_still_cannot_manage(world, method, path, body):

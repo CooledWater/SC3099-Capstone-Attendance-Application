@@ -216,11 +216,23 @@ const rosterBadge: Record<CheckInRow["status"], string> = {
   appealed: "bg-rose-400/20 text-rose-300",
 };
 
-export function VerificationBadge({ status }: { status: CheckInRow["status"] | null }) {
+export function VerificationBadge({
+  status,
+  sessionOverview = false,
+}: {
+  status: CheckInRow["status"] | null;
+  sessionOverview?: boolean;
+}) {
+  const color =
+    sessionOverview && status === "appealed"
+      ? "bg-amber-400/20 text-amber-300"
+      : sessionOverview && status === "rejected"
+        ? "bg-gray-400/20 text-gray-300"
+        : status
+          ? rosterBadge[status]
+          : "bg-secondary text-muted-foreground";
   return (
-    <span
-      className={`inline-flex rounded-full px-2 py-1 text-xs ${status ? rosterBadge[status] : "bg-secondary text-muted-foreground"}`}
-    >
+    <span className={`inline-flex rounded-full px-2 py-1 text-xs ${color}`}>
       {status ? statusText[status] : "—"}
     </span>
   );
@@ -236,6 +248,8 @@ export function AttendanceRoster({
   onSelect,
   onExport,
   exporting,
+  canExport = true,
+  checkInsOnly = false,
 }: {
   rows: RosterEntry[];
   loading: boolean;
@@ -246,6 +260,8 @@ export function AttendanceRoster({
   onSelect: (entry: RosterEntry) => void;
   onExport: () => void;
   exporting: boolean;
+  canExport?: boolean;
+  checkInsOnly?: boolean;
 }) {
   const [search, setSearch] = useState("");
   const [attendance, setAttendance] = useState("all");
@@ -259,7 +275,13 @@ export function AttendanceRoster({
   const pageSize = 10;
   const filtered = useMemo(
     () =>
-      filterRoster(rows, search, attendance, verification, flaggedIds).sort((a, b) => {
+      filterRoster(
+        checkInsOnly ? rows.filter((row) => row.checkin_id) : rows,
+        search,
+        attendance,
+        verification,
+        flaggedIds,
+      ).sort((a, b) => {
         if (sort.key === "risk_score") {
           if (a.risk_score == null) return b.risk_score == null ? 0 : 1;
           if (b.risk_score == null) return -1;
@@ -272,7 +294,7 @@ export function AttendanceRoster({
         }
         return String(a[sort.key] ?? "").localeCompare(String(b[sort.key] ?? "")) * sort.dir;
       }),
-    [rows, search, attendance, verification, flaggedIds, sort],
+    [rows, search, attendance, verification, flaggedIds, sort, checkInsOnly],
   );
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const page = pagination.signature === signature ? Math.min(pagination.page, pages) : 1;
@@ -288,30 +310,46 @@ export function AttendanceRoster({
   return (
     <section
       className="rounded-2xl border border-border bg-glass p-4 sm:p-5"
-      aria-label="Attendance roster"
+      aria-label={checkInsOnly ? "Session check-ins" : "Attendance roster"}
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-display text-sm font-semibold text-card-foreground">
-          Attendance roster
+          {checkInsOnly ? "Session check-ins" : "Attendance roster"}
         </h3>
-        <button
-          type="button"
-          className="rounded-full bg-gradient-to-r from-violet-500 to-emerald-400 px-5 py-2 text-sm font-semibold text-white transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
-          disabled={exporting}
-          onClick={onExport}
-          aria-label="Export CSV for selected session"
-        >
-          {exporting ? "Exporting…" : "Export CSV"}
-        </button>
+        {canExport && (
+          <button
+            type="button"
+            className="rounded-full bg-gradient-to-r from-violet-500 to-emerald-400 px-5 py-2 text-sm font-semibold text-white transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
+            disabled={exporting}
+            onClick={onExport}
+            aria-label="Export CSV for selected session"
+          >
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+        )}
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <input
           aria-label="Search student name or email"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Search student name or email"
-          className={`${control} min-w-0 flex-1`}
+          className={`${control} min-w-0 flex-1 ${checkInsOnly ? "basis-full sm:basis-auto" : ""}`}
         />
+        {checkInsOnly && (
+          <>
+            <button
+              type="button"
+              className={control}
+              onClick={() => onVerificationChange(["flagged", "appealed"])}
+            >
+              Flagged check-ins
+            </button>
+            <button type="button" className={control} onClick={() => onVerificationChange([])}>
+              All statuses
+            </button>
+          </>
+        )}
         <button
           type="button"
           className={control}
@@ -327,21 +365,23 @@ export function AttendanceRoster({
           id="attendance-roster-filters"
           className="mt-3 grid items-start gap-4 rounded-xl bg-secondary/20 p-3 sm:grid-cols-2"
         >
-          <label className="grid content-start gap-2 text-xs text-muted-foreground">
-            Attendance status
-            <select
-              className={`${control} h-11 w-full`}
-              value={attendance}
-              onChange={(event) => setAttendance(event.target.value)}
-            >
-              <option value="all">All attendance</option>
-              {Object.entries(attendanceLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
+          {!checkInsOnly && (
+            <label className="grid content-start gap-2 text-xs text-muted-foreground">
+              Attendance status
+              <select
+                className={`${control} h-11 w-full`}
+                value={attendance}
+                onChange={(event) => setAttendance(event.target.value)}
+              >
+                <option value="all">All attendance</option>
+                {Object.entries(attendanceLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <fieldset className="min-w-0 text-xs text-muted-foreground">
             <legend className="mb-2">Verification status</legend>
             <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-secondary/40 p-3">
@@ -354,23 +394,25 @@ export function AttendanceRoster({
                 />{" "}
                 All verification
               </label>
-              {Object.entries(rosterVerification).map(([value, label]) => (
-                <label key={value} className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={verification.includes(value)}
-                    onChange={() =>
-                      onVerificationChange(
-                        verification.includes(value)
-                          ? verification.filter((item) => item !== value)
-                          : [...verification, value],
-                      )
-                    }
-                    className="accent-primary"
-                  />
-                  {label}
-                </label>
-              ))}
+              {Object.entries(rosterVerification)
+                .filter(([value]) => !checkInsOnly || value !== "none")
+                .map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={verification.includes(value)}
+                      onChange={() =>
+                        onVerificationChange(
+                          verification.includes(value)
+                            ? verification.filter((item) => item !== value)
+                            : [...verification, value],
+                        )
+                      }
+                      className="accent-primary"
+                    />
+                    {label}
+                  </label>
+                ))}
             </div>
           </fieldset>
         </div>
@@ -413,9 +455,18 @@ export function AttendanceRoster({
           </button>
         </div>
       )}
-      <div className="mt-4 overflow-x-auto">
+      {checkInsOnly && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {verification.length
+            ? verification
+                .map((value) => rosterVerification[value as keyof typeof rosterVerification])
+                .join(" + ")
+            : "All statuses"}
+        </p>
+      )}
+      <div className={`mt-4 overflow-auto ${checkInsOnly ? "max-h-[55vh]" : ""}`}>
         <table className="w-full min-w-[600px] text-left text-xs">
-          <thead>
+          <thead className={checkInsOnly ? "sticky top-0 z-20 bg-card" : ""}>
             <tr className="border-b border-border text-muted-foreground">
               {(
                 [
@@ -425,25 +476,27 @@ export function AttendanceRoster({
                   ["status", "Verification"],
                   ["risk_score", "Risk"],
                 ] as const
-              ).map(([key, label]) => (
-                <th
-                  key={key}
-                  scope="col"
-                  aria-sort={
-                    sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"
-                  }
-                  className="px-2 py-4 font-normal"
-                >
-                  <button
-                    className="rounded hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
-                    onClick={() =>
-                      setSort({ key, dir: sort.key === key && sort.dir === 1 ? -1 : 1 })
+              )
+                .filter(([key]) => !checkInsOnly || key !== "attendance")
+                .map(([key, label]) => (
+                  <th
+                    key={key}
+                    scope="col"
+                    aria-sort={
+                      sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"
                     }
+                    className={`px-2 py-4 font-normal ${checkInsOnly && key === "student_name" ? "sticky left-0 z-10 bg-card" : ""}`}
                   >
-                    {label} {sort.key === key ? (sort.dir === 1 ? "↑" : "↓") : "↕"}
-                  </button>
-                </th>
-              ))}
+                    <button
+                      className="rounded hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+                      onClick={() =>
+                        setSort({ key, dir: sort.key === key && sort.dir === 1 ? -1 : 1 })
+                      }
+                    >
+                      {label} {sort.key === key ? (sort.dir === 1 ? "↑" : "↓") : "↕"}
+                    </button>
+                  </th>
+                ))}
               <th scope="col" className="px-2 py-4 font-normal">
                 Actions
               </th>
@@ -453,7 +506,7 @@ export function AttendanceRoster({
             {(loading || error || !filtered.length) && (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={checkInsOnly ? 5 : 6}
                   className="px-2 py-8 text-muted-foreground"
                   role={error ? "alert" : "status"}
                 >
@@ -468,11 +521,13 @@ export function AttendanceRoster({
               !error &&
               filtered.slice(start, start + pageSize).map((row) => (
                 <tr key={row.student_id} className="hover:bg-secondary/20">
-                  <td className="px-2 py-4">
+                  <td className={`px-2 py-4 ${checkInsOnly ? "sticky left-0 z-10 bg-card" : ""}`}>
                     <span className="font-medium text-foreground">{row.student_name}</span>
                     <span className="mt-1 block text-muted-foreground">{row.student_email}</span>
                   </td>
-                  <td className="px-2 py-4">{attendanceLabels[row.attendance]}</td>
+                  {!checkInsOnly && (
+                    <td className="px-2 py-4">{attendanceLabels[row.attendance]}</td>
+                  )}
                   <td className="px-2 py-4 tabular-nums">
                     {row.checked_in_at
                       ? formatSingaporeDateTime(row.checked_in_at, {
@@ -483,7 +538,7 @@ export function AttendanceRoster({
                       : "—"}
                   </td>
                   <td className="px-2 py-4">
-                    <VerificationBadge status={row.status} />
+                    <VerificationBadge status={row.status} sessionOverview={checkInsOnly} />
                   </td>
                   <td className="px-2 py-4 tabular-nums">{row.risk_score ?? "—"}</td>
                   <td className="px-2 py-4">
@@ -512,7 +567,7 @@ export function AttendanceRoster({
         <p aria-live="polite">
           {loading || error
             ? "—"
-            : `${filtered.length ? start + 1 : 0}–${Math.min(start + pageSize, filtered.length)} of ${filtered.length} students`}
+            : `${filtered.length ? start + 1 : 0}–${Math.min(start + pageSize, filtered.length)} of ${filtered.length} ${checkInsOnly ? "check-ins" : "students"}`}
         </p>
         <div className="flex gap-1">
           <button

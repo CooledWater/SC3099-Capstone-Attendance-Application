@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
+import { useSessionValue } from "@/hooks/useSessionValue";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { CourseRow } from "@/lib/attendance";
@@ -45,6 +47,8 @@ export function EnrollmentsPanel({
   selectedCourseId,
   onCourseChange,
   canManage,
+  studentDetails = false,
+  stateKey,
 }: {
   courses: CourseRow[];
   loading: boolean;
@@ -52,6 +56,8 @@ export function EnrollmentsPanel({
   selectedCourseId: string;
   onCourseChange: (id: string) => void;
   canManage: boolean;
+  studentDetails?: boolean;
+  stateKey?: string;
 }) {
   const qc = useQueryClient();
   const course = courses.find((item) => item.id === selectedCourseId) ?? courses[0];
@@ -59,8 +65,12 @@ export function EnrollmentsPanel({
   useEffect(() => {
     if (courseId && selectedCourseId !== courseId) onCourseChange(courseId);
   }, [courseId, selectedCourseId, onCourseChange]);
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useSessionValue(stateKey ? `${stateKey}:search` : undefined, "");
+  const [savedStatus, setStatus] = useSessionValue(
+    stateKey ? `${stateKey}:status` : undefined,
+    "all",
+  );
+  const status = ["all", "true", "false"].includes(savedStatus) ? savedStatus : "all";
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<RosterStudent | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -76,7 +86,8 @@ export function EnrollmentsPanel({
   const students = (roster.data?.students ?? []).filter(
     (student) =>
       (status === "all" || student.is_active === (status === "true")) &&
-      (!term || student.student_name.toLowerCase().includes(term) ||
+      (!term ||
+        student.student_name.toLowerCase().includes(term) ||
         student.student_email.toLowerCase().includes(term)),
   );
   const invitations = useQuery({
@@ -157,7 +168,9 @@ export function EnrollmentsPanel({
         <div>
           <h2 className="font-display text-xl font-semibold">Enrollments</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Manage who is enrolled in each course.
+            {canManage
+              ? "Manage who is enrolled in each course."
+              : "View students enrolled in your assigned courses."}
           </p>
         </div>
         {canManage && (
@@ -241,23 +254,40 @@ export function EnrollmentsPanel({
           </p>
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="max-h-[60vh] overflow-auto">
               <table className="w-full min-w-[700px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-border text-xs text-muted-foreground">
-                    {["Student", "Email", "Face enrolled", "Status", ...(canManage ? ["Action"] : [])].map(
-                      (label) => (
-                        <th key={label} className="px-2 py-3 font-medium">
-                          {label}
-                        </th>
-                      ),
-                    )}
+                    {[
+                      "Student",
+                      "Email",
+                      "Face enrolled",
+                      "Status",
+                      ...(canManage ? ["Action"] : []),
+                    ].map((label) => (
+                      <th key={label} className="px-2 py-3 font-medium">
+                        {label}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {students.map((student) => (
                     <tr key={student.id}>
-                      <td className="px-2 py-5 font-medium">{student.student_name}</td>
+                      <td className="px-2 py-5 font-medium">
+                        {studentDetails ? (
+                          <Link
+                            to="/students/$studentId/attendance"
+                            params={{ studentId: student.student_id }}
+                            search={{ courseId, from: "enrollments" }}
+                            className="text-primary underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-primary"
+                          >
+                            {student.student_name}
+                          </Link>
+                        ) : (
+                          student.student_name
+                        )}
+                      </td>
                       <td className="px-2 py-5">{student.student_email}</td>
                       <td className="px-2 py-5">
                         {student.face_enrolled ? (
@@ -350,8 +380,7 @@ export function EnrollmentsPanel({
               </p>
             )}
             <p className="mt-4 border-t border-border pt-4 text-xs text-muted-foreground">
-              Showing {students.length} of {roster.data?.total_records ?? 0}{" "}
-              enrollment records
+              Showing {students.length} of {roster.data?.total_records ?? 0} enrollment records
             </p>
           </>
         )}

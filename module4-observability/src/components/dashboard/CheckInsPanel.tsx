@@ -23,6 +23,9 @@ export function CheckInsPanel({
     onCourseChange: (id: string) => void;
     userId: string;
     initialSessionId?: string;
+    onSessionChange?: (sessionId: string) => void;
+    reviewOnly?: boolean;
+    canExport?: boolean;
   };
 }) {
   const [sessionId, setSessionId] = useState("all");

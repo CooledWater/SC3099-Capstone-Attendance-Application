@@ -1,84 +1,128 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  fetchCheckInsForSessions,
-  fetchMyAssignedCourses,
-  fetchSessionsForCourses,
-  toRows,
-} from "@/lib/attendance";
+import { fetchMyAssignedCourses } from "@/lib/attendance";
+import { useSessionValue } from "@/hooks/useSessionValue";
 import { CheckInsPanel } from "./CheckInsPanel";
+import { EnrollmentsPanel } from "./EnrollmentsPanel";
+import { SessionsPanel } from "./SessionsPanel";
+import { TaOverview } from "./TaOverview";
+import { Tabs } from "./Tabs";
+
+const tabs = [
+  { id: "overview", label: "Overview" },
+  { id: "sessions", label: "Sessions" },
+  { id: "checkins", label: "Check-ins" },
+  { id: "enrollments", label: "Enrollments" },
+] as const;
 
 export function TaView({ userId }: { userId: string }) {
+  const [savedTab, setTab] = useSessionValue(`ta:${userId}:tab`, "overview");
+  const tab = tabs.find((item) => item.id === savedTab)?.id ?? "overview";
+  const [selectedCourseId, setSelectedCourseId] = useSessionValue(`ta:${userId}:course`, "");
+  const [selectedSessionId, setSelectedSessionId] = useSessionValue(`ta:${userId}:session`, "");
   const courses = useQuery({
     queryKey: ["ta-assigned-courses", userId],
     queryFn: fetchMyAssignedCourses,
-  });
-  const courseIds = useMemo(
-    () => (courses.isSuccess ? courses.data.map((course) => course.id) : []),
-    [courses.data, courses.isSuccess],
-  );
-  const sessions = useQuery({
-    queryKey: ["ta-sessions", userId, courseIds],
-    queryFn: () => fetchSessionsForCourses(courseIds),
-    enabled: courses.isSuccess,
-  });
-  const checkIns = useQuery({
-    queryKey: ["ta-check-ins", userId, sessions.data?.map((session) => session.id) ?? []],
-    queryFn: () => fetchCheckInsForSessions(sessions.data ?? []),
-    enabled: sessions.isSuccess,
     refetchInterval: 30000,
   });
-  const rows = useMemo(() => toRows(checkIns.data ?? []), [checkIns.data]);
-
+  const courseIds = useMemo(
+    () => new Set(courses.data?.map((course) => course.id) ?? []),
+    [courses.data],
+  );
+  const courseId = courseIds.has(selectedCourseId)
+    ? selectedCourseId
+    : (courses.data?.[0]?.id ?? "");
+  const changeCourse = (id: string) => {
+    setSelectedCourseId(id);
+    setSelectedSessionId("");
+  };
   return (
-    <div className="rounded-2xl border border-border bg-glass p-5">
-      <div>
-        <p className="font-display text-sm font-medium text-card-foreground">
-          Teaching assistant console
+    <>
+      <Tabs tabs={tabs} value={tab} onChange={setTab} />
+      {courses.isPending ? (
+        <p role="status" className="mt-4 text-sm text-muted-foreground">
+          Loading assigned courses...
         </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Sessions and attendance are limited to courses assigned to your TA account.
+      ) : courses.isError ? (
+        <p
+          role="alert"
+          className="mt-4 rounded-xl border border-destructive/40 p-5 text-sm text-destructive"
+        >
+          Could not load your TA assignments.{" "}
+          <button type="button" className="underline" onClick={() => void courses.refetch()}>
+            Retry
+          </button>
         </p>
-      </div>
-      {courses.isLoading && (
-        <p className="mt-4 text-sm text-muted-foreground">Loading your assigned courses…</p>
-      )}
-      {courses.isError && (
-        <p className="mt-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
-          Could not load your course assignments. The TA assignment API may not be available yet.
-        </p>
-      )}
-      {courses.isSuccess && courseIds.length === 0 && (
-        <p className="mt-4 text-sm text-muted-foreground">
+      ) : !courses.data.length ? (
+        <p className="mt-4 rounded-xl border border-border p-5 text-sm text-muted-foreground">
           No courses are currently assigned to your TA account.
         </p>
+      ) : (
+        <>
+          {tab === "overview" && (
+            <TaOverview
+              courses={courses.data}
+              courseId={courseId}
+              onCourseChange={changeCourse}
+              sessionId={selectedSessionId}
+              onSessionChange={setSelectedSessionId}
+              onOpenSessions={(id) => {
+                setSelectedSessionId(id);
+                setTab("sessions");
+              }}
+              onOpenCheckIns={(id) => {
+                setSelectedSessionId(id);
+                setTab("checkins");
+              }}
+              userId={userId}
+            />
+          )}
+          {tab === "sessions" && (
+            <SessionsPanel
+              rows={[]}
+              currentUserId={userId}
+              canCreate={false}
+              readOnly
+              assignedCourses={courses.data}
+              courseIds={courseIds}
+              selectedCourseId={courseId}
+              onCourseChange={changeCourse}
+              onViewSession={(session) => {
+                setSelectedSessionId(session.id);
+                setTab("checkins");
+              }}
+            />
+          )}
+          {tab === "checkins" && (
+            <CheckInsPanel
+              rows={[]}
+              loading={false}
+              courseIds={courseIds}
+              instructor={{
+                courses: courses.data,
+                selectedCourseId: courseId,
+                onCourseChange: changeCourse,
+                userId,
+                initialSessionId: selectedSessionId,
+                onSessionChange: setSelectedSessionId,
+                canExport: false,
+              }}
+            />
+          )}
+          {tab === "enrollments" && (
+            <EnrollmentsPanel
+              courses={courses.data}
+              loading={false}
+              error={false}
+              selectedCourseId={courseId}
+              onCourseChange={changeCourse}
+              canManage={false}
+              studentDetails={false}
+              stateKey={`ta:${userId}:roster`}
+            />
+          )}
+        </>
       )}
-      {courses.isSuccess && courseIds.length > 0 && sessions.isLoading && (
-        <p className="mt-4 text-sm text-muted-foreground">Loading sessions for your courses…</p>
-      )}
-      {sessions.isError && (
-        <p className="mt-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
-          Could not load sessions for your assigned courses.
-        </p>
-      )}
-      {sessions.isSuccess && sessions.data.length === 0 && (
-        <p className="mt-4 text-sm text-muted-foreground">
-          No sessions are available for your assigned courses.
-        </p>
-      )}
-      {sessions.isSuccess && sessions.data.length > 0 && checkIns.isError && (
-        <p className="mt-4 rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
-          Could not load check-ins for your assigned sessions.
-        </p>
-      )}
-      {sessions.isSuccess && sessions.data.length > 0 && !checkIns.isError && (
-        <CheckInsPanel
-          rows={rows}
-          loading={checkIns.isLoading}
-          courseIds={new Set(courseIds)}
-          sessionRows={sessions.data}
-        />
-      )}
-    </div>
+    </>
   );
 }

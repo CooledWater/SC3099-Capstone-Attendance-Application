@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as SetupRouteImport } from './routes/setup-account'
+import { Route as StudentAttendanceRouteImport } from './routes/students.$studentId.attendance'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -26,17 +27,22 @@ const AuthRoute = AuthRouteImport.update({
 
 const SetupRoute = SetupRouteImport.update({ id: '/setup-account', path: '/setup-account', getParentRoute: () => rootRouteImport } as any)
 
+const StudentAttendanceRoute = StudentAttendanceRouteImport.update({ id: '/students/$studentId/attendance', path: '/students/$studentId/attendance', getParentRoute: () => rootRouteImport } as any)
+
 export interface FileRoutesByFullPath {
+  '/students/$studentId/attendance': typeof StudentAttendanceRoute
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/setup-account': typeof SetupRoute
 }
 export interface FileRoutesByTo {
+  '/students/$studentId/attendance': typeof StudentAttendanceRoute
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/setup-account': typeof SetupRoute
 }
 export interface FileRoutesById {
+  '/students/$studentId/attendance': typeof StudentAttendanceRoute
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
@@ -44,13 +50,14 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/setup-account'
+  fullPaths: '/' | '/auth' | '/setup-account' | '/students/$studentId/attendance'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/setup-account'
-  id: '__root__' | '/' | '/auth' | '/setup-account'
+  to: '/' | '/auth' | '/setup-account' | '/students/$studentId/attendance'
+  id: '__root__' | '/' | '/auth' | '/setup-account' | '/students/$studentId/attendance'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  StudentAttendanceRoute: typeof StudentAttendanceRoute
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
   SetupRoute: typeof SetupRoute
@@ -58,6 +65,7 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/students/$studentId/attendance': { id: '/students/$studentId/attendance'; path: '/students/$studentId/attendance'; fullPath: '/students/$studentId/attendance'; preLoaderRoute: typeof StudentAttendanceRouteImport; parentRoute: typeof rootRouteImport }
     '/': {
       id: '/'
       path: '/'
@@ -77,6 +85,7 @@ declare module '@tanstack/react-router' {
 }
 
 const rootRouteChildren: RootRouteChildren = {
+  StudentAttendanceRoute: StudentAttendanceRoute,
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
   SetupRoute: SetupRoute,
