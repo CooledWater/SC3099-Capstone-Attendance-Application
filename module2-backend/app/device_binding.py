@@ -113,7 +113,9 @@ def attach_browser(db, device, fingerprint, pem, verified=False):
         except IntegrityError:
             pass  # Another account registered this browser concurrently.
     # Serialize verified account associations for a shared browser.
-    db.query(BrowserIdentity).filter_by(fingerprint=fingerprint).with_for_update().one()
+    identity = db.query(BrowserIdentity).filter_by(fingerprint=fingerprint).with_for_update().one()
+    if identity.public_key != pem:
+        raise HTTPException(409, 'Browser security key changed. Reload and retry.')
     registration = db.get(BrowserRegistration, device.id)
     if registration is None:
         registration = BrowserRegistration(device_id=device.id, user_id=device.user_id, browser_fingerprint=fingerprint)
@@ -206,8 +208,8 @@ class RegistrationRequest(BaseModel):
 @router.post('/registration-challenges', status_code=201)
 def issue_registration(payload: RegistrationRequest, user: User = Depends(require_roles('student', 'ta', 'instructor', 'admin')), db: Session = Depends(get_db)):
     enforce_rate_limit('device-registration', user.id, 20, 60)
-    if key_fingerprint(payload.public_key) != payload.device_fingerprint:
-        raise HTTPException(400, 'Fingerprint does not match the public key')
+    from app.device_rotation import validate_browser_key
+    validate_browser_key(db, payload.device_fingerprint, payload.public_key)
     lock_account(db, user.id)
     if find_device(db, user.id, payload.device_fingerprint) is None:
         require_slot(db, user.id)
@@ -227,6 +229,9 @@ def issue(payload: ChallengeRequest, user: User = Depends(require_roles('student
     device = find_device(db, user.id, payload.device_fingerprint)
     if not device or not device.is_active or not device.public_key:
         raise HTTPException(403, 'This device is unavailable or disabled. Manage it in Profile → My devices.')
+    from app.device_rotation import key_expiry
+    if key_expiry(device) and key_expiry(device) <= now:
+        raise HTTPException(403, 'Renew this browser security key in Profile → My devices before checking in')
     session = db.get(AttendanceSession, payload.session_id)
     if not session or session.status != 'active' or not session.checkin_opens_at <= now <= session.checkin_closes_at:
         raise HTTPException(400, 'Session is not open for check-in')
@@ -249,6 +254,9 @@ def resolve(db, user, payload):
         raise HTTPException(403, LIMIT_MESSAGE)
     if device and not device.is_active:
         raise HTTPException(403, 'This device is disabled. Manage it in Profile → My devices.')
+    from app.device_rotation import key_expiry
+    if device and key_expiry(device) and key_expiry(device) <= datetime.utcnow():
+        raise HTTPException(403, 'Browser security key expired. Renew it before checking in.')
     supplied = bool(payload.device_challenge_id or payload.device_signature)
     if not supplied:
         if active >= MAX_ACTIVE_DEVICES:
@@ -263,7 +271,8 @@ def resolve(db, user, payload):
     if item.state != 'issued' or item.expires_at <= datetime.utcnow():
         raise HTTPException(409, 'Device proof expired or already used; retry check-in')
     verify_signature(device.public_key, payload.device_signature, item.challenge)
-    fingerprint = key_fingerprint(device.public_key)
+    registration = db.get(BrowserRegistration, device.id)
+    fingerprint = registration.browser_fingerprint if registration else key_fingerprint(device.public_key)
     attach_browser(db, device, fingerprint, device.public_key, verified=True)
     changed = db.query(DeviceChallenge).filter_by(id=item.id, state='issued').filter(DeviceChallenge.expires_at > datetime.utcnow()).update({'state': 'consumed'}, synchronize_session=False)
     if not changed:

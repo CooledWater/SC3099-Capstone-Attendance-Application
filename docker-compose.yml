@@ -54,6 +54,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
       STRICT_SECURITY_MODE: ${STRICT_SECURITY_MODE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8501}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_SECURITY: ${SMTP_SECURITY:-none}

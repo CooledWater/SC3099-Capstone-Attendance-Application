@@ -6,6 +6,7 @@ import { SavedSessions } from '@/components/check-in/SavedSessions';
 import { PullToRefresh } from '@/components/PullToRefresh';
 import { PwaUpdates } from '@/components/PwaUpdates';
 import { AppLogo } from '@/components/AppLogo';
+import { disablePush } from '@/lib/push';
 import { MyDevices } from '@/components/MyDevices';
 import { registerCurrentDevice } from '@/lib/device';
 import { PermissionSettings } from '@/components/PermissionSettings';
@@ -51,7 +52,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const changed = () => setOnline(navigator.onLine);
+    const changed = () => { setOnline(navigator.onLine); if (!navigator.onLine) setProfileOpen(false); };
     changed();
     window.addEventListener('online', changed);
     window.addEventListener('offline', changed);
@@ -90,10 +91,21 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [user, online, retry, authenticated]);
 
+  useEffect(() => {
+    if (!offlineView || user) return;
+    const reconnect = () => {
+      if (navigator.onLine && !document.hidden) setRetry(value => value + 1);
+    };
+    const timer = window.setInterval(reconnect, 30000);
+    window.addEventListener('focus', reconnect);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', reconnect); };
+  }, [offlineView, user]);
+
   async function signOut() {
     signedOut.current = true;
     try { sessionStorage.setItem('saiv.student.signed-out', 'true'); } catch { /* Storage is optional. */ }
     // Remove offline access before waiting for a backend logout request.
+    await disablePush().catch(() => undefined);
     await clearOfflineSessions().catch(() => undefined);
     if (navigator.onLine) await logout();
     else clearTokens();

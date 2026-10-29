@@ -82,7 +82,7 @@ from app.permissions import assigned_course_scope, assists, can_staff_course, te
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 from app.password_policy import PASSWORD_REQUIREMENTS
-from app import checkin_diagnostics
+from app import checkin_diagnostics, push_notifications, device_rotation, data_deletion
 
 Base.metadata.create_all(bind=engine)
 
@@ -93,6 +93,8 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.include_router(data_deletion.router)
+app.include_router(push_notifications.router)
 app.include_router(invitations.router)
 app.include_router(attendance_roster.router)
 app.include_router(student_overview.router)
@@ -3001,6 +3003,8 @@ def review_checkin(
         details=details, success=review.status == "approved",
         timestamp=now + timedelta(microseconds=1)
     )
+    if review.status == "approved":
+        push_notifications.queue_approval(db, checkin)
     db.commit()
 
     return result
@@ -3018,6 +3022,8 @@ def _serialize_device(device: Device, metadata: dict | None = None) -> dict:
         "trust_score": device.trust_score,
         "is_active": device.is_active,
         "is_removed": device_binding.is_removed(device),
+        "public_key_created_at": device.public_key_created_at,
+        "public_key_expires_at": device_rotation.key_expiry(device),
         "first_seen_at": device.first_seen_at,
         "last_seen_at": device.last_seen_at,
         "total_checkins": device.total_checkins,
@@ -3035,8 +3041,8 @@ def register_device(
     db: Session = Depends(get_db)
 ):
     fingerprint = device_data.device_fingerprint
-    if device_data.public_key and device_binding.key_fingerprint(device_data.public_key) != fingerprint:
-        raise HTTPException(400, 'Fingerprint must be the SHA-256 hash of the registered public key')
+    if device_data.public_key:
+        device_rotation.validate_browser_key(db, fingerprint, device_data.public_key)
     device_binding.lock_account(db, current_user.id)
     existing = device_binding.find_device(db, current_user.id, fingerprint)
     if existing is None:
@@ -3059,7 +3065,8 @@ def register_device(
             device_fingerprint=device_binding.account_fingerprint(current_user.id, fingerprint) if device_data.public_key else fingerprint,
             device_name=device_data.device_name, platform=device_data.platform, browser=device_data.browser,
             os_version=device_data.os_version, app_version=device_data.app_version, public_key=device_data.public_key,
-            first_seen_at=now, last_seen_at=now, public_key_created_at=now if device_data.public_key else None)
+            first_seen_at=now, last_seen_at=now, public_key_created_at=now if device_data.public_key else None,
+            public_key_expires_at=now + device_rotation.KEY_LIFETIME if device_data.public_key else None)
         db.add(device)
         try:
             db.flush()

@@ -13,7 +13,7 @@ const javascript = ts.transpileModule(source, { compilerOptions: { module: ts.Mo
 function client(indexedDB = new IDBFactory(), request = async () => []) {
   const context = { exports: {}, TextEncoder, Uint8Array, Array, Object, Map, Promise, Error, indexedDB, crypto: webcrypto, btoa,
     navigator: { userAgent: 'Chrome', platform: 'MacIntel', maxTouchPoints: 0 },
-    require: name => { assert.equal(name, './api/client'); return { apiRequest: request }; } };
+    require: name => { if (name === './time') return { parseApiDateTime: value => new Date(/Z$|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`) }; assert.equal(name, './api/client'); return { apiRequest: request, ApiError: class extends Error {} }; } };
   vm.runInNewContext(javascript, context);
   return context.exports;
 }
@@ -37,7 +37,7 @@ test('existing disabled registration is reused and never automatically enabled',
   const calls = [];
   const c = client(storage, async (path, options) => { calls.push(path); return [{ id: 'device', device_fingerprint: fingerprint, browser_fingerprint: fingerprint, browser_identity_verified: true, is_active: false }]; });
   assert.equal((await c.registerCurrentDevice('student')).is_active, false);
-  await assert.rejects(c.createDeviceProof('student', 'session'), /disabled/);
+  await assert.rejects(c.createDeviceProof('student', 'session'), /removed|deactivated/);
   assert.ok(calls.every(path => path === '/devices/my-devices'));
 });
 test('check-in proof signs the exact server challenge with the registered key', async () => {
@@ -56,7 +56,7 @@ test('check-in proof signs the exact server challenge with the registered key', 
   assert.equal(proof.device_challenge_id, 'challenge');
 });
 
-test('Profile shows current device, pending approval, and saved disabling', async () => {
+test('Profile shows current device, pending approval, and removal', async () => {
   const React = dependencies('react');
   const { create, act } = dependencies('react-test-renderer');
   let device = { id: 'device', device_name: 'My phone', device_fingerprint: 'a'.repeat(64), is_active: true, is_trusted: false, last_seen_at: '2026-10-26T00:00:00Z', total_checkins: 2 };
@@ -69,7 +69,8 @@ test('Profile shows current device, pending approval, and saved disabling', asyn
       registerCurrentDevice: async () => device, listDevices: async () => [device],
       getDeviceIdentity: async () => ({ fingerprint: device.device_fingerprint }),
       browserFingerprint: item => item.browser_fingerprint ?? item.device_fingerprint,
-      changeDevice: async (id, changes) => { mutations.push([id, changes.is_active]); device = { ...device, ...changes }; },
+      removeDevice: async id => { mutations.push([id, false]); device = { ...device, is_active: false }; },
+      rotateDeviceKey: async () => {},
     };
     throw new Error(name);
   } };
@@ -80,9 +81,9 @@ test('Profile shows current device, pending approval, and saved disabling', asyn
   await act(async () => renderer.root.findByProps({ 'aria-expanded': false }).props.onClick());
   assert.ok(JSON.stringify(renderer.toJSON()).includes('Awaiting admin approval'));
   assert.ok(JSON.stringify(renderer.toJSON()).includes('This device'));
-  await act(async () => renderer.root.findAllByType('button').find(item => item.children.includes('Disable')).props.onClick());
+  await act(async () => renderer.root.findAllByType('button').find(item => item.children.includes('Remove device')).props.onClick());
   assert.deepEqual(mutations, [['device', false]]);
-  assert.ok(JSON.stringify(renderer.toJSON()).includes('Disabled'));
+  assert.ok(JSON.stringify(renderer.toJSON()).includes('No registered devices'));
   act(() => renderer.unmount());
 });
 
@@ -115,7 +116,8 @@ test('registration-limit errors leave Profile device management available', asyn
     if (name === '@/lib/device') return {
       listDevices: async () => rows, getDeviceIdentity: async () => ({ fingerprint: 'new-browser' }), browserFingerprint: item => item.device_fingerprint,
       registerCurrentDevice: async () => { if (rows.every(row => row.is_active)) throw new Error('Your account already has two active devices.'); return {}; },
-      changeDevice: async (id, changes) => { rows = rows.map(row => row.id === id ? { ...row, ...changes } : row); },
+      removeDevice: async id => { rows = rows.map(row => row.id === id ? { ...row, is_active: false } : row); },
+      rotateDeviceKey: async () => {},
     };
     throw new Error(name);
   } };
@@ -125,10 +127,47 @@ test('registration-limit errors leave Profile device management available', asyn
   await act(async () => { renderer = create(React.createElement(context.exports.MyDevices, { userId: 'student', demo: false, visible: true })); });
   await act(async () => renderer.root.findByProps({ 'aria-expanded': false }).props.onClick());
   assert.ok(renderer.root.findByProps({ role: 'alert' }).children[0].includes('two active devices'));
-  const disable = renderer.root.findAllByType('button').find(item => item.children.includes('Disable'));
+  const disable = renderer.root.findAllByType('button').find(item => item.children.includes('Remove device'));
   assert.equal(disable.props.disabled, false);
   await act(async () => disable.props.onClick());
   assert.ok(rows.some(row => !row.is_active));
   assert.equal(renderer.root.findAllByProps({ role: 'alert' }).length, 0);
   act(() => renderer.unmount());
+});
+
+test('key renewal proves both keys, preserves browser identity, and recovers a lost response', async () => {
+  const storage = new IDBFactory();
+  let canonical, original, currentPem, challenge, newPem, completeCalls = 0;
+  const api = async (path, options) => {
+    if (path === '/devices/my-devices') return [{ id: 'device', device_fingerprint: canonical, browser_identity_verified: true, is_active: true, public_key_expires_at: new Date(Date.now() + 90 * 86400000).toISOString() }];
+    if (path === '/devices/key-rotation/challenges') {
+      const data = JSON.parse(options.body);
+      assert.equal(data.device_fingerprint, canonical);
+      newPem = data.new_public_key; challenge = 'server-bound-rotation-challenge';
+      return { challenge_id: 'rotation-1', challenge };
+    }
+    if (path === '/devices/key-rotation/complete') {
+      completeCalls++;
+      const data = JSON.parse(options.body);
+      const importKey = pem => webcrypto.subtle.importKey('spki', Buffer.from(pem.replace(/-----(BEGIN|END) PUBLIC KEY-----|\s/g, ''), 'base64'), { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']);
+      assert.ok(await webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, await importKey(original.publicKey), Buffer.from(data.old_signature, 'base64'), new TextEncoder().encode(challenge)));
+      assert.ok(await webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, await importKey(newPem), Buffer.from(data.new_signature, 'base64'), new TextEncoder().encode(challenge)));
+      currentPem = newPem;
+      if (completeCalls === 1) throw new TypeError('Network response lost after server commit');
+      return { rotated: true };
+    }
+    throw new Error(path);
+  };
+  const first = client(storage, api);
+  original = await first.getDeviceIdentity('student'); canonical = original.fingerprint;
+  await assert.rejects(first.rotateDeviceKey('student'), /Network response lost/);
+  const reopened = client(storage, api);
+  await reopened.registerCurrentDevice('student');
+  const renewed = await reopened.getDeviceIdentity('student');
+  assert.equal(renewed.fingerprint, canonical);
+  assert.equal(renewed.publicKey, currentPem);
+  assert.notEqual(renewed.publicKey, original.publicKey);
+  assert.equal(renewed.privateKey.extractable, false);
+  assert.equal((await first.getDeviceIdentity('student')).publicKey, renewed.publicKey);
+  assert.equal(completeCalls, 2);
 });
