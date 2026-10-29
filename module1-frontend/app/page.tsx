@@ -31,7 +31,7 @@ export default function Home() {
     if (!user || !online) return;
     let active = true;
     setDeviceError('');
-    void registerCurrentDevice(user.id).then(device => { if (active && !device.is_active) setDeviceError('This device is disabled. Enable it under Profile → My devices before checking in.'); }).catch(cause => { if (active) setDeviceError(cause instanceof Error ? cause.message : 'Device registration failed.'); });
+    void registerCurrentDevice(user.id).then(device => { if (active && !device.is_active) setDeviceError('This device registration has been removed or deactivated. Contact an administrator to reactivate it.'); }).catch(cause => { if (active) setDeviceError(cause instanceof Error ? cause.message : 'Device registration failed.'); });
     return () => { active = false; };
   }, [user, online, deviceRetry]);
   const signedOut = useRef(false);

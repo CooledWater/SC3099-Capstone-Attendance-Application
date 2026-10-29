@@ -72,7 +72,7 @@ export async function registerCurrentDevice(userId: string) {
   const platform = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'ios' : /Android/.test(ua) ? 'android' : 'web';
   const browser = /Edg\//.test(ua) ? 'Edge' : /Chrome|CriOS/.test(ua) ? 'Chrome' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : 'Browser';
   const devices = await listDevices();
-  if (devices.filter(item => item.is_active).length > 2) throw new Error('Your account has more than two active devices. Disable extra devices in Profile → My devices before checking in.');
+  if (devices.filter(item => item.is_active).length > 2) throw new Error('Your account has more than two active devices. Remove extra devices in Profile → My devices before checking in.');
   const existing = devices.find(item => browserFingerprint(item) === identity.fingerprint);
   if (existing?.browser_identity_verified) return existing;
   const challenge = await apiRequest<{ challenge_id: string; challenge: string }>('/devices/registration-challenges', {
@@ -83,7 +83,7 @@ export async function registerCurrentDevice(userId: string) {
 }
 export async function createDeviceProof(userId: string, sessionId: string) {
   const device = await registerCurrentDevice(userId);
-  if (!device.is_active) throw new Error('This device is disabled. Enable it under Profile → My devices.');
+  if (!device.is_active) throw new Error('This device registration has been removed or deactivated. Contact an administrator to reactivate it.');
   const identity = await getDeviceIdentity(userId);
   const challenge = await apiRequest<{ challenge_id: string; challenge: string }>('/devices/challenges', { method: 'POST', body: JSON.stringify({ device_fingerprint: identity.fingerprint, session_id: sessionId }) });
   const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, identity.privateKey, new TextEncoder().encode(challenge.challenge));
