@@ -223,6 +223,50 @@ Index(
 )
 
 
+class CourseAssistant(Base):
+    """TA <-> course assignment used for course-level RBAC.
+
+    Not listed in DATABASE-SCHEMA.md (no TA assignment model is documented).
+    Additive many-to-many table, so startup create_all() creates it without
+    touching existing columns.
+    """
+
+    __tablename__ = "course_assistants"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    course_id = Column(
+        String(36),
+        ForeignKey("courses.id"),
+        nullable=False
+    )
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow
+    )
+
+
+Index(
+    "ix_course_assistants_course_user",
+    CourseAssistant.course_id,
+    CourseAssistant.user_id,
+    unique=True
+)
+
+
 class Session(Base):
     """A class meeting where students check in.
 
@@ -326,6 +370,44 @@ Index(
 )
 
 
+class Venue(Base):
+    """Admin-maintained catalogue of lecture halls instructors pick from.
+
+    Not in DATABASE-SCHEMA.md (user-approved extension, 2026-10-25). The live
+    Supabase table was created by hand with matching SQL, so create_all() only
+    builds it on fresh/test databases. Sessions copy a venue's coordinates into
+    their own venue_* columns, so geofencing never reads this table.
+    """
+
+    __tablename__ = "venues"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    code = Column(String(20), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    default_radius_meters = Column(Float, nullable=False, default=100.0)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
+
+
 class CheckIn(Base):
     """A student's attendance record for a session.
 
@@ -359,9 +441,8 @@ class CheckIn(Base):
         index=True
     )
 
-    # devices table does not exist yet (Week 4 device management is out of
-    # scope this round), so this is intentionally NOT a ForeignKey - adding
-    # one would fail table creation against a nonexistent target table.
+    # Nullable for legacy attendance. Device binding now populates this ID;
+    # device removal retains a disabled row to preserve historical references.
     device_id = Column(String(36), nullable=True)
 
     status = Column(
@@ -447,6 +528,8 @@ class Device(Base):
         index=True
     )
 
+    # Unique account-registration fingerprint. The canonical browser key and
+    # its separate account associations live in browser_identities/registrations.
     device_fingerprint = Column(
         String(64),
         unique=True,

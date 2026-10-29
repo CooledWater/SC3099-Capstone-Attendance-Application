@@ -42,3 +42,9 @@ test("rejected appeals show review time and sort before older check-ins", () => 
   assert.match(originalRejection, /Your check-in for/);
   assert.doesNotMatch(originalRejection, /Your appeal/);
 });
+test("approved appeals show updated verification status and use review time", () => {
+  const approved = { ...row, id: "approved-appeal", status: "approved", appealedAt: "2026-10-23T03:03:00Z", reviewedAt: "2026-10-23T04:30:00Z" };
+  const output = text(context.exports.LiveActivity({ student: true, rows: [row, approved] }));
+  assert.match(output, /Your appeal for SC4000, Lecture 5: Neural Networks was approved\. Verification status updated\.12:30 PM/);
+  assert.ok(output.indexOf("Your appeal for") < output.indexOf("You checked in"));
+});

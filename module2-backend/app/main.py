@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
@@ -35,7 +36,7 @@ from sqlalchemy.orm import Session
 from app.database import engine, Base, get_db, get_read_db
 from app.session_lifecycle import session_lifespan, get_session_db
 from app import models
-from app.models import User, Course, Enrollment, Session as SessionModel, CheckIn, Device
+from app.models import AuditLog, User, Course, Enrollment, Session as SessionModel, CheckIn, Device
 from app.schemas import (
     UserRegister,
     UserLogin,
@@ -68,15 +69,19 @@ from app.auth import (
     create_access_token,
     create_refresh_token,
     get_current_user,
+    get_optional_current_user,
+    get_optional_read_current_user,
     get_read_current_user,
     require_roles
 )
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview
+from app import device_binding, audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues, course_assistants
+from app.permissions import assigned_course_scope, assists, can_staff_course, teaches
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
+from app.password_policy import PASSWORD_REQUIREMENTS
 from app import checkin_diagnostics
 
 Base.metadata.create_all(bind=engine)
@@ -91,7 +96,10 @@ app = FastAPI(
 app.include_router(invitations.router)
 app.include_router(attendance_roster.router)
 app.include_router(student_overview.router)
+app.include_router(venues.router)
+app.include_router(course_assistants.router)
 app.include_router(motion.router)
+app.include_router(device_binding.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
 app.include_router(prometheus_metrics.router)
@@ -104,7 +112,7 @@ app.add_middleware(audit.AuditContextMiddleware)
 @app.exception_handler(RequestValidationError)
 async def safe_motion_validation(request: Request, exc: RequestValidationError):
     if request.url.path.startswith('/api/v1/auth/invitations/'):
-        return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. Passwords must contain 8 to 72 characters.'})
+        return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. ' + PASSWORD_REQUIREMENTS + ' Maximum 72 UTF-8 bytes.'})
     if request.url.path.startswith('/api/v1/motion/'):
         return JSONResponse(status_code=422, content={'detail': 'Invalid motion sequence. Capture again.'})
     # Validation failures must not echo passwords/images or attempt to JSON-encode NaN.
@@ -753,16 +761,15 @@ def get_user(
         )
 
     # Spec: admin, or an instructor for students enrolled in their courses
-    # (same course visibility rule as _instructor_checkin_scope).
+    # (assigned courses only, see app/permissions.py).
     if current_user.role == "instructor":
         teaches_student = (
             db.query(Enrollment.id)
             .join(Course, Course.id == Enrollment.course_id)
-            .outerjoin(SessionModel, SessionModel.course_id == Course.id)
             .filter(
                 Enrollment.student_id == user.id,
                 Enrollment.is_active == True,  # noqa: E712
-                *_instructor_checkin_scope(current_user)
+                *assigned_course_scope(current_user)
             )
             .first()
         )
@@ -845,6 +852,15 @@ def _serialize_course(
     }
 
 
+CATALOGUE_COURSE_FIELDS = ("id", "code", "name", "semester", "instructor_name", "is_active", "created_at")
+
+
+def _serialize_course_catalogue(db: Session, course: Course, instructor_names: dict | None = None) -> dict:
+    """Directory entry for students: no venue, geofence, security settings or user IDs."""
+    full = _serialize_course(db, course, instructor_names)
+    return {field: full[field] for field in CATALOGUE_COURSE_FIELDS}
+
+
 @app.post("/api/v1/courses/", status_code=status.HTTP_201_CREATED)
 def create_course(
     course_data: CourseCreate,
@@ -873,13 +889,50 @@ def create_course(
 @app.get("/api/v1/courses/")
 def list_courses(
     is_active: bool = True,
+    instructor_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db)
 ):
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
+    # Anonymous callers get no courses.
+    if current_user is None:
+        return {"items": [], "total": 0, "limit": limit, "offset": offset}
+
+    filters = [Course.is_active == is_active]
+    if current_user.role in ("instructor", "ta"):
+        filters.extend(assigned_course_scope(current_user))
+    elif current_user.role == "admin" and instructor_id:
+        # Spec: the instructor_id filter is admin only; others are already scoped.
+        filters.append(Course.instructor_id == instructor_id)
+
+    serialize = (
+        _serialize_course_catalogue if current_user.role == "student" else _serialize_course
+    )
+    return _course_page(db, filters, limit, offset, serialize)
+
+
+# Declared before /courses/{course_id} so "my-courses" is not read as a course ID.
+@app.get("/api/v1/courses/my-courses")
+def list_my_courses(
+    is_active: bool = True,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Courses the caller is assigned to: enrolled (student), teaching
+    (instructor), assisting (TA), or every course (admin)."""
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    filters = [Course.is_active == is_active, *assigned_course_scope(current_user)]
+    return _course_page(db, filters, limit, offset, _serialize_course)
+
+
+def _course_page(db: Session, filters: list, limit: int, offset: int, serialize) -> dict:
     # Single round trip: page of courses, each course's instructor name
     # (LEFT JOIN instead of a separate batch SELECT), and the total
     # matching count (COUNT(*) OVER() window column instead of a separate
@@ -887,7 +940,7 @@ def list_courses(
     rows = (
         db.query(Course, User.full_name, func.count().over().label("total_count"))
         .outerjoin(User, Course.instructor_id == User.id)
-        .filter(Course.is_active == is_active)
+        .filter(*filters)
         .order_by(Course.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -900,7 +953,7 @@ def list_courses(
         # COUNT(*) OVER() only appears on returned rows, so an out-of-range
         # offset (or a genuinely empty result set) leaves no row to read it
         # from - fall back to a plain count() only in that rare case.
-        total = db.query(Course).filter(Course.is_active == is_active).count()
+        total = db.query(Course).filter(*filters).count()
 
     instructor_names = {
         course.instructor_id: full_name
@@ -910,7 +963,7 @@ def list_courses(
 
     return {
         "items": [
-            _serialize_course(db, course, instructor_names) for course, _, _ in rows
+            serialize(db, course, instructor_names) for course, _, _ in rows
         ],
         "total": total,
         "limit": limit,
@@ -930,6 +983,33 @@ def get_course(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Course not found"
+        )
+
+    if current_user.role == "student":
+        enrolled = db.query(Enrollment.id).filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.course_id == course.id,
+            Enrollment.is_active == True,  # noqa: E712
+        ).first()
+        if not enrolled:
+            # Unenrolled students still see the directory entry, as on GET /courses/.
+            return _serialize_course_catalogue(db, course)
+    elif current_user.role == "instructor":
+        if course.instructor_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+    elif current_user.role == "ta":
+        if not assists(db, current_user, course.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions"
+            )
+    elif current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions"
         )
 
     return _serialize_course(db, course)
@@ -1049,6 +1129,29 @@ def _create_enrollment(
     return new_enrollment
 
 
+def _resolve_enrollment_student(
+    db: Session, student_id: str | None, student_email: str | None
+) -> str:
+    """Resolve the submitted student identifier on the server.
+
+    Email lookup is case-insensitive and locks the account row before the
+    enrollment transaction continues. The client never gets to choose a
+    different student ID after the email has been resolved.
+    """
+    if student_email is not None:
+        normalized_email = str(student_email).strip().lower()
+        student = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .with_for_update()
+            .first()
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student account not found")
+        return student.id
+    return student_id  # type: ignore[return-value]
+
+
 @app.post("/api/v1/enrollments/", status_code=status.HTTP_201_CREATED)
 def create_enrollment(
     enrollment_data: EnrollmentCreate,
@@ -1072,7 +1175,12 @@ def create_enrollment(
         )
 
     new_enrollment = _create_enrollment(
-        db, enrollment_data.student_id, enrollment_data.course_id, current_user.id
+        db,
+        _resolve_enrollment_student(
+            db, enrollment_data.student_id, enrollment_data.student_email
+        ),
+        enrollment_data.course_id,
+        current_user.id,
     )
 
     return _serialize_enrollment(new_enrollment)
@@ -1244,7 +1352,12 @@ def create_enrollment_admin(
         )
 
     new_enrollment = _create_enrollment(
-        db, enrollment_data.student_id, enrollment_data.course_id, current_user.id
+        db,
+        _resolve_enrollment_student(
+            db, enrollment_data.student_id, enrollment_data.student_email
+        ),
+        enrollment_data.course_id,
+        current_user.id,
     )
 
     return _serialize_enrollment(new_enrollment)
@@ -1295,9 +1408,8 @@ def list_course_enrollments(
         raise HTTPException(404, "Course not found")
     if current_user.role == "instructor" and course.instructor_id != current_user.id:
         raise HTTPException(403, "Insufficient permissions")
-    if current_user.role == "ta":
-        # Fail closed until an explicit assignment mechanism is configured.
-        raise HTTPException(403, "No TA course assignment is available")
+    if current_user.role == "ta" and not assists(db, current_user, course.id):
+        raise HTTPException(403, "Insufficient permissions")
 
     counts = dict(db.query(Enrollment.is_active, func.count(Enrollment.id)).filter(
         Enrollment.course_id == course_id,
@@ -1413,6 +1525,19 @@ def _serialize_session(db: Session, session: SessionModel, context=None) -> dict
     }
 
 
+SESSION_METADATA_FIELDS = (
+    "id", "course_id", "name", "session_type", "status",
+    "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+    "checkin_opens_at", "checkin_closes_at", "created_at",
+)
+
+
+def _serialize_session_metadata(session: SessionModel) -> dict:
+    """Schedule-only view for students outside the session's course: no venue,
+    geofence, verification policy, risk threshold or instructor ID."""
+    return {field: getattr(session, field) for field in SESSION_METADATA_FIELDS}
+
+
 def _session_summary_context(db, sessions):
     course_ids = {session.course_id for session in sessions}
     session_ids = [session.id for session in sessions]
@@ -1439,6 +1564,11 @@ def _serialize_session_summary(db: Session, session: SessionModel, context=None)
         "course_name": course.name if course else None,
         "total_enrolled": context["enrolled"].get(session.course_id, 0),
     }
+
+
+def _teaches_session_course(db: Session, user: User, session: SessionModel) -> bool:
+    course = db.get(Course, session.course_id)
+    return teaches(user, course.instructor_id if course else None)
 
 
 def _apply_status_transition(session: SessionModel, new_status: str) -> None:
@@ -1498,6 +1628,14 @@ def create_session(
             detail="checkin_closes_at must be after checkin_opens_at"
         )
 
+    venue_fields = {
+        "venue_name": session_data.venue_name,
+        "venue_latitude": session_data.venue_latitude,
+        "venue_longitude": session_data.venue_longitude,
+        "geofence_radius_meters": session_data.geofence_radius_meters,
+    }
+    venues.apply_venue_selection(db, venue_fields)
+
     new_session = SessionModel(
         course_id=session_data.course_id,
         instructor_id=current_user.id,
@@ -1508,10 +1646,10 @@ def create_session(
         scheduled_end=scheduled_end,
         checkin_opens_at=checkin_opens_at,
         checkin_closes_at=checkin_closes_at,
-        venue_latitude=session_data.venue_latitude,
-        venue_longitude=session_data.venue_longitude,
-        venue_name=session_data.venue_name,
-        geofence_radius_meters=session_data.geofence_radius_meters,
+        venue_latitude=venue_fields["venue_latitude"],
+        venue_longitude=venue_fields["venue_longitude"],
+        venue_name=venue_fields["venue_name"],
+        geofence_radius_meters=venue_fields["geofence_radius_meters"],
         require_liveness_check=session_data.require_liveness_check,
         require_face_match=session_data.require_face_match,
         risk_threshold=session_data.risk_threshold
@@ -1532,14 +1670,28 @@ def create_session(
 
 
 @app.get("/api/v1/sessions/active")
-def list_active_sessions(db: Session = Depends(get_read_db)):
+def list_active_sessions(
+    current_user: User | None = Depends(get_optional_read_current_user),
+    db: Session = Depends(get_read_db)
+):
+    # No login is required, but only callers with a course relationship see
+    # sessions (students: active enrollment, the same rule as POST /checkins/).
+    if current_user is None:
+        return []
+
     now = datetime.utcnow()
 
-    sessions = db.query(SessionModel).filter(
-        SessionModel.status == "active",
-        SessionModel.checkin_opens_at <= now,
-        SessionModel.checkin_closes_at >= now
-    ).all()
+    sessions = (
+        db.query(SessionModel)
+        .join(Course, Course.id == SessionModel.course_id)
+        .filter(
+            SessionModel.status == "active",
+            SessionModel.checkin_opens_at <= now,
+            SessionModel.checkin_closes_at >= now,
+            *assigned_course_scope(current_user)
+        )
+        .all()
+    )
 
     context = _session_summary_context(db, sessions)
     return [_serialize_session_summary(db, session, context) for session in sessions]
@@ -1562,11 +1714,10 @@ def list_sessions(
 
     query = db.query(SessionModel)
 
-    if current_user.role == "instructor":
-        query = query.join(Course, Course.id == SessionModel.course_id).filter(or_(
-            SessionModel.instructor_id == current_user.id,
-            Course.instructor_id == current_user.id,
-        ))
+    if current_user.role in ("instructor", "ta"):
+        query = query.join(Course, Course.id == SessionModel.course_id).filter(
+            *assigned_course_scope(current_user)
+        )
 
     if status_filter:
         query = query.filter(SessionModel.status == status_filter)
@@ -1612,39 +1763,99 @@ def list_my_sessions(
         default=None, alias="status"
     ),
     upcoming: bool = False,
+    course_id: str | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     limit: int = 50,
+    offset: int = 0,
     current_user: User = Depends(get_read_current_user),
     db: Session = Depends(get_read_db)
 ):
     limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    range_start = _to_naive_utc(start_date) if start_date else None
+    range_end = _to_naive_utc(end_date) if end_date else None
+    if range_start is not None and range_end is not None and range_start >= range_end:
+        raise HTTPException(422, "start_date must be before end_date")
 
     query = db.query(SessionModel)
 
     if current_user.role == "student":
-        query = query.join(
-            Enrollment, Enrollment.course_id == SessionModel.course_id
-        ).filter(
+        enrollments = db.query(Enrollment).filter(
             Enrollment.student_id == current_user.id,
-            Enrollment.is_active == True  # noqa: E712
-        )
+        ).all()
+        enrollment_by_course = {enrollment.course_id: enrollment for enrollment in enrollments}
+        if course_id and course_id not in enrollment_by_course:
+            raise HTTPException(403, "Choose one of your authorised courses")
+
+        course_ids = [course_id] if course_id else list(enrollment_by_course)
+        if not course_ids:
+            return []
+
+        query = query.filter(SessionModel.course_id.in_(course_ids))
+        if range_start is not None:
+            query = query.filter(SessionModel.scheduled_end > range_start)
+        if range_end is not None:
+            query = query.filter(SessionModel.scheduled_start < range_end)
+        if status_filter:
+            query = query.filter(SessionModel.status == status_filter)
+        if upcoming:
+            query = query.filter(SessionModel.scheduled_start > datetime.utcnow())
+
+        sessions = query.order_by(SessionModel.scheduled_start.asc(), SessionModel.id).all()
+        events = defaultdict(list)
+        enrollment_ids = [enrollment.id for enrollment in enrollments]
+        if enrollment_ids:
+            for enrollment_id, action, timestamp in (
+                db.query(AuditLog.resource_id, AuditLog.action, AuditLog.timestamp)
+                .filter(
+                    AuditLog.resource_id.in_(enrollment_ids),
+                    AuditLog.success.is_(True),
+                    AuditLog.action.in_(("enrollment_added", "enrollment_removed")),
+                )
+                .order_by(AuditLog.timestamp, AuditLog.id)
+                .all()
+            ):
+                events[enrollment_id].append((timestamp, action))
+
+        eligible_sessions = [
+            session for session in sessions
+            if student_overview.eligible(
+                enrollment_by_course[session.course_id],
+                events[enrollment_by_course[session.course_id].id],
+                session.scheduled_start,
+            )
+        ]
+        sessions = eligible_sessions[offset:offset + limit]
+        context = _session_summary_context(db, sessions)
+        return [_serialize_session_summary(db, session, context) for session in sessions]
     else:
-        # Spec covers students (enrolled) and instructors (teaching). Staff of
-        # any other role get the sessions they own or whose course they teach.
-        query = query.join(Course, Course.id == SessionModel.course_id).filter(or_(
-            Course.instructor_id == current_user.id,
-            SessionModel.instructor_id == current_user.id
-        ))
+        # Spec covers students (enrolled) and instructors (teaching); TAs get
+        # the courses they assist. Admins get courses they teach, as before.
+        scope = (assigned_course_scope(current_user) if current_user.role in ("instructor", "ta")
+                 else [Course.instructor_id == current_user.id])
+        query = query.join(Course, Course.id == SessionModel.course_id).filter(*scope)
 
     if status_filter:
         query = query.filter(SessionModel.status == status_filter)
 
     if upcoming:
         query = query.filter(SessionModel.scheduled_start > datetime.utcnow())
+
+    if course_id:
+        query = query.filter(SessionModel.course_id == course_id)
+    if range_start is not None:
+        query = query.filter(SessionModel.scheduled_end > range_start)
+    if range_end is not None:
+        query = query.filter(SessionModel.scheduled_start < range_end)
+
+    if upcoming:
         query = query.order_by(SessionModel.scheduled_start.asc(), SessionModel.id)
     else:
         query = query.order_by(SessionModel.scheduled_start.desc(), SessionModel.id)
 
-    sessions = query.limit(limit).all()
+    sessions = query.offset(offset).limit(limit).all()
 
     context = _session_summary_context(db, sessions)
     return [_serialize_session_summary(db, session, context) for session in sessions]
@@ -1664,9 +1875,29 @@ def get_session(
             detail="Session not found"
         )
 
-    if current_user.role == "instructor":
+    if current_user.role == "student":
+        enrollment = db.query(Enrollment).filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.course_id == session.course_id,
+        ).first()
+        if enrollment is None:
+            return _serialize_session_metadata(session)
+        history = [
+            (timestamp, action)
+            for timestamp, action in db.query(AuditLog.timestamp, AuditLog.action)
+            .filter(
+                AuditLog.resource_id == enrollment.id,
+                AuditLog.success.is_(True),
+                AuditLog.action.in_(("enrollment_added", "enrollment_removed")),
+            )
+            .order_by(AuditLog.timestamp, AuditLog.id)
+            .all()
+        ]
+        if not student_overview.eligible(enrollment, history, session.scheduled_start):
+            return _serialize_session_metadata(session)
+    elif current_user.role in ("instructor", "ta"):
         course = db.get(Course, session.course_id)
-        if session.instructor_id != current_user.id and course.instructor_id != current_user.id:
+        if not course or not can_staff_course(db, current_user, course):
             raise HTTPException(403, "Insufficient permissions")
     return _serialize_session(db, session)
 
@@ -1686,7 +1917,11 @@ def update_session(
             detail="Session not found"
         )
 
-    if current_user.role != "admin" and session.instructor_id != current_user.id:
+    # Instructors must own the session and still be assigned to its course.
+    if current_user.role != "admin" and (
+        session.instructor_id != current_user.id
+        or not _teaches_session_course(db, current_user, session)
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -1747,6 +1982,10 @@ def update_session(
         if proposed["checkin_closes_at"] <= proposed["checkin_opens_at"]:
             raise HTTPException(400, "checkin_closes_at must be after checkin_opens_at")
 
+    venues.apply_venue_selection(
+        db, updates, previous_name=session.venue_name, fill_default_radius=False
+    )
+
     motion_required = updates.pop("require_motion_check", None)
     if motion_required is not None:
         policy = db.get(motion.MotionPolicy, session.id)
@@ -1786,7 +2025,10 @@ def delete_session(
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    if current_user.role != "admin" and session.instructor_id != current_user.id:
+    if current_user.role != "admin" and (
+        session.instructor_id != current_user.id
+        or not _teaches_session_course(db, current_user, session)
+    ):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     if session.status != "scheduled":
         raise HTTPException(status_code=400, detail="Only scheduled sessions can be deleted")
@@ -2178,12 +2420,7 @@ def create_checkin(
             detail="Already checked in to this session"
         )
 
-    # Decision inputs: (1) the venue-distance geofence, which only Module 2
-    # can compute, and (2) the biometric signals the session requires,
-    # obtained from Module 3 via app.face_service. device trust / network
-    # heuristics and the risk_signals table remain out of scope this round;
-    # device_fingerprint is accepted per the frontend contract but not yet
-    # linked to a device record.
+    device, device_verified, shared_browser = device_binding.resolve(db, current_user, checkin_data)
     venue = _effective_venue(session, course)
     geo_assessment = _assess_checkin_geofence(
         checkin_data.latitude,
@@ -2207,9 +2444,25 @@ def create_checkin(
     effective_threshold = (
         venue["risk_threshold"] if venue["risk_threshold"] is not None else 0.5
     )
+    device_trusted, device_contribution = device_binding.apply_risk(biometrics, device, device_verified, shared_browser)
     assessment = _combine_checkin_assessment(
         geo_assessment, biometrics, effective_threshold
     )
+
+    if not device_trusted:
+        assessment['risk_score'] = max(assessment['risk_score'], device_contribution)
+        assessment['risk_factors'].append({'type': 'device_shared' if shared_browser else 'attestation_failed' if device and device.is_trusted else 'device_unknown', 'severity': 'medium', 'weight': device_contribution})
+        if assessment['status'] != 'rejected':
+            assessment['status'] = 'flagged'
+    # A device approval must never turn missing/failed required identity evidence into an approval.
+    identity_incomplete = ((session.require_face_match and (not biometrics['face_match'] or not biometrics['face_match'].passed))
+                           or (session.require_liveness_check and not biometrics['liveness']))
+    if identity_incomplete and assessment['status'] != 'rejected':
+        assessment['status'] = 'flagged'
+        assessment['risk_factors'].append({'type': 'identity_unverified', 'severity': 'high', 'weight': 0.0})
+    if device:
+        device.last_seen_at = now
+        device.total_checkins += 1
 
     liveness = biometrics["liveness"]
     face_match = biometrics["face_match"]
@@ -2237,6 +2490,7 @@ def create_checkin(
 
     new_checkin = CheckIn(
         id=checkin_id,
+        device_id=device.id if device else None,
         session_id=checkin_data.session_id,
         student_id=current_user.id,
         status=checkin_status,
@@ -2267,11 +2521,11 @@ def create_checkin(
     }
     create_audit_log(
         db, "checkin_attempted", student_id, checkin_id,
-        details=audit_details, timestamp=now
+        details=audit_details, device_id=device.id if device else None, timestamp=now
     )
     create_audit_log(
         db, f"checkin_{checkin_status}", student_id, checkin_id,
-        details=audit_details, success=checkin_status != "rejected",
+        details=audit_details, device_id=device.id if device else None, success=checkin_status != "rejected",
         timestamp=now + timedelta(microseconds=1)
     )
     try:
@@ -2401,7 +2655,7 @@ def list_session_checkins(
     session, course = (db.query(SessionModel, Course)
                       .join(Course, Course.id == SessionModel.course_id)
                       .filter(SessionModel.id == session_id).one())
-    if not _is_session_staff(current_user, session, course):
+    if not can_staff_course(db, current_user, course):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     results = []
@@ -2436,22 +2690,6 @@ def list_session_checkins(
 CHECKIN_STATUSES = ("pending", "approved", "flagged", "rejected", "appealed")
 
 
-def _instructor_checkin_scope(user: User) -> list:
-    """WHERE conditions limiting an instructor to their own sessions/courses.
-
-    Same visibility rule as app/stats.py: a course's instructor, the session's
-    owner, or any instructor for a course with no instructor assigned. Admins
-    and TAs are unscoped (there is no TA<->course assignment model).
-    """
-    if user.role != "instructor":
-        return []
-    return [or_(
-        Course.instructor_id == user.id,
-        Course.instructor_id.is_(None),
-        SessionModel.instructor_id == user.id
-    )]
-
-
 def _checkin_listing(
     db: Session, user: User, filters: list, limit: int, offset: int,
     include_appeal: bool = False
@@ -2461,7 +2699,7 @@ def _checkin_listing(
         .join(SessionModel, SessionModel.id == CheckIn.session_id)
         .join(Course, Course.id == SessionModel.course_id)
         .join(User, User.id == CheckIn.student_id)
-        .filter(*_instructor_checkin_scope(user), *filters)
+        .filter(*assigned_course_scope(user), *filters)
     )
 
     total = query.count()
@@ -2580,18 +2818,6 @@ APPEALABLE_STATUSES = ("flagged", "rejected")
 REVIEWABLE_STATUSES = ("flagged", "appealed")
 
 
-def _is_session_staff(user: User, session: SessionModel, course: Course) -> bool:
-    """Staff visibility for one check-in, matching _instructor_checkin_scope."""
-    if user.role in ("admin", "ta"):
-        return True
-    if user.role == "instructor":
-        return (
-            session.instructor_id == user.id
-            or course.instructor_id in (None, user.id)
-        )
-    return False
-
-
 def _load_checkin(db: Session, checkin_id: str, lock: bool = False):
     query = (
         db.query(CheckIn, SessionModel, Course)
@@ -2621,7 +2847,7 @@ def get_checkin(
 ):
     checkin, session, course = _load_checkin(db, checkin_id)
 
-    if checkin.student_id != current_user.id and not _is_session_staff(current_user, session, course):
+    if checkin.student_id != current_user.id and not can_staff_course(db, current_user, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -2654,7 +2880,6 @@ def get_checkin(
         "face_match_score": checkin.face_match_score,
         "qr_code_verified": checkin.qr_code_verified,
         "risk_score": checkin.risk_score,
-        "risk_factors": json.loads(checkin.risk_factors) if checkin.risk_factors else [],
         "reviewed_by_id": checkin.reviewed_by_id,
         "reviewed_at": checkin.reviewed_at,
         "review_notes": checkin.review_notes,
@@ -2732,7 +2957,7 @@ def review_checkin(
 ):
     checkin, session, course = _load_checkin(db, checkin_id, lock=True)
 
-    if not _is_session_staff(current_user, session, course):
+    if not can_staff_course(db, current_user, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -2781,11 +3006,11 @@ def review_checkin(
     return result
 
 
-def _serialize_device(device: Device) -> dict:
+def _serialize_device(device: Device, metadata: dict | None = None) -> dict:
     return {
         "id": device.id,
         "user_id": device.user_id,
-        "device_fingerprint": device.device_fingerprint,
+        "device_fingerprint": (metadata or {}).get("browser_fingerprint") or device.device_fingerprint,
         "device_name": device.device_name,
         "platform": device.platform,
         "browser": device.browser,
@@ -2794,7 +3019,10 @@ def _serialize_device(device: Device) -> dict:
         "is_active": device.is_active,
         "first_seen_at": device.first_seen_at,
         "last_seen_at": device.last_seen_at,
-        "total_checkins": device.total_checkins
+        "total_checkins": device.total_checkins,
+        "browser_fingerprint": (metadata or {}).get("browser_fingerprint"),
+        "shared_browser": (metadata or {}).get("shared_browser", False),
+        "browser_identity_verified": (metadata or {}).get("browser_identity_verified", False),
     }
 
 
@@ -2805,57 +3033,43 @@ def register_device(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    existing = db.query(Device).filter(
-        Device.device_fingerprint == device_data.device_fingerprint
-    ).first()
-
+    fingerprint = device_data.device_fingerprint
+    if device_data.public_key and device_binding.key_fingerprint(device_data.public_key) != fingerprint:
+        raise HTTPException(400, 'Fingerprint must be the SHA-256 hash of the registered public key')
+    device_binding.lock_account(db, current_user.id)
+    existing = device_binding.find_device(db, current_user.id, fingerprint)
+    if existing is None:
+        device_binding.require_slot(db, current_user.id)
+    proven = device_binding.consume_registration_proof(db, current_user.id, device_data)
     if existing:
-        if existing.user_id != current_user.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Device fingerprint already registered to another user"
-            )
-
-        # Re-registration from the device's owner (e.g. re-login on the same
-        # browser) - refresh metadata and reactivate instead of erroring.
+        if existing.public_key and device_data.public_key and existing.public_key != device_data.public_key:
+            raise HTTPException(409, 'Device key cannot be replaced; register a new device')
         existing.device_name = device_data.device_name or existing.device_name
         existing.platform = device_data.platform or existing.platform
         existing.browser = device_data.browser or existing.browser
         existing.os_version = device_data.os_version or existing.os_version
         existing.app_version = device_data.app_version or existing.app_version
         existing.public_key = device_data.public_key or existing.public_key
-        existing.is_active = True
         existing.last_seen_at = datetime.utcnow()
-
-        db.commit()
-        db.refresh(existing)
-
-        return _serialize_device(existing)
-
-    now = datetime.utcnow()
-    new_device = Device(
-        user_id=current_user.id,
-        device_fingerprint=device_data.device_fingerprint,
-        device_name=device_data.device_name,
-        platform=device_data.platform,
-        browser=device_data.browser,
-        os_version=device_data.os_version,
-        app_version=device_data.app_version,
-        public_key=device_data.public_key,
-        first_seen_at=now,
-        last_seen_at=now
-    )
-
-    db.add(new_device)
-    db.flush()  # assigns new_device.id so the audit row can reference it
-    create_audit_log(
-        db, "device_registered", current_user.id, new_device.id,
-        device_id=new_device.id
-    )
-    db.commit()
-    db.refresh(new_device)
-
-    return _serialize_device(new_device)
+        device = existing
+    else:
+        now = datetime.utcnow()
+        device = Device(user_id=current_user.id,
+            device_fingerprint=device_binding.account_fingerprint(current_user.id, fingerprint) if device_data.public_key else fingerprint,
+            device_name=device_data.device_name, platform=device_data.platform, browser=device_data.browser,
+            os_version=device_data.os_version, app_version=device_data.app_version, public_key=device_data.public_key,
+            first_seen_at=now, last_seen_at=now, public_key_created_at=now if device_data.public_key else None)
+        db.add(device)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(409, 'Registration changed concurrently. Please refresh devices and retry.')
+        create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id)
+    if device_data.public_key:
+        device_binding.attach_browser(db, device, fingerprint, device_data.public_key, verified=proven)
+    db.commit(); db.refresh(device)
+    return _serialize_device(device, device_binding.browser_metadata(db, [device]).get(device.id))
 
 
 @app.get("/api/v1/devices/my-devices")
@@ -2867,7 +3081,8 @@ def list_my_devices(
         Device.user_id == current_user.id
     ).all()
 
-    return [_serialize_device(device) for device in devices]
+    metadata = device_binding.browser_metadata(db, devices)
+    return [_serialize_device(device, metadata.get(device.id)) for device in devices]
 
 
 @app.get("/api/v1/devices/")
@@ -2900,9 +3115,10 @@ def list_all_devices(
         .all()
     )
 
+    metadata = device_binding.browser_metadata(db, [device for device, _ in rows])
     return {
         "items": [
-            {**_serialize_device(device), "user_email": email}
+            {**_serialize_device(device, metadata.get(device.id)), "user_email": email}
             for device, email in rows
         ],
         "total": total,
@@ -2932,12 +3148,21 @@ def update_device(
             detail="Insufficient permissions"
         )
 
+    device_binding.lock_account(db, device.user_id)
+    db.refresh(device)
+    if device_data.is_active is True and not device.is_active:
+        device_binding.require_slot(db, device.user_id)
+    if device_data.is_trusted is True and device_binding.active_count(db, device.user_id) > device_binding.MAX_ACTIVE_DEVICES:
+        raise HTTPException(409, device_binding.LIMIT_MESSAGE)
+
     if device_data.is_trusted is not None:
         if current_user.role != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only admins can change device trust status"
             )
+        if device_data.is_trusted and (not device.public_key or not device.is_active):
+            raise HTTPException(400, 'Only an active device with a registered public key can be approved')
         device.is_trusted = device_data.is_trusted
         device.trust_score = "high" if device_data.is_trusted else "low"
 
@@ -2946,11 +3171,19 @@ def update_device(
 
     if device_data.is_active is not None:
         device.is_active = device_data.is_active
+        if not device.is_active:
+            device.is_trusted = False
+            device.trust_score = 'low'
+            device.revoked_at = datetime.utcnow()
+        else:
+            device.revoked_at = None
+    create_audit_log(db, 'device_registered', current_user.id, device.id,
+        device_id=device.id, details={'event': 'device_updated', 'changes': device_data.model_dump(exclude_unset=True)})
 
     db.commit()
     db.refresh(device)
 
-    return _serialize_device(device)
+    return _serialize_device(device, device_binding.browser_metadata(db, [device]).get(device.id))
 
 
 @app.delete("/api/v1/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2973,7 +3206,14 @@ def delete_device(
             detail="Insufficient permissions"
         )
 
-    db.delete(device)
+    device_binding.lock_account(db, device.user_id)
+    db.refresh(device)
+    # Preserve historical attendance and prevent automatic registration undoing removal.
+    device.is_active = False
+    device.is_trusted = False
+    device.trust_score = 'low'
+    device.revoked_at = datetime.utcnow()
+    create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id, details={'event': 'device_removed'})
     db.commit()
 
     return None
@@ -3042,11 +3282,8 @@ def export_session_attendance(
     session, course = row
     actor_id = current_user.id
 
-    # Same visibility rule as the stats endpoints (see _instructor_checkin_scope).
-    if current_user.role == "instructor" and not (
-        session.instructor_id == actor_id
-        or course.instructor_id in (None, actor_id)
-    ):
+    # Assigned course instructor only (app/permissions.py).
+    if current_user.role == "instructor" and not teaches(current_user, course.instructor_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"

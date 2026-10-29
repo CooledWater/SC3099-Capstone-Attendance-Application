@@ -14,6 +14,7 @@ import {
   fetchSessionAttendance,
   reviewCheckIn,
   type CheckInDetails,
+  type FlaggedCheckIn,
   type RosterEntry,
   type RosterSession,
   type SessionAttendance,
@@ -394,6 +395,19 @@ function CheckInDetail({
       ? detail.data
       : undefined;
   const reviewable = record?.status === "flagged" || record?.status === "appealed";
+  const appealedReview = record?.status === "appealed";
+  const showRiskFactors = reviewable || record?.status === "rejected";
+  const reviewEvidence = useQuery({
+    queryKey: ["checkin-review-evidence", userId, courseId, session.id, entry.checkin_id, record?.status],
+    queryFn: ({ signal }) =>
+      record?.status === "rejected"
+        ? api.request<FlaggedCheckIn[]>(`/checkins/session/${encodeURIComponent(session.id)}`, { signal })
+        : fetchFlaggedSession(courseId, session.id, signal),
+    enabled: showRiskFactors,
+    staleTime: 30_000,
+  });
+  const evidenceRows = Array.isArray(reviewEvidence.data) ? reviewEvidence.data : [];
+  const evidence = evidenceRows.find((item) => item.id === entry.checkin_id) ?? record;
   async function decide(status: "approved" | "rejected") {
     if (busy.current || !record || !reviewable) return;
     busy.current = true;
@@ -489,7 +503,7 @@ function CheckInDetail({
                 {record.risk_score} <span className="text-sm text-muted-foreground">/ 1</span>
               </p>
             </div>
-            {reviewable && (
+            {appealedReview && (
               <div className="rounded-xl bg-secondary/40 p-3">
                 <p className="text-xs text-muted-foreground">Student explanation</p>
                 <p className="mt-1 whitespace-pre-wrap break-words text-sm">
@@ -498,7 +512,20 @@ function CheckInDetail({
               </div>
             )}
           </div>
-          {record.status !== "approved" && (
+          {showRiskFactors && reviewEvidence.isFetching && (
+            <p role="status" className="mt-5 text-xs text-muted-foreground">
+              Loading review evidence…
+            </p>
+          )}
+          {showRiskFactors && reviewEvidence.isError && (
+            <p role="alert" className="mt-5 text-sm text-destructive">
+              Could not load risk factors. {message(reviewEvidence.error)}{" "}
+              <button className={control} onClick={() => void reviewEvidence.refetch()}>
+                Retry risk factors
+              </button>
+            </p>
+          )}
+          {showRiskFactors && !reviewEvidence.isFetching && !reviewEvidence.isError && (
             <>
               <h4 className="mt-5 text-sm font-semibold">Risk factors</h4>
               <div className="mt-2 overflow-x-auto">
@@ -513,14 +540,14 @@ function CheckInDetail({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {!record.risk_factors.length && (
+                    {!evidence?.risk_factors?.length && (
                       <tr>
                         <td colSpan={3} className="py-4">
                           No risk factors returned.
                         </td>
                       </tr>
                     )}
-                    {record.risk_factors.map((factor, i) => {
+                    {(evidence?.risk_factors ?? []).map((factor, i) => {
                       const item = typeof factor === "string" ? { type: factor } : factor;
                       const severity = item.severity ?? "unknown";
                       return (

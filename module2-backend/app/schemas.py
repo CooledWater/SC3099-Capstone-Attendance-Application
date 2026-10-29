@@ -1,6 +1,7 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from typing import Literal, Optional
 from datetime import datetime
+from app.password_policy import validate_new_password
 
 
 class RequestModel(BaseModel):
@@ -23,6 +24,12 @@ class UserRegister(PasswordRequest):
     full_name: str
     password: str = Field(min_length=8, max_length=72)
     role: Literal["student", "ta", "instructor", "admin"] = "student"
+
+    @field_validator('password')
+    @classmethod
+    def strong_new_password(cls, value):
+        return validate_new_password(value)
+
 class UserLogin(PasswordRequest):
     email: EmailStr
 class RefreshTokenRequest(RequestModel):
@@ -63,8 +70,24 @@ class CourseUpdate(RequestModel):
     require_device_binding: Optional[bool] = None
     risk_threshold: Optional[float] = Field(default=None, ge=0, le=1)
 class EnrollmentCreate(RequestModel):
-    student_id: str
     course_id: str
+    student_id: Optional[str] = None
+    student_email: Optional[EmailStr] = None
+
+    @model_validator(mode="after")
+    def require_one_student_identifier(self):
+        if (self.student_id is None) == (self.student_email is None):
+            raise ValueError("Provide exactly one of student_id or student_email")
+        return self
+class TAAssignmentCreate(RequestModel):
+    user_id: Optional[str] = None
+    email: Optional[EmailStr] = None
+
+    @model_validator(mode="after")
+    def require_one_ta_identifier(self):
+        if (self.user_id is None) == (self.email is None):
+            raise ValueError("Provide exactly one of user_id or email")
+        return self
 class BulkEnrollmentCreate(RequestModel):
     course_id: str
     student_emails: list[EmailStr] = Field(min_length=1)
@@ -111,7 +134,9 @@ class CheckInCreate(RequestModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     location_accuracy_meters: Optional[float] = Field(default=None, ge=0)
-    device_fingerprint: str
+    device_fingerprint: str = Field(min_length=1, max_length=64)
+    device_challenge_id: Optional[str] = Field(default=None, max_length=36)
+    device_signature: Optional[str] = Field(default=None, max_length=1024)
     motion_verification_id: Optional[str] = Field(default=None, max_length=36)
     liveness_challenge_response: Optional[str] = None
     qr_code: Optional[str] = None
@@ -131,8 +156,10 @@ class DeviceCreate(RequestModel):
     browser: Optional[str] = None
     os_version: Optional[str] = None
     app_version: Optional[str] = None
-    public_key: Optional[str] = None
+    public_key: Optional[str] = Field(default=None, max_length=1024)
+    registration_challenge_id: Optional[str] = Field(default=None, max_length=36)
+    registration_signature: Optional[str] = Field(default=None, max_length=1024)
 class DeviceUpdate(RequestModel):
-    device_name: Optional[str] = None
+    device_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     is_trusted: Optional[bool] = None
     is_active: Optional[bool] = None

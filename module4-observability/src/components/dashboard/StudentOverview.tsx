@@ -19,8 +19,9 @@ function RequestState({ query }: { query: UseQueryResult<Overview> }) {
 type Props = {
   userId: string; courseId: string; onCourseChange: (id: string) => void;
   onAttendance: (courseId: string, statuses: string[]) => void;
+  onViewCalendar: (courseId: string) => void;
 };
-export function StudentOverviewCards({ userId, courseId, onCourseChange, onAttendance }: Props) {
+export function StudentOverviewCards({ userId, courseId, onCourseChange, onAttendance, onViewCalendar }: Props) {
   const attendance = useCard("attendance", userId, courseId);
   const today = useCard("today", userId);
   const flagged = useCard("flagged", userId);
@@ -62,7 +63,7 @@ export function StudentOverviewCards({ userId, courseId, onCourseChange, onAtten
             </div>
           </div>}
           <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-border pt-4">
-            {selected && !periodError && <a href="#student-history" className={link} onClick={event => { onAttendance(selected, []); }}>View attendance →</a>}
+            {selected && !periodError && <button type="button" className={link} onClick={() => onViewCalendar(selected)}>View attendance →</button>}
           </div>
         </>}
       </section>

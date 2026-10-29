@@ -276,9 +276,9 @@ def test_checkin_query_budget_with_real_auth(setup):
         event.remove(engine, 'before_cursor_execute', record)
     assert response.status_code == 201, response.text
     assert response.json()['student_id'] == uid
-    # The four check-in queries plus two lifecycle UPDATEs and the user reload
-    # after lifecycle commit. Keep a fixed upper bound to catch N+1 regressions.
-    assert len(statements) <= 7, statements
+    # Original seven statements plus account lock, browser lookup and slot count.
+    # Signed proofs have separate coverage; this legacy request has no proof.
+    assert len(statements) <= 10, statements
 
 
 @pytest.mark.parametrize('role,active,token_kind,expected', [
@@ -290,8 +290,12 @@ def test_checkin_query_budget_with_real_auth(setup):
 def test_session_list_preserves_authentication(setup, role, active, token_kind, expected):
     from app.auth import create_access_token, create_refresh_token
     client, uid, sid = setup
+    from app.models import CourseAssistant
     with SessionLocal() as db:
-        user = db.get(User, uid); user.role = role; user.is_active = active; db.commit()
+        user = db.get(User, uid); user.role = role; user.is_active = active
+        if role == 'ta':  # TAs reach a session only through a course assignment (RBAC step 7)
+            db.add(CourseAssistant(course_id=db.get(AttendanceSession, sid).course_id, user_id=uid))
+        db.commit()
     app.dependency_overrides.clear()
     token = create_access_token(uid, role) if token_kind == 'access' else create_refresh_token(uid,role) if token_kind == 'refresh' else 'invalid'
     headers = {} if token_kind == 'missing' else {'Authorization': 'Bearer '+token}

@@ -7,6 +7,7 @@ export type RosterStudent = {
   student_email: string;
   enrolled_at: string;
   is_active: boolean;
+  face_enrolled: boolean;
 };
 export type Roster = {
   course_id: string;
@@ -57,10 +58,10 @@ export function fetchRoster(
     signal: signal ?? null,
   });
 }
-export const enrollStudent = (courseId: string, studentId: string) =>
+export const enrollStudent = (courseId: string, studentEmail: string) =>
   api.request("/enrollments/", {
     method: "POST",
-    body: JSON.stringify({ course_id: courseId, student_id: studentId.trim() }),
+    body: JSON.stringify({ course_id: courseId, student_email: studentEmail.trim() }),
   });
 export const bulkEnroll = (courseId: string, emails: string[], createAccounts: boolean) =>
   api.request<BulkResult>("/enrollments/bulk", {

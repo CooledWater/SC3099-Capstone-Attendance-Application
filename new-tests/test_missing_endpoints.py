@@ -307,7 +307,7 @@ def test_delete_course_soft_deletes(api, world):
     assert api.delete(f"/api/v1/courses/{course_id}", headers=admin["headers"]).status_code == 204
     detail = api.get(f"/api/v1/courses/{course_id}", headers=admin["headers"])
     assert detail.status_code == 200 and detail.json()["is_active"] is False
-    active_ids = [c["id"] for c in api.get("/api/v1/courses/", params={"limit": 100}).json()["items"]]
+    active_ids = [c["id"] for c in api.get("/api/v1/courses/", params={"limit": 100}, headers=admin["headers"]).json()["items"]]
     assert course_id not in active_ids
     assert api.delete(f"/api/v1/courses/{uuid.uuid4()}", headers=admin["headers"]).status_code == 404
 
@@ -322,6 +322,22 @@ def test_my_sessions_for_enrolled_student_and_teaching_instructor(api, world):
     teacher_view = api.get("/api/v1/sessions/my-sessions", headers=world["instructor"]["headers"],
                            params={"status": "active"})
     assert session_id in [s["id"] for s in teacher_view.json()]
+
+
+def test_student_my_sessions_supports_overlap_range_pagination_and_course_scope(api, world):
+    session = world["session"]
+    start = _start_of(session) - timedelta(minutes=1)
+    end = _start_of(session) + timedelta(hours=2, minutes=1)
+    response = api.get("/api/v1/sessions/my-sessions", headers=world["students"]["approved"]["headers"], params={
+        "start_date": _iso(start), "end_date": _iso(end), "limit": 1, "offset": 0,
+    })
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [session["id"]]
+
+    forbidden = api.get("/api/v1/sessions/my-sessions", headers=world["students"]["approved"]["headers"], params={
+        "course_id": world["other_course_id"],
+    })
+    assert forbidden.status_code == 403
 
 
 def test_my_sessions_excludes_unrelated_users_and_filters(api, world):
@@ -394,13 +410,14 @@ def test_my_sessions_requires_auth_and_valid_status(api, world):
 def test_checkin_detail_access(api, world):
     checkin_id = world["checkins"]["flagged"]["id"]
     owner = world["students"]["flagged"]
-    for viewer in (owner, world["instructor"], world["ta"], world["admin"]):
+    for viewer in (owner, world["instructor"], world["admin"]):
         response = api.get(f"/api/v1/checkins/{checkin_id}", headers=viewer["headers"])
         assert response.status_code == 200, response.text
         data = response.json()
-        assert data["id"] == checkin_id and "risk_factors" in data
+        assert data["id"] == checkin_id and "risk_factors" not in data
         assert "face_embedding_hash" not in data
-    for viewer in (world["students"]["approved"], world["other"]):
+    # world["ta"] has no course_assistants row (assigned TAs: test_ta_scope.py).
+    for viewer in (world["students"]["approved"], world["other"], world["ta"]):
         assert api.get(f"/api/v1/checkins/{checkin_id}", headers=viewer["headers"]).status_code == 403
     assert api.get(f"/api/v1/checkins/{uuid.uuid4()}", headers=world["admin"]["headers"]).status_code == 404
 
@@ -468,7 +485,7 @@ def test_review_rules(api, world):
                     json={"status": "rejected"}).status_code == 400
 
 
-def test_review_of_appealed_checkin_by_ta(api, world):
+def test_review_of_appealed_checkin_requires_course_staff(api, world):
     student = _register(api, "student")
     enrolled = api.post("/api/v1/admin/enrollments/", headers=world["admin"]["headers"],
                         json={"student_id": student["id"], "course_id": world["course_id"]})
@@ -476,8 +493,10 @@ def test_review_of_appealed_checkin_by_ta(api, world):
     checkin = _check_in(api, student, world["session"]["id"], OFFSETS_M["flagged"])
     assert api.post(f"/api/v1/checkins/{checkin['id']}/appeal", headers=student["headers"],
                     json={"appeal_reason": "Indoor GPS drift"}).status_code == 200
-    response = api.post(f"/api/v1/checkins/{checkin['id']}/review", headers=world["ta"]["headers"],
-                        json={"status": "rejected"})
+    review = f"/api/v1/checkins/{checkin['id']}/review"
+    # Unassigned TA is refused; assigned-TA reviews are covered in test_ta_scope.py.
+    assert api.post(review, headers=world["ta"]["headers"], json={"status": "rejected"}).status_code == 403
+    response = api.post(review, headers=world["instructor"]["headers"], json={"status": "rejected"})
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "rejected"
 

@@ -409,12 +409,27 @@ List sessions for courses the current user is enrolled in (students) or teaches 
 |-----------|------|---------|-------------|
 | `status` | string | - | Filter by status |
 | `upcoming` | boolean | false | Only show future sessions |
+| `course_id` | uuid | - | Student: one of the caller's authorised courses; staff: filter by course |
+| `start_date` | datetime | - | Return sessions whose scheduled interval overlaps this instant |
+| `end_date` | datetime | - | Return sessions whose scheduled interval overlaps this instant |
 | `limit` | int | 50 | Results per page |
+| `offset` | int | 0 | Number of matching sessions to skip |
 
-**Response:** `200 OK` - Returns list of sessions relevant to the user
+**Response:** `200 OK` - Returns a list of sessions relevant to the user. The response remains an array; pagination is applied with `limit` and `offset`.
+
+For students, identity is derived from the JWT. Sessions are restricted to the
+student's authorised course enrollments, including historical enrollment
+eligibility at `scheduled_start` using the existing enrollment audit policy.
+When `start_date` and/or `end_date` is supplied, sessions overlap the visible
+range using `scheduled_start < end_date AND scheduled_end > start_date`.
+Student session results include sessions without check-ins. Attendance outcomes
+are obtained separately from `GET /checkins/my-checkins` and matched by
+`session_id`.
 
 #### GET /sessions/{session_id}
-Get session details. **Requires auth.**
+Get session details. **Requires auth.** Students may access only sessions for
+which their enrollment was eligible at `scheduled_start`; instructors may access
+sessions they own or manage.
 
 **Response:** `200 OK`
 ```json
@@ -772,7 +787,7 @@ Get check-ins requiring review (flagged or appealed). **Requires auth (instructo
 #### GET /checkins/{checkin_id}
 Get specific check-in details. **Requires auth (owner student, or instructor/TA for session).**
 
-**Response:** `200 OK` - Returns full check-in object with all risk signals
+**Response:** `200 OK` - Returns the check-in details and verification results. Risk factors are not included in this response.
 
 #### POST /checkins/{id}/appeal
 Appeal a rejected/flagged check-in. **Requires auth (student, must be owner).**

@@ -37,6 +37,8 @@ def world():
         session_query, checkin_query, challenge_query, policy_query))}
     queries[id(models["CheckIn"].id)] = checkin_query
     db.query.side_effect = lambda model: queries[id(model)]
+    course = SimpleNamespace(id="course", instructor_id="owner")
+    db.get.return_value = course
     audit = MagicMock()
     namespace = {
         "app": FastAPI(), "Depends": Depends, "HTTPException": HTTPException,
@@ -46,12 +48,14 @@ def world():
         "SessionModel": models["SessionModel"], "CheckIn": models["CheckIn"],
         "motion": SimpleNamespace(MotionChallenge=models["MotionChallenge"],
                                   MotionPolicy=models["MotionPolicy"]),
-        "create_audit_log": audit,
+        "create_audit_log": audit, "Course": SimpleNamespace,
     }
     load_function(ROOT / "module2-backend/app/auth.py", "require_roles", namespace)
+    load_function(ROOT / "module2-backend/app/permissions.py", "teaches", namespace)
+    load_function(ROOT / "module2-backend/app/main.py", "_teaches_session_course", namespace)
     load_function(ROOT / "module2-backend/app/main.py", "delete_session", namespace)
     with TestClient(namespace["app"], raise_server_exceptions=False) as client:
-        yield SimpleNamespace(db=db, actor=actor, session=session, client=client, audit=audit,
+        yield SimpleNamespace(db=db, actor=actor, session=session, course=course, client=client, audit=audit,
                               session_query=session_query, checkin_query=checkin_query,
                               challenge_query=challenge_query, policy_query=policy_query)
 
@@ -82,14 +86,18 @@ def test_non_management_roles_denied(world, role):
 
 
 @pytest.mark.parametrize("case,expected", [
-    ("missing", 404), ("other_owner", 403), ("active", 400),
-    ("closed", 400), ("cancelled", 400), ("checkins", 409),
+    ("missing", 404), ("other_owner", 403), ("course_reassigned", 403), ("course_unassigned", 403),
+    ("active", 400), ("closed", 400), ("cancelled", 400), ("checkins", 409),
 ])
 def test_rejected_deletions_do_not_mutate_database(world, case, expected):
     if case == "missing":
         world.session_query.filter.return_value.with_for_update.return_value.first.return_value = None
     elif case == "other_owner":
         world.actor.id = "other"
+    elif case == "course_reassigned":
+        world.course.instructor_id = "someone-else"
+    elif case == "course_unassigned":
+        world.course.instructor_id = None
     elif case == "checkins":
         world.checkin_query.filter.return_value.first.return_value = ("checkin",)
     else:

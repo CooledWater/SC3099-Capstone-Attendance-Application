@@ -201,14 +201,14 @@ def test_session_creation_requires_course_assignment_except_admin(api, world):
     assert api.post("/api/v1/sessions/", headers=world["admin"]["headers"], json=payload).status_code == 201
 
 
-def test_ta_can_list_sessions_filtered_by_course(api, world):
+def test_unassigned_ta_session_list_is_empty(api, world):
+    # This TA has no course_assistants row; assigned TAs: new-tests/test_ta_scope.py.
     response = api.get("/api/v1/sessions/", params={"course_id": world["course_id"], "limit": 100},
                        headers=world["ta"]["headers"])
     assert response.status_code == 200, response.text
     data = response.json()
     assert {"items", "total", "limit", "offset"} <= set(data)
-    assert any(item["id"] == world["session"]["id"] for item in data["items"])
-    assert all(item["course_id"] == world["course_id"] for item in data["items"])
+    assert data["items"] == [] and data["total"] == 0
     assert api.get("/api/v1/sessions/", headers=world["ta"]["headers"]).status_code == 200
     assert api.get("/api/v1/sessions/").status_code in (401, 403)
 
@@ -265,7 +265,9 @@ def test_delete_scheduled_session_with_checkins_is_conflict(api, world):
     assert records.status_code == 200 and len(records.json()) == 1
 
 def test_session_checkins_carry_the_fields_module4_reads(api, world):
-    response = api.get(f"/api/v1/checkins/session/{world['session']['id']}", headers=world["ta"]["headers"])
+    path = f"/api/v1/checkins/session/{world['session']['id']}"
+    assert api.get(path, headers=world["ta"]["headers"]).status_code == 403  # unassigned TA
+    response = api.get(path, headers=world["instructor"]["headers"])
     assert response.status_code == 200, response.text
     rows = {r["student_id"]: r for r in response.json()}
     assert len(rows) == 3
@@ -362,9 +364,28 @@ def test_flagged_queue_contains_only_flagged_or_appealed(api, world):
     assert all(i["status"] in ("flagged", "appealed") for i in everything["items"])
 
 
-def test_flagged_queue_allows_ta_and_scopes_instructors(api, world):
+def test_assigned_ta_reads_course_data_through_admin_assignment(api, world):
+    admin, ta = world["admin"]["headers"], world["ta"]
+    tas = f"/api/v1/admin/courses/{world['course_id']}/tas"
     sid = world["session"]["id"]
-    assert _list(api, world["ta"], "/api/v1/checkins/flagged", session_id=sid).json()["total"] == 1
+    assert api.post(tas, headers=admin, json={"user_id": ta["id"]}).status_code == 201
+    try:
+        assert api.get(f"/api/v1/checkins/session/{sid}", headers=ta["headers"]).status_code == 200
+        assert _list(api, ta, "/api/v1/checkins/flagged", session_id=sid).json()["total"] == 1
+        listed = api.get("/api/v1/sessions/", params={"course_id": world["course_id"], "limit": 100},
+                         headers=ta["headers"]).json()
+        assert any(item["id"] == sid for item in listed["items"])
+        assert [c["id"] for c in api.get("/api/v1/courses/my-courses", headers=ta["headers"]).json()["items"]] == [
+            world["course_id"]]
+    finally:
+        assert api.delete(f"{tas}/{ta['id']}", headers=admin).status_code == 204
+    assert api.get(f"/api/v1/checkins/session/{sid}", headers=ta["headers"]).status_code == 403
+
+
+def test_flagged_queue_scopes_tas_and_instructors(api, world):
+    sid = world["session"]["id"]
+    assert _list(api, world["instructor"], "/api/v1/checkins/flagged", session_id=sid).json()["total"] == 1
+    assert _list(api, world["ta"], "/api/v1/checkins/flagged", session_id=sid).json()["total"] == 0  # unassigned
     assert _list(api, world["other"], "/api/v1/checkins/flagged", session_id=sid).json()["total"] == 0
 
 

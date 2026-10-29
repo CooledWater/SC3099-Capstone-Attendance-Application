@@ -16,7 +16,8 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from jose import jwt, JWTError
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from app.password_policy import validate_new_password
 from sqlalchemy import Column, String, DateTime, ForeignKey, or_, and_
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -173,6 +174,11 @@ class TokenRequest(BaseModel):
 
 class CompleteRequest(TokenRequest):
     password: str = Field(min_length=8, max_length=72)
+
+    @field_validator('password')
+    @classmethod
+    def strong_new_password(cls, value):
+        return validate_new_password(value)
 
 
 class ResendRequest(BaseModel):

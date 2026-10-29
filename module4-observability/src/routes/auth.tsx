@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { PASSWORD_REQUIREMENTS, newPasswordError } from "@/lib/password-policy";
 import { useAuth } from "@/hooks/useAuth";
 
 export const Route = createFileRoute("/auth")({
@@ -47,6 +48,8 @@ function AuthPage() {
         await api.login(email, password);
         navigate({ to: "/" });
       } else {
+        const error = newPasswordError(password);
+        if (error) throw new Error(error);
         await api.register({ email, password, full_name: fullName, role: desiredRole });
         await api.login(email, password);
         navigate({ to: "/" });
@@ -157,9 +160,11 @@ function AuthPage() {
                     onChange={(e) => setPassword(e.target.value)}
                     className="w-full rounded-xl border border-border bg-background/60 px-4 py-3 text-sm text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
                     placeholder="••••••••••"
-                    minLength={6}
+                    minLength={mode === "signup" ? 8 : undefined}
+                    autoComplete={mode === "signup" ? "new-password" : "current-password"}
                     required
                   />
+                  {mode === "signup" && <p className="mt-2 text-xs text-muted-foreground">{PASSWORD_REQUIREMENTS}</p>}
                 </div>
               </div>
 

@@ -30,8 +30,8 @@ class Browser:
         self.ws = ws
         self.sequence = 0
         self.requests = []
-        self.students = [dict(id="enrollment-alice", student_id="alice", student_name="Alice Tan", student_email="alice@example.edu", is_active=True),
-                         dict(id="enrollment-bob", student_id="bob", student_name="Bob Lee", student_email="bob@example.edu", is_active=False)]
+        self.students = [dict(id="enrollment-alice", student_id="alice", student_name="Alice Tan", student_email="alice@example.edu", is_active=True, face_enrolled=True),
+                         dict(id="enrollment-bob", student_id="bob", student_name="Bob Lee", student_email="bob@example.edu", is_active=False, face_enrolled=False)]
         self.duplicate = True
         self.delayed = []
         self.no_courses = False
@@ -80,7 +80,7 @@ class Browser:
             if query.get("search") == ["slow"] and not event.get("released"):
                 self.delayed.append((time.monotonic() + 0.6, event))
                 return
-            source = self.students if path.endswith("course-a") else [dict(id="enrollment-carol", student_id="carol", student_name="Carol Lim", student_email="carol@example.edu", is_active=True)]
+            source = self.students if path.endswith("course-a") else [dict(id="enrollment-carol", student_id="carol", student_name="Carol Lim", student_email="carol@example.edu", is_active=True, face_enrolled=True)]
             search = query.get("search", [""])[0].lower()
             status = query.get("is_active", ["true"])[0]
             rows = [row for row in source if (status == "all" or row["is_active"] == (status == "true")) and search in (row["student_name"] + row["student_email"]).lower()]
@@ -88,11 +88,13 @@ class Browser:
             if self.roster_error:
                 code, body = 403, {"detail": "No roster access"}
         elif path.endswith("/enrollments/") and method == "POST":
+            payload = json.loads(request["postData"])
+            assert payload["student_email"] == "student@example.edu"
             if self.duplicate:
                 code, body = 400, {"detail": "Student already enrolled"}
                 self.duplicate = False
             else:
-                self.students.append(dict(id="enrollment-new", student_id="new", student_name="New Student", student_email="new@example.edu", is_active=True))
+                self.students.append(dict(id="enrollment-new", student_id="new", student_name="New Student", student_email="new@example.edu", is_active=True, face_enrolled=True))
                 code, body = 201, {"id": "enrollment-new"}
         elif path.endswith("/enrollments/bulk"):
             payload = json.loads(request["postData"])
@@ -167,6 +169,7 @@ def run_dashboard_checks():
                     ui.wait("document.body.innerText.includes('Enrollments')")
                     ui.click("Enrollments")
                     ui.wait("document.body.innerText.includes('Alice Tan')")
+                    assert ui.evaluate("document.querySelector('[aria-label=\"Face enrolled\"]')?.textContent") == "✓"
                     assert ui.evaluate("document.querySelector('[aria-label=\"Enrollment course\"]').options.length") == 2
                     ui.fill("input[placeholder='Search by name or email']", "Bob")
                     ui.wait("document.body.innerText.includes('Bob Lee') && !document.body.innerText.includes('Alice Tan')")
@@ -174,6 +177,7 @@ def run_dashboard_checks():
                     ui.wait("document.body.innerText.includes('Alice Tan')")
                     ui.select("select:not([aria-label])", "false")
                     ui.wait("!document.body.innerText.includes('Alice Tan') && document.body.innerText.includes('Bob Lee')")
+                    assert ui.evaluate("document.querySelector('[aria-label=\"Face not enrolled\"]')?.textContent") == "✕"
                     ui.select("select:not([aria-label])", "all")
                     ui.wait("document.body.innerText.includes('Alice Tan')")
                     ui.fill("input[placeholder='Search by name or email']", "slow")
@@ -196,7 +200,7 @@ def run_dashboard_checks():
                     ui.wait("document.body.innerText.includes('Alice Tan')")
                     ui.click("+ Add students")
                     ui.wait("document.querySelector('[role=dialog]') !== null")
-                    ui.fill("[role=dialog] input:not([type=checkbox])", "student-id")
+                    ui.fill("[role=dialog] input[type=email]", "student@example.edu")
                     ui.click("Enroll student")
                     ui.wait("document.body.innerText.includes('Student already enrolled')")
                     ui.click("Enroll student")

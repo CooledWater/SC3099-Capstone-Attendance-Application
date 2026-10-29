@@ -33,6 +33,32 @@ def test_roster_is_scoped_and_ta_cannot_modify(api, roster_world):
     }).status_code == 403
 
 
+def test_single_enrollment_resolves_student_email_server_side(api, roster_world):
+    w = roster_world
+    student = _register(api, "student", "Email Lookup Student")
+    response = api.post(
+        "/api/v1/enrollments/",
+        headers=w["teacher"]["headers"],
+        json={"course_id": w["course"], "student_email": student["email"]},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["student_id"] == student["id"]
+
+    missing = api.post(
+        "/api/v1/enrollments/",
+        headers=w["teacher"]["headers"],
+        json={"course_id": w["course"], "student_email": "missing@example.edu"},
+    )
+    assert missing.status_code == 404
+
+    invalid_role = api.post(
+        "/api/v1/enrollments/",
+        headers=w["teacher"]["headers"],
+        json={"course_id": w["course"], "student_email": w["teacher"]["email"]},
+    )
+    assert invalid_role.status_code == 400
+
+
 def test_concurrent_duplicate_enrollment_returns_201_and_400(api, roster_world):
     w = roster_world
     body = {"course_id": w["course"], "student_id": w["student"]["id"]}

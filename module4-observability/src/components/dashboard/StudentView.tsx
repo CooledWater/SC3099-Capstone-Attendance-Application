@@ -3,14 +3,25 @@ import { useQuery } from "@tanstack/react-query";
 import { StudentOverviewCards } from "./StudentOverview";
 import { CourseHistory } from "./CourseHistory";
 import { LiveActivity } from "./LiveActivity";
+import { MyDevicesPanel } from "./MyDevicesPanel";
+import { StudentSessionCalendar } from "./StudentSessionCalendar";
+import { Tabs } from "./Tabs";
 import { fetchMyCheckIns, fetchMyEnrollments, toRows } from "@/lib/attendance";
 import { formatSingaporeDateTime } from "@/lib/time";
+import { mondayOf } from "@/lib/session-calendar";
 
 export function StudentView({ userId = "" }: { userId?: string } = {}) {
+  const [tab, setTab] = useState<"dashboard" | "sessions" | "devices">("dashboard");
+  const [sessionWeek, setSessionWeek] = useState(() => mondayOf(Date.now()));
+  const [sessionCourse, setSessionCourse] = useState("all");
   const [overviewCourse, setOverviewCourse] = useState("");
   const [historyFilter, setHistoryFilter] = useState({ courseId: "all", statuses: [] as string[], revision: 0 });
   function showHistory(courseId: string, statuses: string[]) {
     setHistoryFilter(previous => ({ courseId, statuses, revision: previous.revision + 1 }));
+  }
+  function showCalendar(courseId: string) {
+    setSessionCourse(courseId || "all");
+    setTab("sessions");
   }
   const q = useQuery({
     queryKey: ["my-check-ins", userId, "summary"],
@@ -26,13 +37,32 @@ export function StudentView({ userId = "" }: { userId?: string } = {}) {
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <StudentOverviewCards userId={userId} courseId={overviewCourse} onCourseChange={setOverviewCourse} onAttendance={showHistory} />
+      <Tabs
+        tabs={[{ id: "dashboard", label: "Overview" }, { id: "sessions", label: "My sessions" }, { id: "devices", label: "My devices" }] as const}
+        value={tab}
+        onChange={setTab}
+      />
+      {tab === "devices" ? <MyDevicesPanel /> : tab === "sessions" ? <StudentSessionCalendar
+        userId={userId}
+        rows={rows}
+        checkInsLoading={q.isPending}
+        checkInsError={q.isError}
+        onRetryCheckIns={() => void q.refetch()}
+        enrolledCourses={enrollments.data ?? []}
+        enrollmentsLoading={enrollments.isPending}
+        enrollmentsError={enrollments.isError}
+        onRetryEnrollments={() => void enrollments.refetch()}
+        week={sessionWeek}
+        onWeekChange={(week) => setSessionWeek(week)}
+        courseId={sessionCourse}
+        onCourseChange={setSessionCourse}
+      /> : <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <StudentOverviewCards userId={userId} courseId={overviewCourse} onCourseChange={setOverviewCourse} onAttendance={showHistory} onViewCalendar={showCalendar} />
         <div id="student-history" className="lg:col-span-8 scroll-mt-4">
           <CourseHistory key={historyFilter.revision} rows={rows} enrolledCourses={enrollments.data ?? []} initialCourseId={historyFilter.courseId} initialStatuses={historyFilter.statuses} />
         </div>
         <LiveActivity rows={rows} student />
-        <section className="lg:col-span-12 rounded-2xl border border-border bg-glass p-5" aria-labelledby="student-enrollments-heading">
+        <section className="lg:col-span-12 rounded-2xl border border-primary/40 bg-primary/5 p-5" aria-labelledby="student-enrollments-heading">
           <h2 id="student-enrollments-heading" className="font-display text-base text-foreground">
             My course enrollments
           </h2>
@@ -71,7 +101,7 @@ export function StudentView({ userId = "" }: { userId?: string } = {}) {
             </div>
           )}
         </section>
-      </div>
+      </div>}
     </>
   );
 }

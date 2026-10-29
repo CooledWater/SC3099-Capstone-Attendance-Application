@@ -253,7 +253,8 @@ class TestSessionStats:
     def test_access_rules(self, api, world):
         url = f"/api/v1/stats/sessions/{world['sessions'][0]['id']}"
         assert api.get(url, headers=world["admin"]["headers"]).status_code == 200
-        assert api.get(url, headers=world["ta"]["headers"]).status_code == 200
+        # TA without a course_assistants row (assigned TAs: new-tests/test_ta_scope.py).
+        assert api.get(url, headers=world["ta"]["headers"]).status_code == 403
         assert api.get(url, headers=world["instr_b"]["headers"]).status_code == 403
         assert api.get(url, headers=world["students"]["s1"]["headers"]).status_code == 403
         assert api.get(url).status_code in (401, 403)
