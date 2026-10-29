@@ -3017,6 +3017,7 @@ def _serialize_device(device: Device, metadata: dict | None = None) -> dict:
         "is_trusted": device.is_trusted,
         "trust_score": device.trust_score,
         "is_active": device.is_active,
+        "is_removed": device_binding.is_removed(device),
         "first_seen_at": device.first_seen_at,
         "last_seen_at": device.last_seen_at,
         "total_checkins": device.total_checkins,
@@ -3098,7 +3099,9 @@ def list_all_devices(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
-    query = db.query(Device, User.email).outerjoin(User, User.id == Device.user_id)
+    query = db.query(Device, User.email, User.full_name).outerjoin(User, User.id == Device.user_id).filter(
+        device_binding.managed_devices()
+    )
 
     if user_id:
         query = query.filter(Device.user_id == user_id)
@@ -3115,11 +3118,11 @@ def list_all_devices(
         .all()
     )
 
-    metadata = device_binding.browser_metadata(db, [device for device, _ in rows])
+    metadata = device_binding.browser_metadata(db, [device for device, _, _ in rows])
     return {
         "items": [
-            {**_serialize_device(device, metadata.get(device.id)), "user_email": email}
-            for device, email in rows
+            {**_serialize_device(device, metadata.get(device.id)), "user_email": email, "user_name": full_name}
+            for device, email, full_name in rows
         ],
         "total": total,
         "limit": limit,
@@ -3172,11 +3175,10 @@ def update_device(
     if device_data.is_active is not None:
         device.is_active = device_data.is_active
         if not device.is_active:
-            device.is_trusted = False
-            device.trust_score = 'low'
             device.revoked_at = datetime.utcnow()
         else:
             device.revoked_at = None
+            device.revocation_reason = None
     create_audit_log(db, 'device_registered', current_user.id, device.id,
         device_id=device.id, details={'event': 'device_updated', 'changes': device_data.model_dump(exclude_unset=True)})
 
@@ -3208,11 +3210,17 @@ def delete_device(
 
     device_binding.lock_account(db, device.user_id)
     db.refresh(device)
-    # Preserve historical attendance and prevent automatic registration undoing removal.
+    # Archive the registration without breaking attendance/audit references or
+    # verified shared-browser history. Keep its inactive record in my-devices
+    # so the student app cannot automatically register it as a new device.
     device.is_active = False
     device.is_trusted = False
     device.trust_score = 'low'
     device.revoked_at = datetime.utcnow()
+    device.revocation_reason = device_binding.REMOVED_REASON
+    db.query(device_binding.DeviceChallenge).filter_by(device_id=device.id, state='issued').update(
+        {'state': 'revoked'}, synchronize_session=False
+    )
     create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id, details={'event': 'device_removed'})
     db.commit()
 

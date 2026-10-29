@@ -12,13 +12,16 @@ export type Device = {
   is_trusted: boolean;
   trust_score: string | null;
   is_active: boolean;
+  is_removed?: boolean;
   first_seen_at: string | null;
   last_seen_at: string | null;
   total_checkins: number;
 };
 
-export const fetchMyDevices = (signal?: AbortSignal) =>
-  api.request<Device[]>("/devices/my-devices", { signal: signal ?? null });
+export const fetchMyDevices = async (signal?: AbortSignal) => {
+  const devices = await api.request<Device[]>("/devices/my-devices", { signal: signal ?? null });
+  return devices.filter((device) => !device.is_removed);
+};
 
 export const renameDevice = (deviceId: string, deviceName: string) =>
   api.request<Device>(`/devices/${encodeURIComponent(deviceId)}`, {
@@ -41,14 +44,25 @@ class DeviceIdentificationUnsupportedError extends Error {
 export async function createDeviceFingerprint() {
   if (!globalThis.indexedDB) throw new DeviceIdentificationUnsupportedError();
   return new Promise<string>((resolve, reject) => {
-    const request = indexedDB.open('saiv-device-keys', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('identities');
+    const request = indexedDB.open("saiv-device-keys", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("identities");
     request.onerror = () => reject(new DeviceIdentificationUnsupportedError());
     request.onsuccess = () => {
       const db = request.result;
-      const record = db.transaction('identities').objectStore('identities').get('browser-installation-v1');
-      record.onsuccess = () => { db.close(); record.result?.fingerprint ? resolve(record.result.fingerprint) : reject(new DeviceIdentificationUnsupportedError()); };
-      record.onerror = () => { db.close(); reject(new DeviceIdentificationUnsupportedError()); };
+      const record = db
+        .transaction("identities")
+        .objectStore("identities")
+        .get("browser-installation-v1");
+      record.onsuccess = () => {
+        db.close();
+        record.result?.fingerprint
+          ? resolve(record.result.fingerprint)
+          : reject(new DeviceIdentificationUnsupportedError());
+      };
+      record.onerror = () => {
+        db.close();
+        reject(new DeviceIdentificationUnsupportedError());
+      };
     };
   });
 }

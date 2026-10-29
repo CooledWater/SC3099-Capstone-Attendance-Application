@@ -174,7 +174,10 @@ export function EnrollmentsPanel({
           </p>
         </div>
         {canManage && (
-          <button className={button} onClick={() => setOpen(true)}>
+          <button
+            className="rounded-lg bg-gradient-to-r from-primary to-accent px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary"
+            onClick={() => setOpen(true)}
+          >
             + Add students
           </button>
         )}

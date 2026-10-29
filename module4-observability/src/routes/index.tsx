@@ -2,8 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
-import { useSessionValue } from "@/hooks/useSessionValue";
-import { useRole, roleLabel, type AppRole } from "@/hooks/useRole";
+import { useRole, roleLabel } from "@/hooks/useRole";
 import { StudentView } from "@/components/dashboard/StudentView";
 import { TaView } from "@/components/dashboard/TaView";
 import { InstructorView } from "@/components/dashboard/InstructorView";
@@ -59,10 +58,6 @@ function Dashboard() {
   const { session, user, loading } = useAuth();
   const { role, loading: roleLoading } = useRole(user);
   const [now, setNow] = useState(() => Date.now());
-  const [savedViewAs, setViewAs] = useSessionValue("dashboard:role-preview", "admin");
-  const viewAs: AppRole = ["admin", "instructor", "ta", "student"].includes(savedViewAs)
-    ? (savedViewAs as AppRole)
-    : "admin";
 
   useEffect(() => {
     if (!loading && !session) navigate({ to: "/auth" });
@@ -81,8 +76,7 @@ function Dashboard() {
     );
   }
 
-  const activeRole = role === "admin" ? viewAs : role;
-  const copy = headline[activeRole];
+  const copy = headline[role];
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background font-sans text-foreground antialiased">
@@ -99,36 +93,10 @@ function Dashboard() {
             <p className="mt-1 text-sm text-muted-foreground">
               {copy.blurb} Signed in as {user?.email}
             </p>
-            {role === "admin" && viewAs !== "admin" && (
-              <p className="mt-2 max-w-2xl text-xs text-warning">
-                Role preview only: this changes the dashboard layout, not the signed-in account, API
-                permissions, or data scope.
-              </p>
-            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {role === "admin" && (
-              <div className="flex items-center gap-1 rounded-full border border-border bg-glass p-1">
-                <span className="px-2 text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
-                  View as
-                </span>
-                {(["admin", "instructor", "ta", "student"] as const).map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setViewAs(r)}
-                    className={`rounded-full px-2.5 py-1 text-xs transition ${
-                      viewAs === r
-                        ? "bg-primary/20 text-primary"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {roleLabel[r]}
-                  </button>
-                ))}
-              </div>
-            )}
             <span className="rounded-full border border-primary/40 bg-primary/15 px-3 py-1.5 text-xs text-primary">
-              {roleLabel[activeRole]}
+              {roleLabel[role]}
             </span>
             <span className="flex items-center gap-2 rounded-full border border-border bg-glass px-3 py-1.5 text-xs text-foreground">
               <span className="size-1.5 rounded-full bg-accent" />
@@ -143,10 +111,10 @@ function Dashboard() {
           </div>
         </div>
 
-        {activeRole === "admin" && <AdminView />}
-        {activeRole === "instructor" && user && <InstructorView userId={user.id} />}
-        {activeRole === "ta" && user && <TaView userId={user.id} />}
-        {activeRole === "student" && user && <StudentView userId={user.id} />}
+        {role === "admin" && user && <AdminView userId={user.id} />}
+        {role === "instructor" && user && <InstructorView userId={user.id} />}
+        {role === "ta" && user && <TaView userId={user.id} />}
+        {role === "student" && user && <StudentView userId={user.id} />}
       </section>
     </div>
   );

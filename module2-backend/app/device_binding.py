@@ -31,6 +31,19 @@ class DeviceChallenge(Base):
 
 
 MAX_ACTIVE_DEVICES = 2
+REMOVED_REASON = 'device_removed'
+
+
+def is_removed(device):
+    return device.revocation_reason == REMOVED_REASON
+
+
+def managed_devices():
+    # Keep historical device/browser associations while excluding removals from
+    # management lists. Inactive registrations remain available for reactivation.
+    return or_(Device.revocation_reason.is_(None), Device.revocation_reason != REMOVED_REASON)
+
+
 LIMIT_MESSAGE = 'Your account already has two active devices. Login is allowed, but disable a device in Profile → My devices before registering or checking in on this browser.'
 
 

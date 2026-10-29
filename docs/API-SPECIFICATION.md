@@ -17,9 +17,11 @@ Authorization: Bearer <access_token>
 | Role | Description | Permissions |
 |------|-------------|-------------|
 | `student` | Students checking into classes | Check-in, view own records, manage own devices |
-| `ta` | Teaching assistants | Student permissions + view session check-ins, review flagged check-ins |
-| `instructor` | Course instructors | TA permissions + manage sessions, view course analytics, manage enrollments |
-| `admin` | System administrators | Full access to all endpoints |
+| `ta` | Teaching assistants | View session check-ins and review flagged check-ins for assigned courses |
+| `instructor` | Course instructors | Manage assigned courses and sessions, review check-ins, view course analytics, manage enrollments |
+| `admin` | System administrators | System-wide management access; student-only endpoints remain restricted to students |
+
+Endpoint-specific role restrictions take precedence; roles do not automatically inherit student-only permissions.
 
 ---
 
@@ -332,6 +334,23 @@ Soft-delete a course (sets is_active=false). **Requires auth (admin only).**
 
 ---
 
+### Course TA assignments
+
+All endpoints below require **admin authentication** and use the `/api/v1` base.
+
+| Method | Endpoint | Behavior |
+|--------|----------|----------|
+| GET | `/admin/courses/{course_id}/tas` | List assignments: `200`, `{course_id, items, total}` |
+| POST | `/admin/courses/{course_id}/tas` | Assign an active TA using exactly one of `{"user_id":"uuid"}` or `{"email":"ta@example.edu"}`; returns assignment with `201` |
+| DELETE | `/admin/courses/{course_id}/tas/{user_id}` | Remove assignment; returns `204` |
+
+Assignment fields: `id`, `course_id`, `user_id`, `email`, `full_name`, `is_active`, `assigned_at`.
+Assignments grant TA access to the course's sessions/check-ins and enrollment roster;
+multiple TAs per course and multiple courses per TA are supported. Session-level
+TA assignments are not implemented. Errors: `400` for inactive/non-TA users,
+`404` for missing resources, `409` for duplicate assignment, `422` for invalid input.
+Assignment/removal is audited as `user_updated` with resource type `course_assistant`.
+
 ### Sessions
 
 Sessions represent class meetings where students check in.
@@ -488,7 +507,7 @@ Create a new session. **Requires auth (instructor or admin).**
 - `checkin_closes_at` must be after `checkin_opens_at`
 
 #### PATCH /sessions/{session_id}
-Update a session. **Requires auth (instructor only, must be session owner).**
+Update a session. **Requires auth (admin, or session-owning instructor still assigned to the course).**
 
 **Request:** (partial update - any subset of fields)
 ```json
@@ -551,9 +570,8 @@ and a `session_deleted` audit entry is retained in the same transaction.
 Requires JWT authentication with instructor, TA, or admin role. Instructors
 must own the course/session, or the course must have no assigned instructor,
 matching check-in details/review and session export. Unrelated instructors
-receive 403; missing sessions receive 404. The schema has no TA-course assignment
-relation, so existing TA staff visibility remains global; this endpoint cannot
-claim assignment-level TA restrictions.
+receive 403; missing sessions receive 404. TAs must have an explicit course
+assignment through the course TA assignment endpoints; unassigned TAs receive 403.
 
 Returns a complete, unpaginated session roster for local search/filter/pagination:
 `{session_id, course_id, session_status, expected, items, summary, policy}`.
@@ -1375,8 +1393,9 @@ Get all students enrolled in a course. **Requires auth (instructor/TA for course
 the returned students after filtering. The roster is not paginated or truncated.
 Search matches name/email case-insensitively and treats SQL wildcard characters
 literally. Instructor access requires `course.instructor_id` to match the caller;
-unassigned courses are admin-only. The project has no TA assignment model, so
-TA roster requests fail closed (403) until explicit course assignments exist.
+unassigned courses are admin-only for instructor access. TAs may read rosters
+only for courses explicitly assigned through the course TA assignment endpoints;
+otherwise requests fail closed (403).
 
 #### POST /enrollments/
 Enroll a student in a course. **Requires auth (instructor for course, or admin).**

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { canManageSession } from "@/lib/session-permissions";
 import { SessionCalendar } from "./SessionCalendar";
 import { mondayOf } from "@/lib/session-calendar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -61,6 +62,7 @@ export function SessionsPanel({
   onViewSession,
   assignedCourses,
   readOnly = false,
+  isAdmin = false,
 }: {
   rows: CheckInRow[];
   canCreate: boolean;
@@ -71,8 +73,11 @@ export function SessionsPanel({
   onViewSession?: (session: SessionRow) => void;
   assignedCourses?: import("@/lib/attendance").CourseRow[];
   readOnly?: boolean;
+  isAdmin?: boolean;
 }) {
   const qc = useQueryClient();
+  const canManage = (session: SessionRow) =>
+    canManageSession(currentUserId, session.instructor_id, isAdmin, readOnly);
   const sessions = useQuery({
     queryKey: ["sessions"],
     queryFn: fetchSessions,
@@ -176,7 +181,10 @@ export function SessionsPanel({
   const editingSession = list.find((session) => session.id === editingSessionId) ?? null;
   const availableCourses = (assignedCourses ?? (courses.isSuccess ? courses.data : [])).filter(
     (course) =>
-      assignedCourses !== undefined || !currentUserId || course.instructor_id === currentUserId,
+      isAdmin ||
+      assignedCourses !== undefined ||
+      !currentUserId ||
+      course.instructor_id === currentUserId,
   );
   const bySession = useMemo(() => {
     const m = new Map<string, CheckInRow[]>();
@@ -317,8 +325,8 @@ export function SessionsPanel({
 
   async function updateSession(event: React.FormEvent<HTMLFormElement>, session: SessionRow) {
     event.preventDefault();
-    if (!currentUserId || session.instructor_id !== currentUserId) {
-      toast.error("Only the instructor who created this session can edit it.");
+    if (!canManage(session)) {
+      toast.error("You do not have permission to edit this session.");
       return;
     }
     if (
@@ -395,12 +403,7 @@ export function SessionsPanel({
   }
 
   async function closeSession(session: SessionRow) {
-    if (
-      !currentUserId ||
-      session.instructor_id !== currentUserId ||
-      session.status !== "active" ||
-      savingSessionId
-    ) {
+    if (!canManage(session) || session.status !== "active" || savingSessionId) {
       return;
     }
     setSavingSessionId(session.id);
@@ -430,8 +433,7 @@ export function SessionsPanel({
 
   async function cancelSession(session: SessionRow) {
     if (
-      !currentUserId ||
-      session.instructor_id !== currentUserId ||
+      !canManage(session) ||
       (session.status !== "active" && session.status !== "closed") ||
       savingSessionId
     ) {
@@ -462,12 +464,7 @@ export function SessionsPanel({
   }
 
   async function deleteSession(session: SessionRow) {
-    if (
-      !currentUserId ||
-      session.instructor_id !== currentUserId ||
-      session.status !== "scheduled" ||
-      savingSessionId
-    ) {
+    if (!canManage(session) || session.status !== "scheduled" || savingSessionId) {
       return;
     }
 
@@ -697,6 +694,7 @@ export function SessionsPanel({
           courseIds={courseIds}
           userId={currentUserId}
           readOnly={readOnly}
+          isAdmin={isAdmin}
           week={week}
           onWeekChange={setWeek}
           onEdit={(row) => startEditing(row)}
@@ -749,8 +747,7 @@ export function SessionsPanel({
               {group.sessions.map((s) => {
                 const sessionRows = bySession.get(s.id) ?? [];
                 const isOpen = !onViewSession && expanded === s.id;
-                const canManage =
-                  !readOnly && currentUserId !== undefined && s.instructor_id === currentUserId;
+                const manageable = canManage(s);
                 return (
                   <div key={s.id} className="rounded-xl border border-border bg-card/40 px-5 py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -808,7 +805,7 @@ export function SessionsPanel({
                           {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
                         </span>
                         {!readOnly &&
-                          ((canManage && (s.status === "scheduled" || s.status === "active")) ||
+                          ((manageable && (s.status === "scheduled" || s.status === "active")) ||
                             s.status === "closed") && (
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
@@ -850,7 +847,7 @@ export function SessionsPanel({
                                       : "Export session CSV"}
                                   </DropdownMenuItem>
                                 )}
-                                {canManage && (s.status === "active" || s.status === "closed") && (
+                                {manageable && (s.status === "active" || s.status === "closed") && (
                                   <DropdownMenuItem
                                     onSelect={() => void cancelSession(s)}
                                     className="text-destructive focus:bg-destructive/10 focus:text-destructive"
@@ -935,7 +932,7 @@ export function SessionsPanel({
                 disabled={
                   editingSession.status !== "scheduled" ||
                   savingSessionId !== null ||
-                  editingSession.instructor_id !== currentUserId
+                  !canManage(editingSession)
                 }
                 className="grid gap-3 sm:grid-cols-2"
               >
@@ -1044,9 +1041,7 @@ export function SessionsPanel({
               <button
                 type="submit"
                 form="edit-session-form"
-                disabled={
-                  savingSessionId !== null || editingSession.instructor_id !== currentUserId
-                }
+                disabled={savingSessionId !== null || !canManage(editingSession)}
                 className="rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground disabled:opacity-60"
               >
                 {savingSessionId === editingSessionId ? "Saving?" : "Save changes"}
@@ -1055,9 +1050,7 @@ export function SessionsPanel({
             {editingSession?.status === "active" && (
               <button
                 type="button"
-                disabled={
-                  savingSessionId !== null || editingSession.instructor_id !== currentUserId
-                }
+                disabled={savingSessionId !== null || !canManage(editingSession)}
                 onClick={() => void cancelSession(editingSession)}
                 className="rounded-full border border-destructive/40 px-4 py-2 text-sm text-destructive disabled:opacity-50"
               >

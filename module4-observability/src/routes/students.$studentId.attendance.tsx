@@ -37,8 +37,9 @@ function StudentAttendancePage() {
           onClick={() => {
             if (!user) return;
             try {
-              sessionStorage.setItem(`instructor:${user.id}:tab`, from);
-              if (courseId) sessionStorage.setItem(`instructor:${user.id}:course`, courseId);
+              const view = user.role === "admin" ? "admin" : "instructor";
+              sessionStorage.setItem(`${view}:${user.id}:tab`, from);
+              if (courseId) sessionStorage.setItem(`${view}:${user.id}:course`, courseId);
             } catch {
               /* Return navigation also works without storage. */
             }

@@ -1,3 +1,4 @@
+import { canManageSession } from "@/lib/session-permissions";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -40,6 +41,7 @@ export function SessionCalendar({
   onEdit,
   onCreate,
   readOnly = false,
+  isAdmin = false,
 }: {
   courseId: string;
   courseIds: Set<string> | undefined;
@@ -49,6 +51,7 @@ export function SessionCalendar({
   onEdit: (row: SessionRow) => void;
   onCreate: (instant: number) => void;
   readOnly?: boolean;
+  isAdmin?: boolean;
 }) {
   const qc = useQueryClient();
   const [move, setMove] = useState<{ session: SessionRow; start: number } | null>(null);
@@ -91,7 +94,12 @@ export function SessionCalendar({
     day: "2-digit",
   });
   async function confirmMove() {
-    if (readOnly || !move || busy.current) return;
+    if (
+      !move ||
+      !canManageSession(userId, move.session.instructor_id, isAdmin, readOnly) ||
+      busy.current
+    )
+      return;
     busy.current = true;
     setSaving(true);
     setError(null);
@@ -127,7 +135,12 @@ export function SessionCalendar({
     if (readOnly) return;
     event.preventDefault();
     const row = sessions.find((item) => item.id === event.dataTransfer.getData("text/plain"));
-    if (!row || row.status !== "scheduled" || row.instructor_id !== userId) return;
+    if (
+      !row ||
+      row.status !== "scheduled" ||
+      !canManageSession(userId, row.instructor_id, isAdmin, readOnly)
+    )
+      return;
     setError(null);
     setMove({ session: row, start: instant });
   }
@@ -146,7 +159,9 @@ export function SessionCalendar({
         key={row.id}
         data-session-id={row.id}
         type="button"
-        draggable={!readOnly && scheduled && row.instructor_id === userId && !saving}
+        draggable={
+          scheduled && canManageSession(userId, row.instructor_id, isAdmin, readOnly) && !saving
+        }
         onDragStart={(event) => {
           if (readOnly) {
             event.preventDefault();
@@ -156,7 +171,7 @@ export function SessionCalendar({
           event.dataTransfer.effectAllowed = "move";
         }}
         onClick={() => {
-          if (!readOnly) onEdit(row);
+          if (canManageSession(userId, row.instructor_id, isAdmin, readOnly)) onEdit(row);
         }}
         aria-label={`${row.courses?.code ?? "Course"} ${row.name}, ${clock(row.starts_at)} to ${clock(row.ends_at)}, ${scheduled ? "Scheduled" : "Active"}`}
         title={`${row.name} · ${duration} min · ${readOnly ? (scheduled ? "Scheduled" : "Active") : scheduled ? "Scheduled — drag to move or click to edit" : "Active — timing locked"}`}

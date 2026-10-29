@@ -13,6 +13,10 @@ import { AuditLogs } from "./AuditLogs";
 import { MetricsPanel } from "./MetricsPanel";
 import { DeviceApprovals } from "./DeviceApprovals";
 import { Tabs } from "./Tabs";
+import { AdminCourses } from "./AdminCourses";
+import { AdminUsers } from "./AdminUsers";
+import { ExportPanel } from "./ExportPanel";
+import { useSessionValue } from "@/hooks/useSessionValue";
 import { fetchCheckIns, fetchCourses, fetchSessions, toRows, trendOf } from "@/lib/attendance";
 
 const tabs = [
@@ -21,22 +25,36 @@ const tabs = [
   { id: "checkins", label: "Check-ins" },
   { id: "enrollments", label: "Enrollments" },
   { id: "devices", label: "Devices" },
+  { id: "courses", label: "Courses & staff" },
+  { id: "users", label: "Users" },
+  { id: "export", label: "Export" },
   { id: "audit", label: "Audit logs" },
   { id: "metrics", label: "Metrics" },
 ] as const;
 
 type Tab = (typeof tabs)[number]["id"];
 
-export function AdminView() {
-  const [tab, setTab] = useState<Tab>("overview");
-  const [selectedCourseId, setSelectedCourseId] = useState("all");
-  const courses = useQuery({ queryKey: ["courses"], queryFn: fetchCourses });
+export function AdminView({ userId }: { userId: string }) {
+  const [savedTab, setTab] = useSessionValue(`admin:${userId}:tab`, "overview");
+  const tab: Tab = tabs.find((item) => item.id === savedTab)?.id ?? "overview";
+  const [selectedCourseId, setSelectedCourseId] = useSessionValue(`admin:${userId}:course`, "all");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const courses = useQuery({ queryKey: ["courses", userId], queryFn: fetchCourses });
   const checkIns = useQuery({
-    queryKey: ["check-ins"],
+    queryKey: ["check-ins", userId],
     queryFn: fetchCheckIns,
+    enabled: tab === "overview" || tab === "sessions" || tab === "metrics",
     refetchInterval: 30000,
   });
-  const sessions = useQuery({ queryKey: ["sessions"], queryFn: fetchSessions });
+  const sessions = useQuery({
+    queryKey: ["sessions", userId],
+    queryFn: fetchSessions,
+    enabled: tab === "overview" || tab === "sessions" || tab === "metrics",
+  });
+  const activeCourseId =
+    courses.data?.find((course) => course.id === selectedCourseId)?.id ??
+    courses.data?.[0]?.id ??
+    "";
 
   const rows = useMemo(() => toRows(checkIns.data ?? []), [checkIns.data]);
   const stats = useMemo(
@@ -58,6 +76,14 @@ export function AdminView() {
   return (
     <>
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
+      {courses.isError && (
+        <p role="alert" className="mb-4 text-destructive">
+          Could not load courses.{" "}
+          <button className="underline" onClick={() => void courses.refetch()}>
+            Retry
+          </button>
+        </p>
+      )}
 
       {tab === "overview" && (
         <>
@@ -98,10 +124,66 @@ export function AdminView() {
         </>
       )}
 
-      {tab === "sessions" && <SessionsPanel rows={rows} canCreate selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} />}
-      {tab === "devices" && <DeviceApprovals />}
-      {tab === "checkins" && <CheckInsPanel rows={rows} loading={checkIns.isLoading} />}
-      {tab === "enrollments" && <EnrollmentsPanel courses={courses.data ?? []} loading={courses.isLoading} error={courses.isError} selectedCourseId={selectedCourseId} onCourseChange={setSelectedCourseId} canManage />}
+      {tab === "sessions" && (
+        <SessionsPanel
+          rows={rows}
+          canCreate
+          isAdmin
+          currentUserId={userId}
+          assignedCourses={courses.data ?? []}
+          selectedCourseId={selectedCourseId}
+          onCourseChange={setSelectedCourseId}
+          onViewSession={(session) => {
+            setSelectedCourseId(session.course_id);
+            setSelectedSessionId(session.id);
+            setTab("checkins");
+          }}
+        />
+      )}
+      {tab === "devices" && <DeviceApprovals userId={userId} />}
+      {tab === "checkins" &&
+        (courses.isPending ? (
+          <p role="status">Loading courses…</p>
+        ) : (
+          !courses.isError && (
+            <CheckInsPanel
+              rows={rows}
+              loading={false}
+              instructor={{
+                courses: courses.data ?? [],
+                selectedCourseId: activeCourseId,
+                onCourseChange: (id) => {
+                  setSelectedCourseId(id);
+                  setSelectedSessionId("");
+                },
+                userId,
+                initialSessionId: selectedSessionId,
+                onSessionChange: setSelectedSessionId,
+              }}
+            />
+          )
+        ))}
+      {tab === "enrollments" && (
+        <EnrollmentsPanel
+          courses={courses.data ?? []}
+          loading={courses.isLoading}
+          error={courses.isError}
+          selectedCourseId={selectedCourseId}
+          onCourseChange={setSelectedCourseId}
+          canManage
+          studentDetails
+          stateKey={`admin:${userId}:roster`}
+        />
+      )}
+      {tab === "courses" && <AdminCourses userId={userId} />}
+      {tab === "users" && <AdminUsers userId={userId} />}
+      {tab === "export" && (
+        <ExportPanel
+          courses={courses.data ?? []}
+          loading={courses.isPending}
+          error={courses.isError}
+        />
+      )}
       {tab === "audit" && <AuditLogs />}
       {tab === "metrics" && <MetricsPanel rows={rows} />}
     </>
