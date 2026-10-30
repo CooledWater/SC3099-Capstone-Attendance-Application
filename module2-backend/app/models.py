@@ -370,6 +370,16 @@ Index(
 )
 
 
+class SessionAttendanceSnapshot(Base):
+    """Immutable enrollment-at-start denominator for admin participation reports."""
+    __tablename__ = "session_attendance_snapshots"
+
+    session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True)
+    expected_attendances = Column(Integer, nullable=False)
+    captured_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    historical_enrollment_limited = Column(Boolean, nullable=False, default=False)
+
+
 class Venue(Base):
     """Admin-maintained catalogue of lecture halls instructors pick from.
 

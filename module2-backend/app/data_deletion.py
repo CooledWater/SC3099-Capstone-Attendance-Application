@@ -77,7 +77,6 @@ def cancel_deletion(payload: PasswordConfirmation, db: Session = Depends(get_db)
 def purge_due_students(factory=SessionLocal, now=None):
     from app.device_binding import BrowserIdentity, BrowserRegistration, DeviceChallenge, RegistrationChallenge
     from app.device_rotation import KeyRotation
-    from app.invitations import AccountInvitation
     from app.motion import MotionChallenge
     from app.push_notifications import PushSubscription, PushDelivery
     now = now or datetime.utcnow()
@@ -102,7 +101,10 @@ def purge_due_students(factory=SessionLocal, now=None):
             db.query(CheckIn).filter_by(student_id=user.id).delete(synchronize_session=False)
             db.query(Device).filter_by(user_id=user.id).delete(synchronize_session=False)
             db.query(Enrollment).filter_by(student_id=user.id).delete(synchronize_session=False)
-            db.query(AccountInvitation).filter_by(user_id=user.id).delete(synchronize_session=False)
+            # Retired invitation metadata can still exist in older deployments.
+            if inspect(db.get_bind()).has_table('account_invitations'):
+                legacy = Table('account_invitations', MetaData(), autoload_with=db.connection())
+                db.execute(legacy.delete().where(legacy.c.user_id == user.id))
             for fingerprint in fingerprints:
                 if not db.query(BrowserRegistration).filter_by(browser_fingerprint=fingerprint).first():
                     db.query(BrowserIdentity).filter_by(fingerprint=fingerprint).delete(synchronize_session=False)

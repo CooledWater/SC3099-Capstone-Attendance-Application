@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.database import get_read_db
-from app.models import AuditLog, CheckIn, Course, Enrollment, Session as SessionModel, User
+from app.models import AuditLog, CheckIn, Course, Enrollment, Session as SessionModel, User, SessionAttendanceSnapshot
 from app import prometheus_metrics
 from app.permissions import assists, teaches
 
@@ -163,10 +163,68 @@ def _not_found(what: str) -> HTTPException:
 # GET /stats/overview
 # --------------------------------------------------------------------------
 
+def _overview_charts(db: Session, start_date: date, end_date: date, scope: list):
+    """Two aggregate reads, independent of the number of courses."""
+    if (end_date - start_date).days != 7:
+        raise HTTPException(400, "Chart reporting period must contain seven calendar days")
+    start, _ = _local_day_bounds(start_date)
+    end, _ = _local_day_bounds(end_date)
+    calendar_days = [start_date + timedelta(days=i) for i in range(7)]
+    counts = db.query(*[
+        _count_if(and_(CheckIn.checked_in_at >= _local_day_bounds(day)[0],
+                       CheckIn.checked_in_at < _local_day_bounds(day)[1]))
+        for day in calendar_days
+    ]).select_from(CheckIn).join(SessionModel, SessionModel.id == CheckIn.session_id).join(
+        Course, Course.id == SessionModel.course_id
+    ).filter(CheckIn.checked_in_at >= start, CheckIn.checked_in_at < end, *scope).one()
+
+    held_filters = [SessionModel.status.in_(HELD_STATUSES),
+                    SessionModel.scheduled_start >= start, SessionModel.scheduled_start < end]
+    per_session = db.query(
+        CheckIn.session_id.label("session_id"), func.count(CheckIn.id).label("recorded"),
+    ).join(SessionModel, SessionModel.id == CheckIn.session_id).filter(
+        *held_filters,
+    ).group_by(CheckIn.session_id).subquery()
+    held = db.query(
+        SessionModel.course_id.label("course_id"),
+        func.count(SessionModel.id).label("sessions"),
+        _count_if(SessionModel.status == "active").label("active"),
+        func.coalesce(func.sum(per_session.c.recorded), 0).label("recorded"),
+        func.coalesce(func.sum(SessionAttendanceSnapshot.expected_attendances), 0).label("expected"),
+        _count_if(SessionAttendanceSnapshot.session_id.is_(None)).label("missing"),
+        _count_if(SessionAttendanceSnapshot.historical_enrollment_limited.is_(True)).label("limited"),
+    ).outerjoin(per_session, per_session.c.session_id == SessionModel.id).outerjoin(
+        SessionAttendanceSnapshot, SessionAttendanceSnapshot.session_id == SessionModel.id,
+    ).filter(
+        *held_filters,
+    ).group_by(SessionModel.course_id).subquery()
+    rows = db.query(Course.id, Course.code, Course.name, held.c.sessions,
+                    held.c.active, held.c.recorded, held.c.expected, held.c.missing, held.c.limited).outerjoin(
+        held, held.c.course_id == Course.id
+    ).filter(*scope).order_by(Course.code, Course.id).all()
+    today = _local_date(datetime.now(timezone.utc))
+    return {
+        "timezone": _effective_timezone_name(),
+        "chart_days": [{"date": day.isoformat(), "count": int(counts[i]) if day <= today else None,
+                        "partial": day == today} for i, day in enumerate(calendar_days)],
+        "chart_courses": [{
+            "course_id": course_id, "course_code": code, "course_name": name,
+            "total_sessions": int(sessions or 0), "active_sessions": int(active or 0),
+            "recorded_checkins": int(recorded or 0),
+            "expected_attendances": None if missing else int(expected or 0),
+            "historical_enrollment_limited": bool(limited or missing),
+            "denominator_basis": "saved_enrollment_at_session_start",
+        } for course_id, code, name, sessions, active, recorded, expected, missing, limited in rows],
+    }
+
+
 @router.get("/stats/overview")
 def stats_overview(
     course_id: str | None = None,
     days: int = 7,
+    include_course_participation: bool = False,
+    start_date: date | None = None,
+    end_date: date | None = None,
     current_user: User = Depends(require_roles("instructor", "admin", read_only=True)),
     db: Session = Depends(get_read_db),
 ):
@@ -182,11 +240,18 @@ def stats_overview(
 
     scope = _course_scope(current_user, course_id)
 
-    now = datetime.utcnow()
-    today_start = datetime(now.year, now.month, now.day)
+    if include_course_participation:
+        if current_user.role != "admin":
+            raise _forbidden()
+        if start_date is None or end_date is None:
+            raise HTTPException(400, "Chart start_date and exclusive end_date are required")
+        return _overview_charts(db, start_date, end_date, scope)
+
+    now = datetime.now(timezone.utc)
+    today_start, today_end = _local_day_bounds(_local_date(now))
     week_start = today_start - timedelta(days=6)
     trend_start = today_start - timedelta(days=days - 1)
-    trend_end = today_start + timedelta(days=1)
+    trend_end = today_end
 
     held = SessionModel.status.in_(HELD_STATUSES)
 
@@ -258,15 +323,19 @@ def stats_overview(
         checkins_today,
         checkins_week,
         high_risk_today,
+        flagged_count,
+        appealed_count,
     ) = (
         db.query(
             func.count(CheckIn.id),
             _count_if(CheckIn.status == "approved"),
             _count_if(CheckIn.status.in_(NEEDS_REVIEW_STATUSES)),
             func.avg(CheckIn.risk_score),
-            _count_if(CheckIn.checked_in_at >= today_start),
+            _count_if(and_(CheckIn.checked_in_at >= today_start, CheckIn.checked_in_at < today_end)),
             _count_if(CheckIn.checked_in_at >= week_start),
-            _count_if(and_(CheckIn.checked_in_at >= today_start, CheckIn.risk_score >= HIGH_RISK)),
+            _count_if(and_(CheckIn.checked_in_at >= today_start, CheckIn.checked_in_at < today_end, CheckIn.risk_score >= HIGH_RISK)),
+            _count_if(CheckIn.status == "flagged"),
+            _count_if(CheckIn.status == "appealed"),
         )
         .select_from(CheckIn)
         .join(SessionModel, SessionModel.id == CheckIn.session_id)
@@ -327,9 +396,13 @@ def stats_overview(
         "average_attendance_rate": _rate(int(attended_total), int(possible_total)),
         "flagged_pending": flagged_pending,
         "flagged_pending_review": flagged_pending,
+        "flagged_count": int(flagged_count),
+        "appealed_count": int(appealed_count),
         "approval_rate": _rate(int(approved), int(checkins_total)),
         "average_risk_score": _avg(average_risk) or 0.0,
         "high_risk_checkins_today": int(high_risk_today),
+        "high_risk_threshold": HIGH_RISK,
+        "timezone": _effective_timezone_name(),
         "trends": {
             "checkins_by_day": [
                 {"date": key, "count": checkins_by_day.get(key, 0)} for key in day_keys
@@ -838,10 +911,11 @@ def stats_course(
             SessionModel.scheduled_start,
             func.count(CheckIn.id),
             _count_if(CheckIn.status == "flagged"),
+            SessionModel.status,
         )
         .outerjoin(CheckIn, CheckIn.session_id == SessionModel.id)
         .filter(*session_filters)
-        .group_by(SessionModel.id, SessionModel.name, SessionModel.scheduled_start)
+        .group_by(SessionModel.id, SessionModel.name, SessionModel.scheduled_start, SessionModel.status)
         .order_by(SessionModel.scheduled_start)
         .all()
     )
@@ -873,8 +947,8 @@ def stats_course(
     )
 
     total_sessions = len(session_rows)
-    total_checkins = sum(int(n) for _, _, _, n, _ in session_rows)
-    flagged_checkins = sum(int(n) for _, _, _, _, n in session_rows)
+    total_checkins = sum(int(row[3]) for row in session_rows)
+    flagged_checkins = sum(int(row[4]) for row in session_rows)
     overall_rate = _rate(total_checkins, total_enrolled * total_sessions)
 
     student_attendance = []
@@ -903,6 +977,10 @@ def stats_course(
         "course_name": course.name,
         "total_sessions": total_sessions,
         "total_enrolled": total_enrolled,
+        "recorded_checkins": total_checkins,
+        "expected_attendances": total_enrolled * total_sessions,
+        "active_sessions": sum(row[5] == "active" for row in session_rows),
+        "historical_enrollment_limited": True,
         "overall_attendance_rate": overall_rate,
         "average_attendance_rate": overall_rate,
         "flagged_checkins": flagged_checkins,
@@ -913,8 +991,9 @@ def stats_course(
                 "date": scheduled_start.date().isoformat(),
                 "attendance_rate": _rate(int(n), total_enrolled),
                 "checked_in": int(n),
+                "status": session_status,
             }
-            for session_id, name, scheduled_start, n, _ in session_rows
+            for session_id, name, scheduled_start, n, _, session_status in session_rows
         ],
         "student_attendance": student_attendance,
         "low_attendance_alerts": low_attendance_alerts,
@@ -1140,6 +1219,7 @@ class MetricsStore:
                 "endpoint": name,
                 "p95_ms": round(p95, 1),
                 "request_count": count,
+                "error_count": errors,
                 "success_rate": round((count - errors) / count * 100, 2),
             })
         return items, total

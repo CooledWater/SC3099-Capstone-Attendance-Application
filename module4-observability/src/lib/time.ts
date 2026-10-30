@@ -55,11 +55,12 @@ export function toSingaporeDateTimeLocal(value: string): string {
 export function formatSingaporeDateTime(
   value: string,
   options: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" },
+  locale?: string,
 ): string {
   const date = parseApiDateTime(value);
   if (Number.isNaN(date.getTime())) return "Invalid time";
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     ...options,
     timeZone: SINGAPORE_TIME_ZONE,
   }).format(date);

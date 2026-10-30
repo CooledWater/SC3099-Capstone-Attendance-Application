@@ -18,7 +18,7 @@ function elements(node) {
   return [node, ...elements(node.props?.children)];
 }
 
-function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: ["low", "medium", "high"].map(key => ({ key, count: 0 })) }) {
+function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: ["low", "medium", "high"].map(key => ({ key, count: 0 })) }, extraProps = {}) {
   const values = [];
   let cursor = 0, query, courseQuery, requestOptions;
   const context = { exports: {}, require(name) {
@@ -55,6 +55,7 @@ function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: 
     return context.exports.InstructorOverview({
       courses: [{ id: "course", code: "CS", name: "Course" }], coursesLoading: false,
       selectedCourseId: "course", onCourseChange() {}, onOpenCheckIns() {}, onOpenSessions() {}, onOpenStudent() {},
+      ...extraProps,
     });
   };
   return { render, range: () => Array.from(query.queryKey).slice(-2),
@@ -73,6 +74,15 @@ function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: 
     },
   };
 }
+
+test("admin course drilldown keeps its reporting week and hides monthly controls", () => {
+  const h = harness({}, undefined, { reportingWeek: "2026-10-26" });
+  const tree = h.render();
+  assert.deepEqual(h.range(), ["2026-10-26", "2026-11-02"]);
+  assert.equal(elements(tree).some(node => node.type === "button" && node.props.children === "Monthly"), false);
+  assert.equal(elements(tree).some(node => node.type === "input" && ["date", "month"].includes(node.props.type)), false);
+  assert.match(h.courseRequest(undefined), /end_date=2026-11-01T23%3A59%3A59.999999%2B08%3A00/);
+});
 
 test("risk histogram renders API bands directly without numerical bins", () => {
   const h = harness({}, { scored_count: 12, bands: [

@@ -6,9 +6,6 @@ import { toast } from "sonner";
 import type { CourseRow } from "@/lib/attendance";
 import {
   bulkEnroll,
-  fetchInvitations,
-  resendInvitation,
-  type InvitationResult,
   enrollStudent,
   fetchRoster,
   parseEnrollmentEmails,
@@ -90,37 +87,9 @@ export function EnrollmentsPanel({
         student.student_name.toLowerCase().includes(term) ||
         student.student_email.toLowerCase().includes(term)),
   );
-  const invitations = useQuery({
-    queryKey: ["enrollment-invitations", courseId],
-    queryFn: () => fetchInvitations(courseId),
-    enabled: Boolean(courseId && canManage),
-    refetchInterval: (query) =>
-      query.state.data?.items?.some((item) =>
-        ["queued", "sending"].includes(item.invitation_status),
-      )
-        ? 3000
-        : 30000,
-  });
-  const invitationItems = invitations.data?.items ?? [];
-  const [resending, setResending] = useState("");
-  const resendLock = useRef(false);
-  const [invitationError, setInvitationError] = useState("");
-  async function resend(email: string) {
-    if (resendLock.current) return;
-    resendLock.current = true;
-    setResending(email);
-    try {
-      await resendInvitation(courseId, email);
-      await invitations.refetch();
-    } finally {
-      resendLock.current = false;
-      setResending("");
-    }
-  }
   async function refresh() {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["enrollment-roster", courseId] }),
-      qc.invalidateQueries({ queryKey: ["enrollment-invitations", courseId] }),
       qc.invalidateQueries({ queryKey: ["course-enrollment-count", courseId] }),
       qc.invalidateQueries({ queryKey: ["sessions"] }),
       qc.invalidateQueries({ queryKey: ["stats"] }),
@@ -207,11 +176,6 @@ export function EnrollmentsPanel({
           <p className="text-xs text-muted-foreground">Total enrollment records</p>
         </div>
       </div>
-      {invitationError && (
-        <p role="alert" className="text-sm text-destructive">
-          {invitationError}
-        </p>
-      )}
       <div className="rounded-2xl border border-border bg-glass p-5">
         <div className="flex flex-wrap justify-between gap-2">
           <h3 className="font-semibold">Student roster</h3>
@@ -333,41 +297,6 @@ export function EnrollmentsPanel({
                           ) : (
                             <span className="text-xs text-muted-foreground">Already removed</span>
                           )}
-                          {student.is_active &&
-                            invitationItems.some(
-                              (item) =>
-                                item.email === student.student_email && item.invitation_pending,
-                            ) && (
-                              <div className="mt-2 text-xs">
-                                <p className="text-muted-foreground">
-                                  Invitation:{" "}
-                                  {
-                                    invitationItems.find(
-                                      (item) => item.email === student.student_email,
-                                    )?.invitation_status
-                                  }
-                                </p>
-                                <button
-                                  type="button"
-                                  className="mt-1 text-primary underline"
-                                  disabled={Boolean(resending)}
-                                  onClick={() => {
-                                    setInvitationError("");
-                                    void resend(student.student_email).catch((failure) =>
-                                      setInvitationError(
-                                        failure instanceof Error
-                                          ? failure.message
-                                          : "Could not resend invitation.",
-                                      ),
-                                    );
-                                  }}
-                                >
-                                  {resending === student.student_email
-                                    ? "Queuing..."
-                                    : "Resend invitation"}
-                                </button>
-                              </div>
-                            )}
                         </td>
                       )}
                     </tr>
@@ -395,9 +324,6 @@ export function EnrollmentsPanel({
           open={open}
           setOpen={setOpen}
           refresh={refresh}
-          invitations={invitationItems}
-          onResend={resend}
-          resending={resending}
         />
       )}
       <AlertDialog
@@ -440,17 +366,11 @@ function AddStudents({
   open,
   setOpen,
   refresh,
-  invitations,
-  onResend,
-  resending,
 }: {
   course: CourseRow;
   open: boolean;
   setOpen: (value: boolean) => void;
   refresh: () => Promise<void>;
-  invitations: InvitationResult[];
-  onResend: (email: string) => Promise<void>;
-  resending: string;
 }) {
   const [mode, setMode] = useState("single");
   const [studentEmail, setStudentEmail] = useState("");
@@ -461,6 +381,9 @@ function AddStudents({
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [result, setResult] = useState<BulkResult | null>(null);
+  useEffect(() => {
+    if (!open) setResult(null);
+  }, [open]);
   const parsed = parseEnrollmentEmails(text);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -579,10 +502,10 @@ function AddStudents({
                   onChange={(event) => setCreateAccounts(event.target.checked)}
                 />
                 <span>
-                  Create accounts and email invitations
+                  Create student accounts
                   <span className="block text-xs text-muted-foreground">
-                    New students receive a single-use link to set their password. Leave unchecked to
-                    enroll existing accounts only.
+                    Initial passwords appear in the results for you to share with new students.
+                    Leave unchecked to enroll existing accounts only.
                   </span>
                 </span>
               </label>
@@ -600,46 +523,16 @@ function AddStudents({
           )}
           {mode === "bulk" && result && (
             <div className="rounded-lg border border-border p-3 text-sm">
-              <p>
-                {result.enrolled} enrolled · {result.created} accounts created ·{" "}
-                {result.already_enrolled} already enrolled · {result.not_found} unresolved
-              </p>
-              <ul className="mt-2 max-h-40 overflow-y-auto">
+              <ul className="max-h-40 overflow-y-auto">
                 {result.details.map((row) => (
                   <li key={row.email} className="break-all py-1">
                     {row.email}: {row.status}
                     {row.error ? ` - ${row.error}` : ""}
-                    {(invitations.find((item) => item.email === row.email)?.invitation_status ??
-                      row.invitation_status) && (
-                      <span className="ml-2 text-muted-foreground">
-                        Invitation:{" "}
-                        {invitations.find((item) => item.email === row.email)?.invitation_status ??
-                          row.invitation_status}
-                      </span>
-                    )}
-                    {(invitations.find((item) => item.email === row.email)?.invitation_pending ??
-                      row.invitation_pending) && (
-                      <button
-                        type="button"
-                        className="ml-2 text-primary underline"
-                        disabled={Boolean(resending)}
-                        onClick={() =>
-                          void onResend(row.email).catch((failure) =>
-                            setError(
-                              failure instanceof Error
-                                ? failure.message
-                                : "Could not resend invitation.",
-                            ),
-                          )
-                        }
-                      >
-                        {resending === row.email ? "Queuing..." : "Resend invitation"}
-                      </button>
-                    )}
-                    {invitations.find((item) => item.email === row.email)?.invitation_error && (
-                      <span className="block text-destructive">
-                        {invitations.find((item) => item.email === row.email)?.invitation_error}
-                      </span>
+                    {row.initial_password && (
+                      <div className="mt-2 rounded border border-border bg-background p-3">
+                        <p className="text-xs text-muted-foreground">Initial password ? share with this student before closing:</p>
+                        <code className="mt-1 block select-all break-all font-mono">{row.initial_password}</code>
+                      </div>
                     )}
                   </li>
                 ))}

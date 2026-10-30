@@ -23,7 +23,7 @@ type CalendarState = "upcoming" | "active" | "attended" | "missed" | "awaiting" 
 
 type CalendarItem = {
   session: SessionRow;
-  verification?: Verification;
+  verification?: Verification | undefined;
   state: CalendarState;
   label: string;
 };
@@ -61,9 +61,8 @@ function clock(value: string) {
 }
 
 function rangeLabel(week: number) {
-  const days = Array.from({ length: 5 }, (_, index) => week + index * DAY);
-  const start = formatSingaporeDateTime(new Date(days[0]).toISOString(), { day: "numeric", month: "short" });
-  const end = formatSingaporeDateTime(new Date(days[4]).toISOString(), { day: "numeric", month: "short", year: "numeric" });
+  const start = formatSingaporeDateTime(new Date(week).toISOString(), { day: "numeric", month: "short" });
+  const end = formatSingaporeDateTime(new Date(week + 4 * DAY).toISOString(), { day: "numeric", month: "short", year: "numeric" });
   return `${start} – ${end}`;
 }
 

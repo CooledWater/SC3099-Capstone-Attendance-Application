@@ -28,6 +28,9 @@ export function KpiCard({
   tone,
   bars,
   progress,
+  scope,
+  onClick,
+  className = "lg:col-span-3",
 }: {
   label: string;
   value: string;
@@ -35,9 +38,27 @@ export function KpiCard({
   tone: Tone;
   bars?: number[];
   progress?: number;
+  scope?: string;
+  onClick?: () => void;
+  className?: string;
 }) {
   return (
-    <div className="relative animate-rise overflow-hidden rounded-2xl border border-border bg-glass p-5 lg:col-span-3">
+    <div
+      className={`relative animate-rise overflow-hidden rounded-2xl border border-border bg-glass p-5 ${className} ${onClick ? "cursor-pointer text-left transition hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" : ""}`}
+      onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+    >
       <div
         className={`absolute right-3 top-3 size-16 -translate-y-6 animate-floaty rounded-full blur-2xl ${toneGlow[tone]}`}
       />
@@ -64,6 +85,11 @@ export function KpiCard({
             style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
           />
         </div>
+      )}
+      {scope && (
+        <p className={`${progress !== undefined ? "mt-3" : "mt-4"} text-xs ${toneText[tone]}`}>
+          {scope} →
+        </p>
       )}
     </div>
   );

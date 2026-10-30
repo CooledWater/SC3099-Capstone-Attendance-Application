@@ -38,6 +38,8 @@ def synchronize_sessions(db, now=None):
                 details={"automatic": True, "status": {"from": previous, "to": target}},
             )
         changed += len(ids)
+    from app.attendance_snapshots import capture_attendance_snapshots
+    capture_attendance_snapshots(db, now)
     # Even zero-row UPDATEs open a transaction. End it before handlers run.
     db.commit()
     if changed:
@@ -70,20 +72,17 @@ async def session_clock():
 async def session_lifespan(app):
     # Reconcile before serving requests, then continue independently of clients.
     await run_in_threadpool(tick_sessions)
-    from app.invitations import invitation_clock
     from app.push_notifications import push_clock
     from app.data_deletion import deletion_clock
     task = asyncio.create_task(session_clock())
-    email_task = asyncio.create_task(invitation_clock())
     push_task = asyncio.create_task(push_clock())
     deletion_task = asyncio.create_task(deletion_clock())
     try:
         yield
     finally:
         task.cancel()
-        email_task.cancel()
         push_task.cancel()
         deletion_task.cancel()
-        for pending_task in (task, email_task, push_task, deletion_task):
+        for pending_task in (task, push_task, deletion_task):
             with suppress(asyncio.CancelledError):
                 await pending_task

@@ -161,14 +161,14 @@ export function AttendanceTable({ rows, loading }: { rows: CheckInRow[]; loading
                   </td>
                   <td
                     className={`px-5 py-3 text-right tabular-nums ${
-                      r.risk > 70
+                      r.risk > 0.7
                         ? "text-destructive"
-                        : r.risk > 40
+                        : r.risk > 0.4
                           ? "text-warning"
                           : "text-muted-foreground"
                     }`}
                   >
-                    {r.risk}
+                    {r.risk.toFixed(2)}
                   </td>
                 </tr>
               ))}
@@ -250,6 +250,8 @@ export function AttendanceRoster({
   exporting,
   canExport = true,
   checkInsOnly = false,
+  title,
+  rowContext,
 }: {
   rows: RosterEntry[];
   loading: boolean;
@@ -262,6 +264,8 @@ export function AttendanceRoster({
   exporting: boolean;
   canExport?: boolean;
   checkInsOnly?: boolean;
+  title?: string;
+  rowContext?: (entry: RosterEntry) => string;
 }) {
   const [search, setSearch] = useState("");
   const [attendance, setAttendance] = useState("all");
@@ -310,11 +314,11 @@ export function AttendanceRoster({
   return (
     <section
       className="rounded-2xl border border-border bg-glass p-4 sm:p-5"
-      aria-label={checkInsOnly ? "Session check-ins" : "Attendance roster"}
+      aria-label={title ?? (checkInsOnly ? "Session check-ins" : "Attendance roster")}
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-display text-sm font-semibold text-card-foreground">
-          {checkInsOnly ? "Session check-ins" : "Attendance roster"}
+          {title ?? (checkInsOnly ? "Session check-ins" : "Attendance roster")}
         </h3>
         {canExport && (
           <button
@@ -322,7 +326,9 @@ export function AttendanceRoster({
             className="rounded-full bg-gradient-to-r from-violet-500 to-emerald-400 px-5 py-2 text-sm font-semibold text-white transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
             disabled={exporting}
             onClick={onExport}
-            aria-label="Export CSV for selected session"
+            aria-label={
+              rowContext ? "Export filtered check-ins CSV" : "Export CSV for selected session"
+            }
           >
             {exporting ? "Exporting…" : "Export CSV"}
           </button>
@@ -472,7 +478,7 @@ export function AttendanceRoster({
                 [
                   ["student_name", "Student"],
                   ["attendance", "Attendance"],
-                  ["checked_in_at", "Check-in"],
+                  ["checked_in_at", "Check-in (SGT)"],
                   ["status", "Verification"],
                   ["risk_score", "Risk"],
                 ] as const
@@ -497,6 +503,11 @@ export function AttendanceRoster({
                     </button>
                   </th>
                 ))}
+              {rowContext && (
+                <th scope="col" className="px-2 py-4 font-normal">
+                  Course / Session
+                </th>
+              )}
               <th scope="col" className="px-2 py-4 font-normal">
                 Actions
               </th>
@@ -506,7 +517,7 @@ export function AttendanceRoster({
             {(loading || error || !filtered.length) && (
               <tr>
                 <td
-                  colSpan={checkInsOnly ? 5 : 6}
+                  colSpan={(checkInsOnly ? 5 : 6) + Number(!!rowContext)}
                   className="px-2 py-8 text-muted-foreground"
                   role={error ? "alert" : "status"}
                 >
@@ -520,7 +531,10 @@ export function AttendanceRoster({
             {!loading &&
               !error &&
               filtered.slice(start, start + pageSize).map((row) => (
-                <tr key={row.student_id} className="hover:bg-secondary/20">
+                <tr
+                  key={rowContext ? (row.checkin_id ?? row.student_id) : row.student_id}
+                  className="hover:bg-secondary/20"
+                >
                   <td className={`px-2 py-4 ${checkInsOnly ? "sticky left-0 z-10 bg-card" : ""}`}>
                     <span className="font-medium text-foreground">{row.student_name}</span>
                     <span className="mt-1 block text-muted-foreground">{row.student_email}</span>
@@ -530,17 +544,30 @@ export function AttendanceRoster({
                   )}
                   <td className="px-2 py-4 tabular-nums">
                     {row.checked_in_at
-                      ? formatSingaporeDateTime(row.checked_in_at, {
-                          hour: "numeric",
-                          minute: "2-digit",
-                          hour12: true,
-                        })
+                      ? formatSingaporeDateTime(
+                          row.checked_in_at,
+                          {
+                            day: "numeric",
+                            month: "short",
+                            year: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                            hour12: true,
+                          },
+                          "en-GB",
+                        )
+                          .replace(",", "")
+                          .replace(":", ".")
+                          .replace(/\s+(am|pm)$/i, (_, period: string) => period.toUpperCase())
                       : "—"}
                   </td>
                   <td className="px-2 py-4">
                     <VerificationBadge status={row.status} sessionOverview={checkInsOnly} />
                   </td>
                   <td className="px-2 py-4 tabular-nums">{row.risk_score ?? "—"}</td>
+                  {rowContext && (
+                    <td className="px-2 py-4 text-muted-foreground">{rowContext(row)}</td>
+                  )}
                   <td className="px-2 py-4">
                     {row.checkin_id ? (
                       <button

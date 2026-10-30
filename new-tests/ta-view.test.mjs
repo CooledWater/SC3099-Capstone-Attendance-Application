@@ -10,7 +10,8 @@ function load(file, resolve) {
   const code = ts.transpileModule(readFileSync(new URL(`../module4-observability/src/${file}`, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
-  const context = { exports: {}, require: name => name === "react/jsx-runtime" ? jsx : resolve(name) };
+  const context = { exports: {}, require: name => name === "react/jsx-runtime" ? jsx
+    : name.endsWith("/session-permissions") ? load("lib/session-permissions.ts", () => ({})) : resolve(name) };
   vm.runInNewContext(code, context); return context.exports;
 }
 function elements(node) {

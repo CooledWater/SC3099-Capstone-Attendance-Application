@@ -70,6 +70,14 @@ class Browser:
             body = {"access_token": "test-token"}
         elif path.endswith("/users/me"):
             body = dict(id="teacher", full_name="Test Teacher", role="instructor", email="teacher@example.edu")
+        elif path.endswith("/courses/my-courses"):
+            courses = [dict(id="course-a", code="SC4000", name="Machine Learning", instructor_id="teacher"),
+                       dict(id="course-b", code="SC3099", name="Capstone", instructor_id="teacher")]
+            body = {"items": [] if self.no_courses else courses, "total": 0 if self.no_courses else 2}
+        elif "/stats/courses/" in path:
+            # These browser cases cover enrollment/export, not analytics. Return
+            # an explicit error rather than an invalid successful stats body.
+            code, body = 503, {"detail": "Analytics unavailable in this fixture"}
         elif path.endswith("/courses/"):
             courses = [dict(id="course-a", code="SC4000", name="Machine Learning", instructor_id="teacher")]
             courses += [dict(id=f"other-{i}", code=f"OTHER{i}", name="Other", instructor_id="other") for i in range(99)]
@@ -147,7 +155,7 @@ def run_dashboard_checks():
             try:
                 for _ in range(100):
                     try:
-                        if httpx.get(f"http://127.0.0.1:{web_port}").status_code == 200:
+                        if httpx.get(f"http://127.0.0.1:{web_port}/dashboard/").status_code == 200:
                             break
                     except httpx.TransportError:
                         pass
@@ -165,7 +173,7 @@ def run_dashboard_checks():
                 with connect(page["webSocketDebuggerUrl"], max_size=8_000_000) as socket:
                     ui = Browser(socket)
                     ui.command("Fetch.enable", {"patterns": [{"urlPattern": "*api/v1/*"}]})
-                    ui.command("Page.navigate", {"url": f"http://127.0.0.1:{web_port}"})
+                    ui.command("Page.navigate", {"url": f"http://127.0.0.1:{web_port}/dashboard/"})
                     ui.wait("document.body.innerText.includes('Enrollments')")
                     ui.click("Enrollments")
                     ui.wait("document.body.innerText.includes('Alice Tan')")
@@ -213,7 +221,7 @@ def run_dashboard_checks():
                     ui.fill("textarea", "grace@example.edu,missing@example.edu\ngrace@example.edu")
                     ui.wait("document.body.innerText.includes('2 unique addresses')")
                     ui.click("Enroll students")
-                    ui.wait("document.body.innerText.includes('1 unresolved')")
+                    ui.wait("document.body.innerText.includes('missing@example.edu: not_found')")
                     assert ui.evaluate("document.querySelector('textarea').value") == "missing@example.edu"
                     ui.click("Close")
                     ui.wait("document.querySelector('[role=dialog]') === null")

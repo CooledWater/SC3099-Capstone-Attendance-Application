@@ -6,12 +6,19 @@ import { AttendanceTable, type CheckInRow } from "./AttendanceTable";
 import { InstructorCheckIns } from "./InstructorCheckIns";
 import type { CourseRow } from "@/lib/attendance";
 
+export type CheckInFilter = {
+  statuses?: CheckInRow["status"][];
+  today?: boolean;
+  minRisk?: number;
+};
+
 export function CheckInsPanel({
   rows,
   loading,
   courseIds,
   sessionRows,
   instructor,
+  initialFilter,
 }: {
   rows: CheckInRow[];
   loading: boolean;
@@ -27,6 +34,7 @@ export function CheckInsPanel({
     reviewOnly?: boolean;
     canExport?: boolean;
   };
+  initialFilter?: CheckInFilter;
 }) {
   const [sessionId, setSessionId] = useState("all");
   const sessions = useQuery({
@@ -40,9 +48,33 @@ export function CheckInsPanel({
     return courseIds ? all.filter((s) => courseIds.has(s.course_id)) : all;
   }, [sessions.data, sessionRows, courseIds]);
 
-  const visible = sessionId === "all" ? rows : rows.filter((r) => r.sessionId === sessionId);
+  const visible = useMemo(() => {
+    const sessionVisible =
+      sessionId === "all" ? rows : rows.filter((r) => r.sessionId === sessionId);
+    if (!initialFilter) return sessionVisible;
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Singapore",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    return sessionVisible.filter((row) => {
+      const statusMatches =
+        !initialFilter.statuses?.length || initialFilter.statuses.includes(row.status);
+      const dateMatches =
+        !initialFilter.today ||
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Singapore",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(new Date(row.time)) === today;
+      const riskMatches = initialFilter.minRisk == null || row.risk >= initialFilter.minRisk;
+      return statusMatches && dateMatches && riskMatches;
+    });
+  }, [initialFilter, rows, sessionId]);
 
-  if (instructor) return <InstructorCheckIns {...instructor} />;
+  if (instructor) return <InstructorCheckIns {...instructor} initialFilter={initialFilter ?? {}} />;
 
   return (
     <div className="mt-4">

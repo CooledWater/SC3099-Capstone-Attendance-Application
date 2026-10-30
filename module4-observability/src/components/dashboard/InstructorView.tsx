@@ -51,12 +51,15 @@ export function buildCourseStats(
       session.courses?.code ?? "—",
       session.courses?.name ?? "Course",
     );
+    if (session.status !== "active" && session.status !== "closed") return;
     course.sessions += 1;
-    course.expected += session.expected_attendance ?? 0;
+    course.expected = course.expected === null || session.saved_expected_attendance == null
+      ? null : course.expected + session.saved_expected_attendance;
   });
   checkIns.forEach((checkIn) => {
     const session = sessions.find((item) => item.id === checkIn.session_id);
     if (!session) return;
+    if (session.status !== "active" && session.status !== "closed") return;
     const course = ensure(
       session.course_id,
       session.courses?.code ?? "—",
@@ -69,7 +72,7 @@ export function buildCourseStats(
   return [...map.values()]
     .map((course) => ({
       ...course,
-      avgRisk: course.checkIns ? Math.round(course.riskSum / course.checkIns) : 0,
+      avgRisk: course.checkIns ? Number((course.riskSum / course.checkIns).toFixed(2)) : 0,
     }))
     .sort((a, b) => a.code.localeCompare(b.code));
 }

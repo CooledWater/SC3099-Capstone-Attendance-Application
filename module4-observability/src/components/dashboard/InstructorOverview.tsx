@@ -243,6 +243,7 @@ export function InstructorOverview({
   onCourseChange,
   onOpenCheckIns,
   onOpenSessions,
+  reportingWeek,
 }: {
   courses: CourseRow[];
   coursesLoading: boolean;
@@ -250,12 +251,19 @@ export function InstructorOverview({
   onCourseChange: (id: string) => void;
   onOpenCheckIns: (reviewOnly?: boolean, sessionId?: string) => void;
   onOpenSessions: () => void;
+  reportingWeek?: string;
 }) {
-  const [mode, setMode] = useState<Mode>("monthly");
+  const [mode, setMode] = useState<Mode>(reportingWeek ? "weekly" : "monthly");
   const [period, setPeriod] = useState(monthStart);
   const [studentSearch, setStudentSearch] = useState("");
   const [studentPage, setStudentPage] = useState(0);
-  const range = useMemo(() => rangeFor(mode, period), [mode, period]);
+  const range = useMemo(
+    () =>
+      reportingWeek
+        ? { start: reportingWeek, end: addDays(reportingWeek, 7) }
+        : rangeFor(mode, period),
+    [mode, period, reportingWeek],
+  );
   // Course statistics use an inclusive end, down to database microsecond precision.
   const inclusiveEnd = `${addDays(range.end, -1)}T23:59:59.999999+08:00`;
   const courseStats = useQuery({
@@ -380,45 +388,49 @@ export function InstructorOverview({
             ))}
           </select>
         </label>
-        <div
-          className="flex rounded-lg border border-border p-1"
-          role="group"
-          aria-label="Reporting mode"
-        >
-          <button
-            type="button"
-            className={`rounded-md px-3 py-2 text-xs ${mode === "weekly" ? "bg-primary/20 text-primary" : "text-muted-foreground"}`}
-            onClick={() => {
-              setMode("weekly");
-              setPeriod(range.start);
-            }}
-          >
-            Weekly
-          </button>
-          <button
-            type="button"
-            className={`rounded-md px-3 py-2 text-xs ${mode === "monthly" ? "bg-primary/20 text-primary" : "text-muted-foreground"}`}
-            onClick={() => {
-              setMode("monthly");
-              setPeriod(monthStart());
-            }}
-          >
-            Monthly
-          </button>
-        </div>
-        <label className="grid gap-1 text-xs text-muted-foreground">
-          {mode === "weekly" ? "Week starting" : "Month"}
-          <input
-            type={mode === "weekly" ? "date" : "month"}
-            value={period}
-            onChange={(event) => {
-              if (event.target.value && event.target.validity.valid) {
-                setPeriod(event.target.value);
-              }
-            }}
-            className="rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm text-foreground focus-visible:ring-2 focus-visible:ring-primary"
-          />
-        </label>
+        {!reportingWeek && (
+          <>
+            <div
+              className="flex rounded-lg border border-border p-1"
+              role="group"
+              aria-label="Reporting mode"
+            >
+              <button
+                type="button"
+                className={`rounded-md px-3 py-2 text-xs ${mode === "weekly" ? "bg-primary/20 text-primary" : "text-muted-foreground"}`}
+                onClick={() => {
+                  setMode("weekly");
+                  setPeriod(range.start);
+                }}
+              >
+                Weekly
+              </button>
+              <button
+                type="button"
+                className={`rounded-md px-3 py-2 text-xs ${mode === "monthly" ? "bg-primary/20 text-primary" : "text-muted-foreground"}`}
+                onClick={() => {
+                  setMode("monthly");
+                  setPeriod(monthStart());
+                }}
+              >
+                Monthly
+              </button>
+            </div>
+            <label className="grid gap-1 text-xs text-muted-foreground">
+              {mode === "weekly" ? "Week starting" : "Month"}
+              <input
+                type={mode === "weekly" ? "date" : "month"}
+                value={period}
+                onChange={(event) => {
+                  if (event.target.value && event.target.validity.valid) {
+                    setPeriod(event.target.value);
+                  }
+                }}
+                className="rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+              />
+            </label>
+          </>
+        )}
         <p className="ml-auto text-xs text-muted-foreground">
           {range.start} – {addDays(range.end, -1)}
         </p>
@@ -646,7 +658,7 @@ export function InstructorOverview({
                       minute: "2-digit",
                       hour12: true,
                     })}{" "}
-                    SGT
+                    {!reportingWeek && "SGT"}
                   </p>
                 </button>
               ))

@@ -1451,11 +1451,29 @@ enrollments are reactivated. Non-student or disabled accounts are reported as
 as `not_found` unless `create_accounts=true`. Successful entries and audit rows
 commit together; concurrent unique-constraint conflicts roll back the batch
 and return 409, so clients can retry. Single enrollment conflicts return 400.
-New accounts receive a queued email invitation. Accounts and enrollments commit
-before delivery; SMTP failure does not undo enrollment. New-account results add
-`invitation_status: "queued"` and `invitation_pending: true`. Pending accounts
-cannot log in until password setup completes. Existing usable accounts are not
-sent setup invitations and their passwords cannot be reset through this flow.
+When `create_accounts=true`, each newly created student receives a distinct,
+cryptographically generated 24-character URL-safe initial password. Only its
+bcrypt hash is stored. The successful response includes `initial_password` in
+that student's detail entry, for the authorized enrolling instructor/admin to
+share with the student. For example:
+
+```json
+{
+  "email": "newstudent@example.edu",
+  "status": "created",
+  "initial_password": "ExampleInitialPassword01"
+}
+```
+
+The response uses `Cache-Control: no-store`. Plaintext initial passwords are
+never written to audit details or exposed by user/roster read endpoints. They
+are returned only when the account is first created, not on repeated enrollment
+requests. Existing accounts and reactivated enrollments retain their passwords
+and never return an `initial_password`. A failed transaction rolls back account
+creation and enrollment and returns no credentials.
+
+New students can sign in immediately through `POST /auth/login` using this
+initial password
 
 #### DELETE /enrollments/{enrollment_id}
 Deactivate an enrollment (`is_active=false`, with `dropped_at` recorded). Attendance history is retained. Re-enrollment reactivates the existing record. **Requires auth (instructor for course, or admin).**
@@ -1464,38 +1482,15 @@ Deactivate an enrollment (`is_active=false`, with `dropped_at` recorded). Attend
 
 ---
 
-### Enrollment invitation setup (Added by ishita)
+### Enrollment account access without email invitations (Updated 31 Oct 2026)
 
-- `GET /enrollments/course/{course_id}/invitations`: owning instructor/admin;
-  returns `items` containing email, invitation_status, invitation_pending and
-  invitation_error (nullable). States: queued, sending, sent, failed, not_needed.
-- `POST /enrollments/invitations/resend`: owning instructor/admin; body
-  `{ "course_id": "uuid", "email": "student@example.edu" }`. Requires an
-  active enrollment and pending account setup. Rotates the link and queues
-  delivery; returns the invitation status. Returns 403 for an unrelated course,
-  400 for no pending setup, and 429 with Retry-After for resends within 60 seconds.
-- `POST /auth/invitations/validate`: public; body `{ "token": "..." }`;
-  returns `{ "email": "..." }` for a valid invitation, otherwise 400.
-- `POST /auth/invitations/complete`: public; body `{ "token": "...", "password": "..." }`;
-  accepts 8-72 characters and at most 72 UTF-8 bytes. Atomically consumes the
-  token and sets a bcrypt password. Returns email and a success message, 400
-  for expired/used/tampered links, or sanitized 422 for invalid input. The
-  frontend then uses the existing login endpoint and cookie flow.
-- `POST /auth/invitations/request`: public; body `{ "email": "..." }`;
-  returns the same generic message for unknown, completed, disabled and pending
-  accounts. Only eligible pending accounts receive another invitation. Requests
-  are limited to five per IP per minute per backend worker, and rotation has a
-  persisted 60-second cooldown per account.
 
-Links expire after 24 hours, are single-use and purpose-bound, and place their
-token in the URL fragment (`/setup-account#token=...`) so HTTP request URLs do
-not contain it. The page clears the fragment after loading. Tokens, passwords
-and SMTP exceptions are excluded from audit details and invitation error output.
-A durable outbox retries interrupted `sending` claims after two minutes. Failed
-SMTP deliveries require resend; sent means accepted by SMTP, not that a user
-has read the email. Delivery worker checks run every three seconds. Only newly
-provisioned accounts use this flow; it is not a password-reset mechanism for
-existing users.
+The Module 4 Add students form shows each newly created student's email and
+initial password in its results. Staff share those credentials before closing
+the dialog. The password is held only in transient component state, is not
+stored in browser storage or the query cache, and clears when the dialog closes
+or its course changes. Existing accounts' passwords remain unchanged.
+
 
 ---
 

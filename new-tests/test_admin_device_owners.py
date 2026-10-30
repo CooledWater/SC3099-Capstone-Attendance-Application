@@ -28,6 +28,18 @@ def test_device_list_includes_owner_name_and_email(world):
     assert "shared_browser" in row
 
 
+def test_device_list_filters_by_owner_email(world):
+    call, db = world
+    seed_devices(db)
+
+    response = call("admin", "/devices/?user_email=sa@example.edu")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["total"] == 1
+    assert result["items"][0]["user_email"] == "sa@example.edu"
+
+
 def test_disabled_device_and_inactive_owner_keep_identity_and_pagination(world):
     call, db = world
     seed_devices(db)

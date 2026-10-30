@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='export-browser-', ignore_cleanup_errors
         try:
             for _ in range(100):
                 try:
-                    if httpx.get(f'http://127.0.0.1:{web}').status_code == 200: break
+                    if httpx.get(f'http://127.0.0.1:{web}/dashboard/').status_code == 200: break
                 except httpx.TransportError: pass
                 time.sleep(.1)
             browser = subprocess.Popen([EDGE, '--headless=new', '--no-first-run', f'--user-data-dir={temporary}', f'--remote-debugging-port={debug}', 'about:blank'], stdout=log, stderr=log, creationflags=hidden)
@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='export-browser-', ignore_cleanup_errors
             with connect(page['webSocketDebuggerUrl'], max_size=8_000_000) as ws:
                 ui = ExportBrowser(ws)
                 ui.command('Fetch.enable', {'patterns': [{'urlPattern': '*api/v1/*'}]})
-                ui.command('Page.navigate', {'url': f'http://127.0.0.1:{web}'})
+                ui.command('Page.navigate', {'url': f'http://127.0.0.1:{web}/dashboard/'})
                 ui.wait("document.body.innerText.includes('Enrollments')")
                 ui.click('Export')
                 ui.wait("document.body.innerText.includes('Export settings')")

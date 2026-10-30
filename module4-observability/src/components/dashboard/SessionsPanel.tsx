@@ -63,6 +63,7 @@ export function SessionsPanel({
   assignedCourses,
   readOnly = false,
   isAdmin = false,
+  initialStatus = "all",
 }: {
   rows: CheckInRow[];
   canCreate: boolean;
@@ -74,6 +75,7 @@ export function SessionsPanel({
   assignedCourses?: import("@/lib/attendance").CourseRow[];
   readOnly?: boolean;
   isAdmin?: boolean;
+  initialStatus?: "all" | "active";
 }) {
   const qc = useQueryClient();
   const canManage = (session: SessionRow) =>
@@ -174,9 +176,10 @@ export function SessionsPanel({
     return all.filter(
       (session) =>
         (!courseIds || courseIds.has(session.course_id)) &&
-        (selectedCourseId === "all" || session.course_id === selectedCourseId),
+        (selectedCourseId === "all" || session.course_id === selectedCourseId) &&
+        (initialStatus === "all" || session.status === initialStatus),
     );
-  }, [sessions.data, courseIds, selectedCourseId]);
+  }, [sessions.data, courseIds, selectedCourseId, initialStatus]);
 
   const editingSession = list.find((session) => session.id === editingSessionId) ?? null;
   const availableCourses = (assignedCourses ?? (courses.isSuccess ? courses.data : [])).filter(
@@ -894,7 +897,7 @@ export function SessionsPanel({
                                   </span>
                                 </td>
                                 <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                                  {r.riskScore ?? r.risk / 100}
+                                  {r.riskScore ?? r.risk}
                                 </td>
                               </tr>
                             ))}

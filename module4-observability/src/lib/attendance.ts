@@ -35,6 +35,7 @@ export type SessionRow = {
   checkin_closes_at: string;
   room: string;
   expected_attendance: number;
+  saved_expected_attendance?: number | null;
   is_active: boolean;
   geofence_lat: number | null;
   geofence_lng: number | null;
@@ -47,6 +48,16 @@ export type CourseRow = {
   code: string;
   name: string;
   instructor_id?: string | null;
+};
+export type AdminOverview = {
+  active_sessions: number;
+  total_checkins_today: number;
+  flagged_count: number;
+  appealed_count: number;
+  high_risk_checkins_today: number;
+  high_risk_threshold: number;
+  approval_rate: number;
+  timezone: string;
 };
 export type EnrollmentRow = {
   course_id: string;
@@ -71,6 +82,7 @@ export type ApiSession = {
   checkin_closes_at: string;
   venue_name?: string | null;
   total_enrolled?: number;
+  saved_expected_attendance?: number | null;
   status: SessionRow["status"];
   venue_latitude?: number | null;
   venue_longitude?: number | null;
@@ -103,12 +115,14 @@ export async function fetchSessions() {
   return items.map(toSessionRow);
 }
 
-export async function fetchMySessions(options: {
-  startDate?: string;
-  endDate?: string;
-  courseId?: string;
-  signal?: AbortSignal;
-} = {}) {
+export async function fetchMySessions(
+  options: {
+    startDate?: string;
+    endDate?: string;
+    courseId?: string;
+    signal?: AbortSignal;
+  } = {},
+) {
   const result: ApiSession[] = [];
   const limit = 100;
   let offset = 0;
@@ -127,7 +141,9 @@ export async function fetchMySessions(options: {
 }
 
 export function fetchCheckInDetail(checkInId: string, signal?: AbortSignal) {
-  return api.request<CheckInDetail>(`/checkins/${encodeURIComponent(checkInId)}`, { signal });
+  return api.request<CheckInDetail>(`/checkins/${encodeURIComponent(checkInId)}`, {
+    signal: signal ?? null,
+  });
 }
 
 export function toSessionRow(s: ApiSession): SessionRow {
@@ -145,6 +161,7 @@ export function toSessionRow(s: ApiSession): SessionRow {
     checkin_closes_at: s.checkin_closes_at,
     room: s.venue_name ?? "Not set",
     expected_attendance: s.total_enrolled ?? 0,
+    saved_expected_attendance: s.saved_expected_attendance ?? null,
     is_active: s.status === "active",
     geofence_lat: s.venue_latitude ?? null,
     geofence_lng: s.venue_longitude ?? null,
@@ -223,7 +240,14 @@ export async function fetchCheckIns() {
     .sort((a, b) => Date.parse(b.checked_in_at) - Date.parse(a.checked_in_at));
 }
 export const HISTORY_PAGE_SIZE = 50;
-export function fetchMyCheckInsPage(sessionId = "all", offset = 0, courseId = "all", signal?: AbortSignal, sessionName = "", statuses: string[] = []) {
+export function fetchMyCheckInsPage(
+  sessionId = "all",
+  offset = 0,
+  courseId = "all",
+  signal?: AbortSignal,
+  sessionName = "",
+  statuses: string[] = [],
+) {
   const params = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE), offset: String(offset) });
   if (sessionId !== "all") params.set("session_id", sessionId);
   if (courseId !== "all") params.set("course_id", courseId);
@@ -252,6 +276,8 @@ export async function fetchCourses() {
   }
   return items;
 }
+export const fetchAdminOverview = (days = 30, signal?: AbortSignal) =>
+  api.request<AdminOverview>(`/stats/overview?days=${days}`, { signal: signal ?? null });
 export const fetchMyEnrollments = () => api.request<EnrollmentRow[]>("/enrollments/my-enrollments");
 export async function fetchMyAssignedCourses(options: { signal?: AbortSignal } = {}) {
   const items: CourseRow[] = [];
@@ -279,7 +305,7 @@ export function toRows(list: RawCheckIn[]): CheckInRow[] {
     status: c.status,
     appealedAt: c.appealed_at ?? null,
     reviewedAt: c.reviewed_at ?? null,
-    risk: Math.round((c.risk_score ?? 0) * 100),
+    risk: c.risk_score ?? 0,
     riskScore: c.risk_score ?? 0,
     liveness: c.liveness_score ?? 0,
     faceMatch: c.face_match_score ?? 0,
@@ -339,7 +365,7 @@ export function checkInsToCsv(rows: CheckInRow[]) {
       r.sessionId,
       parseApiDateTime(r.time).toISOString(),
       statusText[r.status],
-      String(r.risk),
+      r.risk.toFixed(2),
       String(r.liveness),
       String(r.faceMatch),
       r.lat == null ? "" : r.lat.toFixed(6),

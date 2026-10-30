@@ -84,3 +84,10 @@ export const updateAdminUser = (userId: string, updates: { role?: AppRole; is_ac
     method: "PATCH",
     body: JSON.stringify(updates),
   });
+
+// The device management endpoint uses active + untrusted as its approvable
+// rule; removed registrations are excluded by the backend's managed_devices filter.
+export const fetchPendingDeviceCount = (signal?: AbortSignal) =>
+  api.request<{ total: number }>("/devices/?limit=1&offset=0&is_active=true&is_trusted=false", {
+    signal: signal ?? null,
+  });

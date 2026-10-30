@@ -12,27 +12,23 @@ os.environ['STRICT_SECURITY_MODE'] = 'false'
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'module2-backend'))
 from app.main import app, hash_password
 from app.schemas import UserRegister, UserLogin
-from app.invitations import CompleteRequest
 from app.database import SessionLocal
 from app.models import User
 from fastapi.testclient import TestClient
 
 @pytest.mark.parametrize('password', ['123', 'shortA!', 'Aa!' + 'é' * 35])
-def test_registration_and_invitation_reject_weak_passwords(password):
+def test_registration_rejects_weak_passwords(password):
     with pytest.raises(ValidationError):
         UserRegister(email='a@x.io', full_name='Student', password=password)
-    with pytest.raises(ValidationError):
-        CompleteRequest(token='token', password=password)
 
 @pytest.mark.parametrize('password', ['Password!', 'StrongPass#123', 'Abcdefg!', 'securepass123', 'testpass123', 'password123', 'lowercase!', 'UPPERCASE!', '12345678'])
 def test_valid_passwords_do_not_require_character_classes_or_change_email_rules(password):
     assert UserRegister(email='a@x.io', full_name='Student', password=password).password == password
-    assert CompleteRequest(token='token', password=password).password == password
 
 
 def test_new_credential_http_validation_does_not_echo_passwords():
     with TestClient(app) as client:
-        for path, payload in [('/api/v1/auth/register', {'email': 'a@x.io', 'full_name': 'Student'}), ('/api/v1/auth/invitations/complete', {'token': 'not-a-token'})]:
+        for path, payload in [('/api/v1/auth/register', {'email': 'a@x.io', 'full_name': 'Student'})]:
             weak = 'short!'
             response = client.post(path, json={**payload, 'password': weak})
             assert response.status_code == 422, response.text

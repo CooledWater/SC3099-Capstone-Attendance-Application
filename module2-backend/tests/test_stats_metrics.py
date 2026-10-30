@@ -427,6 +427,10 @@ class TestOverview:
         assert data["today_checkins"] == data["total_checkins_today"] == 6
         assert data["total_checkins_week"] == 6
         assert data["flagged_pending"] == data["flagged_pending_review"] == 1
+        assert data["flagged_count"] == 1
+        assert data["appealed_count"] == 0
+        assert data["high_risk_threshold"] == 0.5
+        assert data["timezone"] == "Asia/Singapore"
         assert data["approval_rate"] == round(sum(c["status"] == "approved" for c in checkins) / 6, 4)
         assert data["average_attendance_rate"] == round(6 / 12, 4)
         assert data["average_risk_score"] == pytest.approx(
@@ -510,8 +514,9 @@ class TestMetricsEndpoint:
         assert body["items"], "expected traffic to have been recorded"
 
         for item in body["items"]:
-            assert set(item) == {"id", "recorded_at", "endpoint", "p95_ms", "request_count", "success_rate"}
+            assert set(item) == {"id", "recorded_at", "endpoint", "p95_ms", "request_count", "error_count", "success_rate"}
             assert item["request_count"] >= 1
+            assert 0 <= item["error_count"] <= item["request_count"]
             assert item["p95_ms"] >= 0
             assert 0 <= item["success_rate"] <= 100
 
@@ -586,6 +591,7 @@ class TestMetricsStore:
         assert total == 1
         assert item["p95_ms"] == 95.0
         assert item["request_count"] == 100
+        assert item["error_count"] == 0
         assert item["success_rate"] == 100.0
 
     def test_single_sample(self, stats_module):
@@ -599,6 +605,7 @@ class TestMetricsStore:
         for code in (200, 404, 401, 500):
             store.record("GET /x", 1.0, code, now=T0)
         (item,), _ = store.snapshot(12, 10, now=T0)
+        assert item["error_count"] == 1
         assert item["success_rate"] == 75.0
 
     def test_buckets_are_hourly_newest_first_and_labelled_in_utc(self, stats_module):
@@ -696,6 +703,7 @@ class TestMetricsMiddleware:
         assert isinstance(error, RuntimeError)
         (item,), _ = store.snapshot(1, 10)
         assert item["endpoint"] == "unmatched"
+        assert item["error_count"] == 1
         assert item["success_rate"] == 0.0
 
     def test_non_http_scopes_are_ignored(self, stats_module):

@@ -42,8 +42,10 @@ class CheckinsBrowser(Browser):
             body = {"access_token": "test-token"}
         elif path.endswith("/users/me"):
             body = dict(id="teacher", role="instructor", full_name="Teacher", email="teacher@example.edu")
-        elif path.endswith("/courses/"):
+        elif path.endswith(("/courses/", "/courses/my-courses")):
             body = {"items": [dict(id=f"course-{suffix}", code=code, name=name, instructor_id="teacher") for suffix, code, name in [("a", "SC4000", "Machine Learning"), ("b", "SC3099", "Capstone")]], "total": 2}
+        elif "/stats/courses/" in path:
+            code, body = 503, {"detail": "Analytics unavailable in this fixture"}
         elif path.endswith("/sessions/"):
             course = query.get("course_id", ["course-a"])[0]
             suffix = "b" if course == "course-b" else "a"

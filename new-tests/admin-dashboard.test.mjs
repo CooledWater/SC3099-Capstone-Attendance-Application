@@ -29,6 +29,7 @@ const compile = (path) =>
 function harness({
   request = async () => ({}),
   query = () => [],
+  queryState = () => ({}),
   confirm = true,
 } = {}) {
   const states = [],
@@ -62,6 +63,7 @@ function harness({
       isLoading: false,
       isError: false,
       refetch() {},
+      ...queryState(options.queryKey),
     }),
     useQueryClient: () => ({
       invalidateQueries: async (options) => {
@@ -255,6 +257,158 @@ test("admin tabs reuse all-course roster workflow and enable foreign-owned sessi
   assert.equal(roster.userId, "admin");
 });
 
+test("today's admin KPI uses the system-wide aggregate, including zero, rather than loaded rows", () => {
+  for (const total of [245, 0]) {
+    const h = harness({
+      query: (key) => {
+        if (key[0] === "admin-overview")
+          return { total_checkins_today: total, timezone: "Asia/Singapore" };
+        if (key[0] === "check-ins")
+          return [{ id: "historical", status: "approved", risk: 0 }];
+        return [];
+      },
+    });
+    const Component = h.load("components/dashboard/AdminView.tsx").AdminView;
+    const tree = h.render(Component, { userId: "admin" });
+    const card = find(tree, (node) => node.props?.label === "Check-ins today");
+    assert.equal(card.props.value, String(total));
+    assert.equal(card.props.note, "Across all courses · All statuses");
+    assert.equal(card.props.scope, "Today");
+    card.props.onClick();
+    const panel = find(
+      h.render(Component, { userId: "admin" }),
+      (node) => node.type === "AdminCheckIns",
+    );
+    assert.equal(panel.props.initialFilter.today, true);
+    assert.equal(panel.props.initialFilter.statuses, undefined);
+  }
+});
+
+test("today's admin KPI never substitutes historical rows when statistics are unavailable", () => {
+  const h = harness({
+    query: (key) => {
+      if (key[0] === "admin-overview") return undefined;
+      if (key[0] === "check-ins")
+        return [{ id: "historical", status: "approved", risk: 0 }];
+      return [];
+    },
+  });
+  const tree = h.render(
+    h.load("components/dashboard/AdminView.tsx").AdminView,
+    { userId: "admin" },
+  );
+  const card = find(tree, (node) => node.props?.label === "Check-ins today");
+  assert.equal(card.props.value, "—");
+  assert.equal(card.props.note, "Loading today's total…");
+});
+
+test("every admin KPI opens cross-course check-ins while the normal tab keeps the session roster", () => {
+  for (const label of [
+    "Check-ins today",
+    "Needs review",
+    "High-risk check-ins",
+  ]) {
+    const courses = [
+      { id: "one", instructor_id: "someone-else", code: "SC1" },
+      { id: "two", instructor_id: "another-instructor", code: "SC2" },
+    ];
+    const h = harness({
+      query: (key) => (key[0] === "courses" ? courses : []),
+    });
+    const Component = h.load("components/dashboard/AdminView.tsx").AdminView;
+    let tree = h.render(Component, { userId: "admin" });
+    find(tree, (node) => node.props?.label === label).props.onClick();
+    tree = h.render(Component, { userId: "admin" });
+    let panel = find(tree, (node) => node.type === "AdminCheckIns");
+    assert.equal(panel.props.courses, courses);
+    assert.equal(panel.props.userId, "admin");
+    assert.ok(panel.props.initialFilter);
+    if (label === "Needs review")
+      assert.deepEqual(Array.from(panel.props.initialFilter.statuses), [
+        "flagged",
+        "appealed",
+      ]);
+    if (label === "High-risk check-ins")
+      assert.equal(panel.props.initialFilter.minRisk, 0.5);
+    find(tree, (node) => node.type === "Tabs").props.onChange("overview");
+    tree = h.render(Component, { userId: "admin" });
+    find(tree, (node) => node.props?.label === label).props.onClick();
+    tree = h.render(Component, { userId: "admin" });
+    find(tree, (node) => node.type === "Tabs").props.onChange("checkins");
+    tree = h.render(Component, { userId: "admin" });
+    panel = find(tree, (node) => node.type === "CheckInsPanel");
+    assert.equal(panel.props.instructor.courses, courses);
+  }
+});
+
+test("today shortcut leaves the saved session roster and opens all-course check-in results", () => {
+  const courses = [{ id: "old-course" }, { id: "today-course" }];
+  const sessions = [
+    {
+      id: "old-session",
+      course_id: "old-course",
+      status: "closed",
+      starts_at: new Date(Date.now() - 40 * 86400000).toISOString(),
+    },
+    {
+      id: "today-session",
+      course_id: "today-course",
+      status: "active",
+      starts_at: new Date().toISOString(),
+    },
+  ];
+  const h = harness({
+    query: (key) =>
+      key[0] === "courses" ? courses : key[0] === "sessions" ? sessions : [],
+  });
+  const Component = h.load("components/dashboard/AdminView.tsx").AdminView;
+  let tree = h.render(Component, { userId: "admin" });
+  find(tree, (node) => node.type === "Tabs").props.onChange("sessions");
+  tree = h.render(Component, { userId: "admin" });
+  find(tree, (node) => node.type === "SessionsPanel").props.onViewSession(
+    sessions[0],
+  );
+  tree = h.render(Component, { userId: "admin" });
+  find(tree, (node) => node.type === "Tabs").props.onChange("overview");
+  tree = h.render(Component, { userId: "admin" });
+  find(tree, (node) => node.props?.label === "Check-ins today").props.onClick();
+  tree = h.render(Component, { userId: "admin" });
+  const panel = find(tree, (node) => node.type === "AdminCheckIns");
+  assert.equal(panel.props.sessions, sessions);
+  assert.equal(panel.props.courses, courses);
+  assert.equal(panel.props.initialFilter.today, true);
+});
+
+test("today's admin KPI offers retry when its aggregate fails to load", () => {
+  let retries = 0;
+  const h = harness({
+    query: (key) => (key[0] === "admin-overview" ? undefined : []),
+    queryState: (key) =>
+      key[0] === "admin-overview"
+        ? {
+            isError: true,
+            refetch() {
+              retries += 1;
+            },
+          }
+        : {},
+  });
+  const tree = h.render(
+    h.load("components/dashboard/AdminView.tsx").AdminView,
+    { userId: "admin" },
+  );
+  const card = find(tree, (node) => node.props?.label === "Check-ins today");
+  assert.equal(card.props.value, "—");
+  assert.equal(card.props.note, "Today's total unavailable");
+  assert.ok(
+    text(find(tree, (node) => node.props?.role === "alert")).includes(
+      "Could not refresh overview statistics.",
+    ),
+  );
+  click(tree, "Retry");
+  assert.equal(retries, 1);
+});
+
 test("admin can edit and close foreign-owned sessions without allowing unrelated instructors", async () => {
   const start = new Date(Date.now() + 86400000).toISOString();
   const rows = [
@@ -358,7 +512,7 @@ test("device controls submit rename, trust, activation and removal independently
     (node) => node.props?.["aria-label"] === "Edit device name: Old",
   ).props.onDoubleClick();
   tree = h.render(Component, { userId: "admin" });
-  find(tree, (node) => node.type === "input").props.onChange({
+  find(tree, (node) => node.props?.["aria-label"] === "Device name").props.onChange({
     target: { value: " New " },
   });
   tree = h.render(Component, { userId: "admin" });
@@ -758,7 +912,7 @@ test("device names edit inline on double-click or keyboard; Escape, blank and un
   input().props.onKeyDown({ key: "Escape", preventDefault() {} });
   tree = draw();
   assert.equal(
-    nodes(tree).some((node) => node.type === "input"),
+    nodes(tree).some((node) => node.props?.["aria-label"] === "Device name"),
     false,
   );
   nameButton().props.onKeyDown({ key: "F2", preventDefault() {} });
@@ -778,7 +932,7 @@ test("device names edit inline on double-click or keyboard; Escape, blank and un
   await h.settle();
   assert.equal(h.calls.length, 0);
   assert.equal(
-    nodes(tree).some((node) => node.type === "input"),
+    nodes(tree).some((node) => node.props?.["aria-label"] === "Device name"),
     false,
   );
 });

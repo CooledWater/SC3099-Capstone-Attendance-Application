@@ -77,11 +77,10 @@ from app.auth import (
 from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
-from app import device_binding, audit, motion, prometheus_metrics, stats, invitations, attendance_roster, student_overview, venues, course_assistants
+from app import device_binding, audit, motion, prometheus_metrics, stats, attendance_roster, student_overview, venues, course_assistants
 from app.permissions import assigned_course_scope, assists, can_staff_course, teaches
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
-from app.password_policy import PASSWORD_REQUIREMENTS
 from app import checkin_diagnostics, push_notifications, device_rotation, data_deletion
 
 Base.metadata.create_all(bind=engine)
@@ -95,7 +94,6 @@ app = FastAPI(
 
 app.include_router(data_deletion.router)
 app.include_router(push_notifications.router)
-app.include_router(invitations.router)
 app.include_router(attendance_roster.router)
 app.include_router(student_overview.router)
 app.include_router(venues.router)
@@ -113,8 +111,6 @@ app.add_middleware(audit.AuditContextMiddleware)
 
 @app.exception_handler(RequestValidationError)
 async def safe_motion_validation(request: Request, exc: RequestValidationError):
-    if request.url.path.startswith('/api/v1/auth/invitations/'):
-        return JSONResponse(status_code=422, content={'detail': 'Invalid invitation request or password. ' + PASSWORD_REQUIREMENTS + ' Maximum 72 UTF-8 bytes.'})
     if request.url.path.startswith('/api/v1/motion/'):
         return JSONResponse(status_code=422, content={'detail': 'Invalid motion sequence. Capture again.'})
     # Validation failures must not echo passwords/images or attempt to JSON-encode NaN.
@@ -229,14 +225,7 @@ def login_user(
     db: Session = Depends(get_db)
 ):
     enforce_rate_limit('login', request.client.host if request.client else 'unknown', 60, 3600)
-    row = db.query(User, invitations.AccountInvitation.user_id, invitations.AccountInvitation.used_at).outerjoin(
-        invitations.AccountInvitation, invitations.AccountInvitation.user_id == User.id,
-    ).filter(User.email == login_data.email).first()
-    user = row[0] if row else None
-    if user and row[1] is not None and row[2] is None:
-        create_audit_log(db, "login_failed", user.id, success=False, commit=True,
-                         details={"reason": "invitation_pending"})
-        raise HTTPException(403, "Set your password using the account invitation before signing in")
+    user = db.query(User).filter(User.email == login_data.email).first()
 
     if not user:
         create_audit_log(
@@ -1083,6 +1072,8 @@ def _serialize_enrollment(enrollment: Enrollment) -> dict:
 def _create_enrollment(
     db: Session, student_id: str, course_id: str, actor_id: str | None = None
 ) -> Enrollment:
+    from app.attendance_snapshots import capture_attendance_snapshots
+    capture_attendance_snapshots(db)
     student = db.query(User).filter(User.id == student_id).with_for_update().first()
 
     if not student:
@@ -1210,10 +1201,15 @@ def _require_course_manager(db: Session, user: User, course_id: str) -> Course:
 @app.post("/api/v1/enrollments/bulk")
 def bulk_enroll_students(
     payload: BulkEnrollmentCreate,
+    response: Response,
     current_user: User = Depends(require_roles("instructor", "admin")),
     db: Session = Depends(get_db)
 ):
+    # Newly created credentials are returned once to the authorized caller.
+    response.headers["Cache-Control"] = "no-store"
     course = _require_course_manager(db, current_user, payload.course_id)
+    from app.attendance_snapshots import capture_attendance_snapshots
+    capture_attendance_snapshots(db)
     actor_id = current_user.id
 
     # Keep request order, drop repeats.
@@ -1240,18 +1236,18 @@ def bulk_enroll_students(
         for email in emails:
             student = users_by_email.get(email)
             account_created = False
+            initial_password = None
 
             if student is None:
                 if not payload.create_accounts:
                     counts["not_found"] += 1
                     details.append({"email": email, "status": "not_found"})
                     continue
-                # The spec does not say how a created account gets a password, so
-                # it receives an unguessable one and cannot log in until one is set.
+                initial_password = secrets.token_urlsafe(18)
                 student = User(
                     email=email,
                     full_name=email.split("@", 1)[0],
-                    hashed_password=hash_password(secrets.token_urlsafe(32)),
+                    hashed_password=hash_password(initial_password),
                     role="student"
                 )
                 db.add(student)
@@ -1260,7 +1256,6 @@ def bulk_enroll_students(
                     db, "user_created", actor_id, student.id,
                     details={"role": "student", "bulk_enrollment": True}
                 )
-                invitations.queue_invitation(db, student.id, course.id)
                 account_created = True
 
             if student.role != "student" or not student.is_active:
@@ -1290,12 +1285,13 @@ def bulk_enroll_students(
             counts["enrolled"] += 1
             if account_created:
                 counts["created"] += 1
-            details.append({
+            detail = {
                 "email": email,
                 "status": "created" if account_created else "enrolled",
-                "invitation_status": "queued" if account_created else "not_needed",
-                "invitation_pending": account_created,
-            })
+            }
+            if account_created:
+                detail["initial_password"] = initial_password
+            details.append(detail)
 
         db.commit()
     except IntegrityError:
@@ -1323,6 +1319,8 @@ def delete_enrollment(
         )
 
     _require_course_manager(db, current_user, enrollment.course_id)
+    from app.attendance_snapshots import capture_attendance_snapshots
+    capture_attendance_snapshots(db)
 
     # Soft delete: past check-ins keep their history and the student can be
     # re-enrolled later (see _create_enrollment).
@@ -1541,11 +1539,15 @@ def _serialize_session_metadata(session: SessionModel) -> dict:
 
 
 def _session_summary_context(db, sessions):
+    from app.models import SessionAttendanceSnapshot
     course_ids = {session.course_id for session in sessions}
     session_ids = [session.id for session in sessions]
     if not sessions:
-        return {"courses": {}, "enrolled": {}, "motion": set()}
+        return {"courses": {}, "enrolled": {}, "motion": set(), "saved_expected": {}}
     return {
+        "saved_expected": dict(db.query(SessionAttendanceSnapshot.session_id, SessionAttendanceSnapshot.expected_attendances).filter(
+            SessionAttendanceSnapshot.session_id.in_(session_ids),
+        ).all()),
         "courses": {course.id: course for course in db.query(Course).filter(Course.id.in_(course_ids)).all()},
         "enrolled": dict(db.query(Enrollment.course_id, func.count(Enrollment.id)).filter(
             Enrollment.course_id.in_(course_ids), Enrollment.is_active == True,
@@ -1565,6 +1567,7 @@ def _serialize_session_summary(db: Session, session: SessionModel, context=None)
         "course_code": course.code if course else None,
         "course_name": course.name if course else None,
         "total_enrolled": context["enrolled"].get(session.course_id, 0),
+        "saved_expected_attendance": context["saved_expected"].get(session.id),
     }
 
 
@@ -3096,6 +3099,7 @@ def list_my_devices(
 @app.get("/api/v1/devices/")
 def list_all_devices(
     user_id: str | None = None,
+    user_email: str | None = None,
     is_active: bool | None = None,
     is_trusted: bool | None = None,
     limit: int = 50,
@@ -3112,6 +3116,8 @@ def list_all_devices(
 
     if user_id:
         query = query.filter(Device.user_id == user_id)
+    if user_email and user_email.strip():
+        query = query.filter(User.email.ilike(f"{user_email.strip()}%"))
     if is_active is not None:
         query = query.filter(Device.is_active == is_active)
     if is_trusted is not None:

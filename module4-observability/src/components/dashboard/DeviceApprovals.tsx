@@ -1,6 +1,7 @@
 ﻿import { useState } from "react";
-import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import type { Device } from "@/lib/devices";
 
 type Row = Device & { user_email?: string | null; user_name?: string | null };
@@ -12,21 +13,34 @@ type Action = {
 const control =
   "rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm disabled:opacity-50";
 
-export function DeviceApprovals({ userId }: { userId: string }) {
+export function DeviceApprovals({
+  userId,
+  initialActive = "all",
+  initialTrusted = "all",
+}: {
+  userId: string;
+  initialActive?: string;
+  initialTrusted?: string;
+}) {
   const [page, setPage] = useState(0);
-  const [active, setActive] = useState("all");
-  const [trusted, setTrusted] = useState("all");
+  const [active, setActive] = useState(initialActive);
+  const [trusted, setTrusted] = useState(initialTrusted);
+  const [userEmail, setUserEmail] = useState("");
   const [editing, setEditing] = useState<Row | null>(null);
   const [name, setName] = useState("");
   const qc = useQueryClient();
+  const debouncedUserEmail = useDebouncedValue(userEmail);
   const devices = useQuery({
-    queryKey: ["admin-devices", userId, active, trusted, page],
+    queryKey: ["admin-devices", userId, active, trusted, debouncedUserEmail, page],
     queryFn: ({ signal }) => {
       const params = new URLSearchParams({ limit: "25", offset: String(page * 25) });
       if (active !== "all") params.set("is_active", active);
       if (trusted !== "all") params.set("is_trusted", trusted);
+      if (debouncedUserEmail.trim()) params.set("user_email", debouncedUserEmail.trim());
       return api.request<{ items: Row[]; total: number }>(`/devices/?${params}`, { signal });
     },
+    placeholderData: keepPreviousData,
+    retry: false,
     refetchInterval: 30000,
   });
   const update = useMutation({
@@ -40,6 +54,7 @@ export function DeviceApprovals({ userId }: { userId: string }) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["admin-devices"] }),
         qc.invalidateQueries({ queryKey: ["my-devices"] }),
+        qc.invalidateQueries({ queryKey: ["admin-device-approval-count", userId] }),
       ]);
     },
   });
@@ -85,6 +100,17 @@ export function DeviceApprovals({ userId }: { userId: string }) {
             <option value="false">Untrusted</option>
           </select>
         </label>
+        <input
+          type="search"
+          className={control}
+          value={userEmail}
+          placeholder="Search email"
+          aria-label="Search devices by user email"
+          onChange={(e) => {
+            setUserEmail(e.target.value);
+            setPage(0);
+          }}
+        />
       </div>
       {update.isError && (
         <p role="alert" className="text-destructive">
