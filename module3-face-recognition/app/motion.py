@@ -78,16 +78,29 @@ class BlinkCounter:
         return self.count
 
 
-def analyze_sequence(request, verify_image):
+def analyze_sequence(request, verify_image, observe=None):
     started = time.monotonic()
     counter = BlinkCounter()
     matches = []
     passive_scores = []
     previous = None
-    def result(passed=False):
+    def note(stage, **values):
+        if observe is not None:
+            try:
+                observe(stage, **values)
+            except Exception:
+                # A broken diagnostic observer must not change verification.
+                pass
+    def result(passed=False, reason="passed"):
+        note("finished", reason=reason)
         return {'passed': passed, 'blink_count': counter.count,
                 'liveness_score': min(passive_scores, default=0.0),
                 'face_match_score': min(matches, default=0.0)}
+    note("started", frame_count=len(request.frames),
+         duration_ms=request.frames[-1].timestamp_ms-request.frames[0].timestamp_ms,
+         liveness_threshold=settings.liveness_threshold,
+         depth_threshold=settings.liveness_depth_threshold, mesh_threshold=settings.liveness_mesh_threshold,
+         face_match_threshold=settings.face_match_threshold)
     # A fresh tracker per request avoids mixing students or timestamp histories.
     mp, detector = _create_landmarker()
     with detector as landmarker:
@@ -95,6 +108,7 @@ def analyze_sequence(request, verify_image):
             if time.monotonic()-started > 40:
                 raise LivenessUnavailableError("Sequence processing timed out")
             image = decode_base64_image(frame.image, max_dimension=640)
+            note("frame", last_frame_index=index, last_timestamp_ms=frame.timestamp_ms)
             try:
                 output = landmarker.detect_for_video(
                     mp.Image(image_format=mp.ImageFormat.SRGB, data=image),
@@ -104,11 +118,11 @@ def analyze_sequence(request, verify_image):
                 raise LivenessUnavailableError('Sequence landmark processing is unavailable') from exc
             faces = output.face_landmarks or []
             if len(faces) != 1:
-                return result()
+                return result(reason="face_count")
             landmarks = faces[0]
             nose = landmarks[1]
             if previous and ((nose.x-previous[0])**2+(nose.y-previous[1])**2)**.5 > .15:
-                return result()
+                return result(reason="face_jump")
             previous = (nose.x, nose.y)
             # EAR uses pixel aspect ratio, matching the browser implementation.
             h, w = image.shape[:2]
@@ -119,14 +133,24 @@ def analyze_sequence(request, verify_image):
             if index % 8 == 0 or counter.count != before or index == len(request.frames)-1:
                 match, _ = verify_image(frame.image, request.reference_template_hash)
                 matches.append(match.match_score)
+                note("identity")
                 if not match.match_passed:
-                    return result()
+                    return result(reason="identity_failed")
             if index == 0 or index == len(request.frames)-1:
                 detection = detect_face(image)
                 passive = assess_liveness(image, detection.confidence, detection.bbox,
                                           'passive', settings.liveness_threshold)
                 passive_scores.append(passive.liveness_score)
+                if observe is not None:
+                    note("passive", position="first_frame" if index == 0 else "last_frame",
+                         frame_index=index, timestamp_ms=frame.timestamp_ms,
+                         liveness_passed=passive.liveness_passed, liveness_score=passive.liveness_score,
+                         liveness_threshold=getattr(passive, "liveness_threshold", settings.liveness_threshold),
+                         details=getattr(passive, "details", {}))
                 if not passive.liveness_passed:
-                    return result()
-    return result(counter.count >= 2 and counter.open and counter.closed_at is None
-                  and min(matches, default=0) >= settings.face_match_threshold)
+                    return result(reason="passive_first_failed" if index == 0 else "passive_last_failed")
+    passed = (counter.count >= 2 and counter.open and counter.closed_at is None
+              and min(matches, default=0) >= settings.face_match_threshold)
+    reason = ("passed" if passed else "insufficient_blinks" if counter.count < 2 else
+              "incomplete_blink" if not counter.open or counter.closed_at is not None else "identity_threshold")
+    return result(passed, reason)

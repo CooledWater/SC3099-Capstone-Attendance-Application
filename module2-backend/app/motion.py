@@ -8,6 +8,7 @@ from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.orm import Session
 from app.database import Base
 from app.session_lifecycle import get_session_db
+from app import checkin_diagnostics
 from app.auth import require_roles
 from app.models import User, Session as AttendanceSession, Enrollment, CheckIn
 from app.face_service import face_service, LivenessResult, FaceMatchResult, RiskResult
@@ -82,15 +83,18 @@ def eligible(db, user, session_id):
 @router.post('/challenges', status_code=201)
 def start(payload: StartChallenge, user: User = Depends(require_roles('student')), db: Session = Depends(get_session_db)):
     session = eligible(db, user, payload.session_id)
-    # Serialize issuance per user so concurrent retries cannot leave two active attempts.
-    db.query(User).filter_by(id=user.id).with_for_update().first()
-    db.query(MotionChallenge).filter(MotionChallenge.expires_at < datetime.utcnow()).delete(synchronize_session=False)
-    db.query(MotionChallenge).filter_by(user_id=user.id, session_id=session.id).delete(synchronize_session=False)
-    item = MotionChallenge(user_id=user.id, session_id=session.id, reference_hash=user.face_embedding_hash,
-                           expires_at=min(datetime.utcnow()+timedelta(minutes=3), session.checkin_closes_at))
-    db.add(item); db.commit(); db.refresh(item)
-    return {'challenge_id': item.id, 'action': 'blink_twice', 'expires_at': item.expires_at.isoformat()+'Z',
-            'max_duration_ms': 8000, 'max_frames': 120}
+    with checkin_diagnostics.capture(session.id, start_stage=None, failure_stage='motion_request_failed'):
+        # Serialize issuance per user so concurrent retries cannot leave two active attempts.
+        db.query(User).filter_by(id=user.id).with_for_update().first()
+        db.query(MotionChallenge).filter(MotionChallenge.expires_at < datetime.utcnow()).delete(synchronize_session=False)
+        db.query(MotionChallenge).filter_by(user_id=user.id, session_id=session.id).delete(synchronize_session=False)
+        item = MotionChallenge(user_id=user.id, session_id=session.id, reference_hash=user.face_embedding_hash,
+                               expires_at=min(datetime.utcnow()+timedelta(minutes=3), session.checkin_closes_at))
+        db.add(item); db.commit(); db.refresh(item)
+        checkin_diagnostics.bind_challenge(item.id)
+        checkin_diagnostics.event('motion_challenge_issued', max_duration_ms=8000, max_frames=120)
+        return {'challenge_id': item.id, 'action': 'blink_twice', 'expires_at': item.expires_at.isoformat()+'Z',
+                'max_duration_ms': 8000, 'max_frames': 120}
 
 
 @router.post('/challenges/{challenge_id}/verify')
@@ -98,46 +102,49 @@ def verify(challenge_id: str, payload: Sequence, user: User = Depends(require_ro
     item = db.get(MotionChallenge, challenge_id)
     if not item or item.user_id != user.id:
         raise HTTPException(404, 'Challenge not found')
-    eligible(db, user, item.session_id)
-    if item.reference_hash != user.face_embedding_hash:
-        raise HTTPException(409, 'Enrollment changed; start a new challenge')
-    claimed = db.query(MotionChallenge).filter_by(id=item.id, state='issued').filter(
-        MotionChallenge.expires_at > datetime.utcnow()).update({'state': 'processing'}, synchronize_session=False)
-    db.commit()
-    if not claimed:
-        raise HTTPException(409, 'Challenge expired or already submitted; start again')
-    try:
-        response = face_service._post('/liveness/sequence', {
-            'frames': [f.model_dump() for f in payload.frames], 'reference_template_hash': user.face_embedding_hash,
-        }, 45.0)
-        if response.status_code != 200:
-            raise ValueError('Unusable service response')
-        result = response.json()
-        # Validate every persisted field; never trust an arbitrary service response.
-        if not isinstance(result, dict) or type(result.get('passed')) is not bool:
-            raise ValueError('Invalid result')
-        for key in ('liveness_score', 'face_match_score'):
-            value = result.get(key)
-            if type(value) not in (int, float) or not 0 <= value <= 1:
-                raise ValueError('Invalid score')
-        safe = {key: result[key] for key in ('passed', 'liveness_score', 'face_match_score')}
-        count = result.get('blink_count')
-        if type(count) is not int or not 0 <= count <= 60:
-            raise ValueError('Invalid blink count')
-        safe['blink_count'] = count
-        if safe['passed'] and safe['blink_count'] < 2:
-            raise ValueError('Missing blink evidence')
-    except (httpx.HTTPError, ValueError, TypeError, KeyError):
-        db.query(MotionChallenge).filter_by(id=challenge_id).update({'state': 'failed'})
+    with checkin_diagnostics.capture(item.session_id, challenge_id=item.id,
+                                     start_stage='motion_verification_started', failure_stage='motion_request_failed'):
+        eligible(db, user, item.session_id)
+        if item.reference_hash != user.face_embedding_hash:
+            raise HTTPException(409, 'Enrollment changed; start a new challenge')
+        claimed = db.query(MotionChallenge).filter_by(id=item.id, state='issued').filter(
+            MotionChallenge.expires_at > datetime.utcnow()).update({'state': 'processing'}, synchronize_session=False)
         db.commit()
-        raise HTTPException(503, 'Motion verification unavailable; start a new challenge')
-    updated = db.query(MotionChallenge).filter_by(id=challenge_id, state='processing').filter(
-        MotionChallenge.expires_at > datetime.utcnow()).update({
-            'state': 'verified' if safe['passed'] else 'failed', 'result': json.dumps(safe)}, synchronize_session=False)
-    db.commit()
-    if not updated:
-        raise HTTPException(409, 'Challenge expired or was replaced; start again')
-    return {**safe, 'verification_id': challenge_id if safe['passed'] else None}
+        if not claimed:
+            raise HTTPException(409, 'Challenge expired or already submitted; start again')
+        try:
+            response = face_service._post('/liveness/sequence', {
+                'frames': [f.model_dump() for f in payload.frames], 'reference_template_hash': user.face_embedding_hash,
+            }, 45.0)
+            if response.status_code != 200:
+                raise ValueError('Unusable service response')
+            result = response.json()
+            # Validate every persisted field; never trust an arbitrary service response.
+            if not isinstance(result, dict) or type(result.get('passed')) is not bool:
+                raise ValueError('Invalid result')
+            for key in ('liveness_score', 'face_match_score'):
+                value = result.get(key)
+                if type(value) not in (int, float) or not 0 <= value <= 1:
+                    raise ValueError('Invalid score')
+            safe = {key: result[key] for key in ('passed', 'liveness_score', 'face_match_score')}
+            count = result.get('blink_count')
+            if type(count) is not int or not 0 <= count <= 60:
+                raise ValueError('Invalid blink count')
+            safe['blink_count'] = count
+            if safe['passed'] and safe['blink_count'] < 2:
+                raise ValueError('Missing blink evidence')
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            db.query(MotionChallenge).filter_by(id=challenge_id).update({'state': 'failed'})
+            db.commit()
+            raise HTTPException(503, 'Motion verification unavailable; start a new challenge')
+        updated = db.query(MotionChallenge).filter_by(id=challenge_id, state='processing').filter(
+            MotionChallenge.expires_at > datetime.utcnow()).update({
+                'state': 'verified' if safe['passed'] else 'failed', 'result': json.dumps(safe)}, synchronize_session=False)
+        db.commit()
+        if not updated:
+            raise HTTPException(409, 'Challenge expired or was replaced; start again')
+        checkin_diagnostics.event('motion_verified', **safe)
+        return {**safe, 'verification_id': challenge_id if safe['passed'] else None}
 
 
 def consume(db, user, session_id, verification_id):

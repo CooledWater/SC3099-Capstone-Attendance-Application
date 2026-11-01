@@ -655,13 +655,24 @@ __all__ = [
 
 # Separate contract preserves all single-image clients.
 from .motion import SequenceRequest, analyze_sequence
+from .motion_diagnostics import SequenceDiagnostics, requested as motion_diagnostics_requested
 
 
 @app.post('/liveness/sequence')
-def verify_sequence(payload: SequenceRequest):
+def verify_sequence(payload: SequenceRequest, request: Request):
+    diagnostics = SequenceDiagnostics() if motion_diagnostics_requested(request.headers) else None
     try:
-        return analyze_sequence(payload, _verify_image)
+        if diagnostics is None:
+            return analyze_sequence(payload, _verify_image)
+        result = analyze_sequence(payload, _verify_image, observe=diagnostics.observe)
+        return {**result, 'diagnostics': diagnostics.snapshot()}
     except (InvalidImageError, ValueError):
+        if diagnostics is not None:
+            return JSONResponse(status_code=400, content={
+                'detail': 'Invalid sequence images', 'diagnostics': diagnostics.snapshot('invalid_images')})
         raise HTTPException(400, 'Invalid sequence images')
     except (FaceDetectionError, FaceEmbeddingError, LivenessUnavailableError, RuntimeError, ImportError):
+        if diagnostics is not None:
+            return JSONResponse(status_code=503, content={
+                'detail': 'Face models are unavailable', 'diagnostics': diagnostics.snapshot('unavailable')})
         raise HTTPException(503, 'Face models are unavailable')

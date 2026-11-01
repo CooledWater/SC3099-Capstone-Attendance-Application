@@ -67,8 +67,32 @@ SERVICE_FIELDS = {
                      "signal_breakdown": {key: SCORE for key in (
                          "liveness", "face_match", "device", "network", "geolocation")}},
 }
+PASSIVE_FRAME = {"evaluated": BOOL, "frame_index": NUMBER, "timestamp_ms": NUMBER,
+                 "liveness_passed": BOOL, "liveness_score": SCORE,
+                 "liveness_threshold": SCORE, "details": DETAILS}
+SEQUENCE_DETAILS = {
+    "frame_count": NUMBER, "processed_frames": NUMBER, "duration_ms": NUMBER,
+    "last_frame_index": NUMBER, "last_timestamp_ms": NUMBER,
+    "identity_checks": NUMBER, "face_match_threshold": SCORE,
+    "liveness_threshold": SCORE, "depth_threshold": SCORE, "mesh_threshold": SCORE,
+    "ear_closed_threshold": SCORE, "ear_open_threshold": SCORE,
+    "min_closure_ms": NUMBER, "max_closure_ms": NUMBER,
+    "first_frame": PASSIVE_FRAME, "last_frame": PASSIVE_FRAME,
+    "reason": {"passed", "face_count", "face_jump", "identity_failed",
+               "passive_first_failed", "passive_last_failed", "insufficient_blinks",
+               "incomplete_blink", "identity_threshold", "invalid_images", "unavailable"},
+}
+SERVICE_FIELDS["motion_sequence"] = {
+    "passed": BOOL, "blink_count": NUMBER, "liveness_score": SCORE,
+    "face_match_score": SCORE, "diagnostics": SEQUENCE_DETAILS,
+}
 SCHEMAS = {
     "attempt_started": {},
+    "motion_challenge_issued": {"max_duration_ms": NUMBER, "max_frames": NUMBER},
+    "motion_verification_started": {},
+    "motion_verified": {"passed": BOOL, "blink_count": NUMBER,
+                        "liveness_score": SCORE, "face_match_score": SCORE},
+    "motion_request_failed": {"http_status": NUMBER, "reason": {"http_error", "server_error"}},
     **{stage: {**fields, "outcome": {"received", "unavailable", "invalid_response"},
                "http_status": NUMBER} for stage, fields in SERVICE_FIELDS.items()},
     "decision": {
@@ -83,7 +107,8 @@ SCHEMAS = {
     "attendance_committed": {"checkin_id": UUID, "status": STATUS, "risk_score": SCORE},
     "request_failed": {"http_status": NUMBER, "reason": {"http_error", "server_error"}},
 }
-PATHS = {"/liveness/check": "liveness", "/face/verify": "face_match", "/risk/assess": "module3_risk"}
+PATHS = {"/liveness/check": "liveness", "/face/verify": "face_match", "/risk/assess": "module3_risk",
+         "/liveness/sequence": "motion_sequence"}
 
 
 def _uuid(value):
@@ -137,22 +162,40 @@ def event(stage, **values):
 
 
 @contextmanager
-def capture(session_id):
+def capture(session_id, *, challenge_id=None, start_stage="attempt_started", failure_stage="request_failed"):
     enabled = os.getenv("CHECKIN_DIAGNOSTICS_ENABLED", "false").lower() in ("true", "1", "yes")
     allowed = {_uuid(item.strip()) for item in os.getenv("CHECKIN_DIAGNOSTIC_SESSION_IDS", "").split(",")}
     sid = _uuid(session_id)
     token = _context.set({"diagnostic_id": str(uuid.uuid4()), "session_id": sid}
                          if enabled and sid is not None and sid in allowed else None)
     try:
-        event("attempt_started")
+        bind_challenge(challenge_id)
+        if start_stage is not None:
+            event(start_stage)
         yield
     except Exception as exc:
         code = getattr(exc, "status_code", None)
-        event("request_failed", http_status=code if type(code) is int else 500,
+        event(failure_stage, http_status=code if type(code) is int else 500,
               reason="http_error" if type(code) is int else "server_error")
         raise
     finally:
         _context.reset(token)
+
+
+def bind_challenge(challenge_id):
+    """Attach only a canonical UUID; never retain a caller's arbitrary string."""
+    context = _context.get()
+    cid = _uuid(challenge_id)
+    if context is not None and cid is not None:
+        _context.set({**context, "challenge_id": cid})
+
+
+def service_headers(path):
+    """Only the backend's opted-in session scope can request motion details."""
+    context = _context.get()
+    if path == "/liveness/sequence" and context is not None and context.get("challenge_id"):
+        return {"X-SAIV-Diagnostic-Session-ID": context["session_id"]}
+    return {}
 
 
 def trace_checkin(function):
@@ -161,7 +204,7 @@ def trace_checkin(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
         payload = call_signature.bind(*args, **kwargs).arguments["checkin_data"]
-        with capture(payload.session_id):
+        with capture(payload.session_id, challenge_id=getattr(payload, "motion_verification_id", None)):
             return function(*args, **kwargs)
     return wrapped
 
@@ -175,7 +218,15 @@ def observe_response(path, response=None):
         if response is None:
             event(stage, outcome="unavailable")
         elif response.status_code != 200:
-            event(stage, outcome="unavailable", http_status=response.status_code)
+            # An opted-in sequence can carry measurements completed before an
+            # unavailable-model error. Keep only its fixed diagnostic projection.
+            safe = {}
+            if stage == "motion_sequence":
+                try:
+                    safe = sanitize(response.json(), {"diagnostics": SEQUENCE_DETAILS})
+                except (ValueError, TypeError):
+                    pass
+            event(stage, outcome="unavailable", http_status=response.status_code, **safe)
         else:
             try:
                 body = response.json()
