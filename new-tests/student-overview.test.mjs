@@ -34,16 +34,16 @@ function harness(states = {}) {
     if (name.includes("student-overview")) return { fetchStudentOverview: (...args) => args };
     return { formatSingaporeDateTime: value => value };
   });
-  const props = { userId: "student", courseId: "c", onCourseChange: id => nav.push(["course", id]), onAttendance: (...args) => nav.push(["attendance", ...args]), onToday: () => nav.push(["today"]) };
+  const props = { userId: "student", courseId: "c", onCourseChange: id => nav.push(["course", id]), onAttendance: (...args) => nav.push(["attendance", ...args]), onViewCalendar: id => nav.push(["calendar", id]) };
   return { cards, props, queries, nav, render() { return cards.StudentOverviewCards(props); } };
 }
 test("cards show backend counts, accessible percentage and applied navigation filters", () => {
   const h = harness(), tree = h.render();
   assert.match(text(tree), /90%/); assert.match(text(tree), /9 of 10/); assert.match(text(tree), /1 awaiting review/);
   assert.ok(elements(tree).some(node => node.props?.role === "img" && /9 of 10/.test(node.props["aria-label"])));
-  const click = label => elements(tree).find(node => node.type === "a" && text(node) === label).props.onClick({ preventDefault() {} });
+  const click = label => elements(tree).find(node => ["a", "button"].includes(node.type) && text(node) === label).props.onClick({ preventDefault() {} });
   click("View attendance →"); click("View records →");
-  assert.equal(JSON.stringify(h.nav), JSON.stringify([["attendance","c",[]],["attendance","all",["flagged","appealed"]]]));
+  assert.equal(JSON.stringify(h.nav), JSON.stringify([["calendar","c"],["attendance","all",["flagged","appealed"]]]));
   assert.doesNotMatch(text(tree), /View today/);
   assert.equal(h.queries.length, 3);
   assert.ok(h.queries.every(query => query.refetchInterval === 30000));

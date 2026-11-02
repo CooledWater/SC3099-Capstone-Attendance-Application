@@ -245,7 +245,7 @@ export function MyDevicesPanel() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove device?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove <strong>{removeTarget?.device_name ?? "this device"}</strong> from active use. Check-in on it will be blocked until you explicitly enable it in the attendance app’s Profile → My devices. Admin approval will then be required again.
+              This will remove <strong>{removeTarget?.device_name ?? "this device"}</strong> from your registered device list and revoke its trust. Check-in history will be retained. Contact an administrator if you need to use it again.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

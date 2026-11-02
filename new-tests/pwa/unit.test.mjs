@@ -15,14 +15,16 @@ function cacheClient() {
   const items = new Map();
   let now = Date.now();
   class Clock extends Date { static now() { return now; } }
-  const context = { exports: {}, Date: Clock, window: { indexedDB: new IDBFactory() }, localStorage: {
+  const timeContext = { exports: {}, Date: Clock, Intl };
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../module1-frontend/lib/time.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, timeContext);
+  const context = { exports: {}, Date: Clock, require: name => { if (name === '@/lib/time') return timeContext.exports; throw new Error(name); }, window: { indexedDB: new IDBFactory() }, localStorage: {
     getItem: key => items.get(key) ?? null,
     setItem: (key, value) => items.set(key, value), removeItem: key => items.delete(key),
   } };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, context);
   return { ...context.exports, advance: milliseconds => { now += milliseconds; } };
 }
-const session = (id, closes = Date.now() + 3600000) => ({ id, name: id, status: 'active', checkin_closes_at: new Date(closes).toISOString(), latitude: 1, image: 'private-biometric', motion_verification_id: 'private-proof' });
+const session = (id, closes = Date.now() + 3600000) => ({ id, name: id, status: 'active', scheduled_start: new Date(Date.now() - 3600000).toISOString(), scheduled_end: new Date(closes).toISOString(), checkin_closes_at: new Date(closes).toISOString(), latitude: 1, image: 'private-biometric', motion_verification_id: 'private-proof' });
 
 test('snapshots are isolated by account and omit sensitive verification fields', async () => {
   const c = cacheClient();
@@ -31,7 +33,10 @@ test('snapshots are isolated by account and omit sensitive verification fields',
   c.setOfflineAccount('b');
   assert.equal(await c.getCachedActiveSessions('b'), null);
   await c.cacheActiveSessions('b', [session('b-session')]);
+  assert.equal(await c.getCachedActiveSessions('a'), null);
+  c.setOfflineAccount('a');
   const a = await c.getCachedActiveSessions('a');
+  c.setOfflineAccount('b');
   const b = await c.getCachedActiveSessions('b');
   assert.equal(a.sessions[0].id, 'a-session');
   assert.equal(b.sessions[0].id, 'b-session');
@@ -40,12 +45,14 @@ test('snapshots are isolated by account and omit sensitive verification fields',
   assert.equal(a.sessions[0].motion_verification_id, undefined);
 });
 
-test('expired sessions are filtered and stale snapshots are unavailable', async () => {
+test('sessions remain after 15 minutes and expire at scheduled session end', async () => {
   const c = cacheClient(); c.setOfflineAccount('a');
   await c.cacheActiveSessions('a', [session('open'), session('closed', Date.now() - 1000)]);
   assert.deepEqual(Array.from((await c.getCachedActiveSessions('a')).sessions, item => item.id), ['open']);
   c.advance(15 * 60000 + 1);
-  assert.equal(await c.getCachedActiveSessions('a'), null);
+  assert.equal((await c.getCachedActiveSessions('a')).sessions.length, 1);
+  c.advance(46 * 60000);
+  assert.equal((await c.getCachedActiveSessions('a')).sessions.length, 0);
 });
 
 test('logout clears all accounts and late requests cannot repopulate snapshots', async () => {
@@ -105,4 +112,40 @@ test('worker ignores API, POST, RSC and external requests; updates require a mes
   assert.equal(w.calls.length, 0);
   w.handlers.message({ data: { type: 'SKIP_WAITING' } });
   assert.deepEqual(w.calls, ['skipWaiting']);
+});
+
+test('closed check-in windows and empty active lists preserve statuses until session end', async () => {
+  const c = cacheClient(); c.setOfflineAccount('a');
+  const item = { ...session('recent'), checkin_closes_at: new Date(Date.now() - 60000).toISOString() };
+  await c.cacheActiveSessions('a', [item]);
+  await c.cacheSessionAttendance('a', item, { status: 'flagged', checked_in_at: new Date().toISOString(), risk_score: 0.9, image: 'private-image', latitude: 1 });
+  await c.cacheActiveSessions('a', []);
+  let saved = (await c.getCachedActiveSessions('a')).sessions[0];
+  assert.equal(saved.attendance.status, 'flagged');
+  assert.deepEqual(Object.keys(saved.attendance).sort(), ['checked_in_at', 'risk_score', 'status']);
+  assert.equal(saved.attendance.risk_score, 0.9);
+  await c.cacheActiveSessions('a', [item]);
+  assert.equal((await c.getCachedActiveSessions('a')).sessions[0].attendance.status, 'flagged');
+  await c.cacheSessionAttendance('a', item, { status: 'approved', checked_in_at: new Date().toISOString() });
+  assert.equal((await c.getCachedActiveSessions('a')).sessions[0].attendance.status, 'approved');
+});
+
+test('timezone-less API timestamps are UTC, not device local time', async () => {
+  const c = cacheClient(); c.setOfflineAccount('a');
+  const item = session('utc');
+  item.scheduled_end = new Date(Date.now() + 60000).toISOString().replace('Z', '');
+  await c.cacheActiveSessions('a', [item]);
+  assert.equal((await c.getCachedActiveSessions('a')).sessions.length, 1);
+  c.advance(61000);
+  assert.equal((await c.getCachedActiveSessions('a')).sessions.length, 0);
+});
+
+test('saved risk scores preserve zero and omit invalid scores and submission evidence', async () => {
+  const c = cacheClient(); c.setOfflineAccount('a');
+  for (const score of [0, 0.25, null, NaN, Infinity, -1, 2]) {
+    await c.cacheSessionAttendance('a', session('score'), { status: 'approved', checked_in_at: new Date().toISOString(), risk_score: score, image: 'private-image' });
+    const saved = (await c.getCachedActiveSessions('a')).sessions[0].attendance;
+    assert.equal(saved.risk_score, typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1 ? score : undefined);
+    assert.equal(saved.image, undefined);
+  }
 });

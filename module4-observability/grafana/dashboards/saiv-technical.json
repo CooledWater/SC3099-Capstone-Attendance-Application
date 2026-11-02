@@ -1,0 +1,78 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "title": "API request rate",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(http_requests_total{service=\"backend\"}[5m]))", "legendFormat": "requests/sec", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "title": "Backend p95 response latency",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"backend\"}[5m]))) * 1000", "legendFormat": "p95 ms", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "title": "HTTP error rates",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "100 * sum(rate(http_requests_total{service=\"backend\",status_class=\"4xx\"}[5m])) / sum(rate(http_requests_total{service=\"backend\"}[5m]))", "legendFormat": "4xx", "refId": "A"},
+        {"expr": "100 * sum(rate(http_requests_total{service=\"backend\",status_class=\"5xx\"}[5m])) / sum(rate(http_requests_total{service=\"backend\"}[5m]))", "legendFormat": "5xx", "refId": "B"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "id": 4,
+      "title": "Check-in outcomes",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "sum(increase(checkin_outcomes_total{status=\"approved\"}[1h]))", "legendFormat": "approved", "refId": "A"},
+        {"expr": "sum(increase(checkin_outcomes_total{status=\"flagged\"}[1h]))", "legendFormat": "flagged", "refId": "B"},
+        {"expr": "sum(increase(checkin_outcomes_total{status=\"rejected\"}[1h]))", "legendFormat": "rejected", "refId": "C"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "id": 5,
+      "title": "Service availability",
+      "type": "timeseries",
+      "targets": [{"expr": "up{job=~\"saiv-backend|saiv-face-recognition\"}", "legendFormat": "{{job}}", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "id": 6,
+      "title": "Risk score distribution",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (le) (increase(checkin_risk_score_bucket[1h]))", "legendFormat": "risk <= {{le}}", "refId": "A"}]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["saiv", "module4", "technical"],
+  "templating": {"list": []},
+  "time": {"from": "now-12h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SAIV Technical Metrics",
+  "uid": "saiv-technical",
+  "version": 1
+}

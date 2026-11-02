@@ -28,9 +28,7 @@ export type BulkResult = {
     email: string;
     status: string;
     error?: string;
-    invitation_status?: string;
-    invitation_pending?: boolean;
-    invitation_error?: string;
+    initial_password?: string;
   }[];
 };
 
@@ -74,19 +72,3 @@ export const bulkEnroll = (courseId: string, emails: string[], createAccounts: b
   });
 export const removeEnrollment = (enrollmentId: string) =>
   api.request<void>(`/enrollments/${encodeURIComponent(enrollmentId)}`, { method: "DELETE" });
-
-export type InvitationResult = {
-  email: string;
-  invitation_status: string;
-  invitation_pending: boolean;
-  invitation_error?: string | null;
-};
-export const fetchInvitations = (courseId: string) =>
-  api.request<{ items: InvitationResult[] }>(
-    `/enrollments/course/${encodeURIComponent(courseId)}/invitations`,
-  );
-export const resendInvitation = (courseId: string, email: string) =>
-  api.request(`/enrollments/invitations/resend`, {
-    method: "POST",
-    body: JSON.stringify({ course_id: courseId, email }),
-  });

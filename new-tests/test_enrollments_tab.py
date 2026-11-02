@@ -69,7 +69,12 @@ def test_concurrent_duplicate_enrollment_returns_201_and_400(api, roster_world):
 
 
 def test_roster_search_filter_counts_and_soft_delete(api, roster_world):
-    w = roster_world
+    # Other tests add students to their shared course. Give exact-count
+    # assertions an isolated course rather than depending on execution order.
+    w = {**roster_world, "course": _make_course(api, roster_world["admin"], roster_world["teacher"])}
+    assert api.post("/api/v1/enrollments/", headers=w["teacher"]["headers"], json={
+        "course_id": w["course"], "student_id": w["student"]["id"],
+    }).status_code == 201
     url = f"/api/v1/enrollments/course/{w['course']}"
     headers = w["teacher"]["headers"]
     active = api.get(url, headers=headers).json()

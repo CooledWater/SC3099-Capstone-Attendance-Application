@@ -17,9 +17,11 @@ Authorization: Bearer <access_token>
 | Role | Description | Permissions |
 |------|-------------|-------------|
 | `student` | Students checking into classes | Check-in, view own records, manage own devices |
-| `ta` | Teaching assistants | Student permissions + view session check-ins, review flagged check-ins |
-| `instructor` | Course instructors | TA permissions + manage sessions, view course analytics, manage enrollments |
-| `admin` | System administrators | Full access to all endpoints |
+| `ta` | Teaching assistants | View session check-ins and review flagged check-ins for assigned courses |
+| `instructor` | Course instructors | Manage assigned courses and sessions, review check-ins, view course analytics, manage enrollments |
+| `admin` | System administrators | System-wide management access; student-only endpoints remain restricted to students |
+
+Endpoint-specific role restrictions take precedence; roles do not automatically inherit student-only permissions.
 
 ---
 
@@ -332,6 +334,23 @@ Soft-delete a course (sets is_active=false). **Requires auth (admin only).**
 
 ---
 
+### Course TA assignments
+
+All endpoints below require **admin authentication** and use the `/api/v1` base.
+
+| Method | Endpoint | Behavior |
+|--------|----------|----------|
+| GET | `/admin/courses/{course_id}/tas` | List assignments: `200`, `{course_id, items, total}` |
+| POST | `/admin/courses/{course_id}/tas` | Assign an active TA using exactly one of `{"user_id":"uuid"}` or `{"email":"ta@example.edu"}`; returns assignment with `201` |
+| DELETE | `/admin/courses/{course_id}/tas/{user_id}` | Remove assignment; returns `204` |
+
+Assignment fields: `id`, `course_id`, `user_id`, `email`, `full_name`, `is_active`, `assigned_at`.
+Assignments grant TA access to the course's sessions/check-ins and enrollment roster;
+multiple TAs per course and multiple courses per TA are supported. Session-level
+TA assignments are not implemented. Errors: `400` for inactive/non-TA users,
+`404` for missing resources, `409` for duplicate assignment, `422` for invalid input.
+Assignment/removal is audited as `user_updated` with resource type `course_assistant`.
+
 ### Sessions
 
 Sessions represent class meetings where students check in.
@@ -488,7 +507,7 @@ Create a new session. **Requires auth (instructor or admin).**
 - `checkin_closes_at` must be after `checkin_opens_at`
 
 #### PATCH /sessions/{session_id}
-Update a session. **Requires auth (instructor only, must be session owner).**
+Update a session. **Requires auth (admin, or session-owning instructor still assigned to the course).**
 
 **Request:** (partial update - any subset of fields)
 ```json
@@ -551,9 +570,8 @@ and a `session_deleted` audit entry is retained in the same transaction.
 Requires JWT authentication with instructor, TA, or admin role. Instructors
 must own the course/session, or the course must have no assigned instructor,
 matching check-in details/review and session export. Unrelated instructors
-receive 403; missing sessions receive 404. The schema has no TA-course assignment
-relation, so existing TA staff visibility remains global; this endpoint cannot
-claim assignment-level TA restrictions.
+receive 403; missing sessions receive 404. TAs must have an explicit course
+assignment through the course TA assignment endpoints; unassigned TAs receive 403.
 
 Returns a complete, unpaginated session roster for local search/filter/pagination:
 `{session_id, course_id, session_status, expected, items, summary, policy}`.
@@ -1032,6 +1050,184 @@ Get attendance statistics for a course. **Requires auth (instructor for course, 
 }
 ```
 
+#### GET /stats/courses/{course_id}/overview
+
+**Added by: ishita.**
+
+Full route: `GET /api/v1/stats/courses/{course_id}/overview`.
+Get course-scoped aggregates for the instructor overview dashboard.
+**Requires auth (instructor for course, or admin).**
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `start_date` | ISO8601 datetime | None | Inclusive lower bound on session `scheduled_start` |
+| `end_date` | ISO8601 datetime | None | Exclusive upper bound on session `scheduled_start` |
+
+Pass both bounds for a selected reporting period. For October 2026 in Singapore,
+use `start_date=2026-10-01T00:00:00+08:00` and
+`end_date=2026-11-01T00:00:00+08:00`; URL-encode the values, including `+` as `%2B`.
+When both bounds are supplied, `start_date` must be strictly before `end_date`.
+Unlike `GET /stats/courses/{course_id}`, this endpoint's end bound is exclusive.
+An omitted bound leaves that side of the session aggregation unrestricted.
+If either bound is omitted, the trend instead starts at today's local midnight
+and spans 31 days; supply both bounds to align the trend with the other aggregates.
+
+**Response:** `200 OK`
+
+Illustrative response for five currently enrolled students, one closed session,
+and one active session. Datetime response fields are currently serialized as
+UTC without a timezone suffix. Trend dates and `today.date` use `timezone`
+(`APP_TIMEZONE`, default `Asia/Singapore`).
+
+```json
+{
+  "course_id": "course-uuid",
+  "course_code": "CS6101",
+  "course_name": "Advanced Topics in CS",
+  "timezone": "Asia/Singapore",
+  "start_date": "2026-09-30T16:00:00",
+  "end_date": "2026-10-31T16:00:00",
+  "attendance": {
+    "recorded": 7,
+    "expected": 10,
+    "rate": 0.7,
+    "held_sessions": 2,
+    "active_sessions": 1,
+    "approval_rate": 0.7143,
+    "status_counts": {
+      "approved": 5,
+      "flagged": 1,
+      "appealed": 1,
+      "rejected": 0,
+      "pending": 0
+    },
+    "historical_enrollment_limited": true
+  },
+  "outstanding": {
+    "flagged": 1,
+    "appealed": 1
+  },
+  "today": {
+    "date": "2026-10-28",
+    "total": 1,
+    "breakdown": {
+      "scheduled": 0,
+      "active": 1,
+      "closed": 0,
+      "cancelled": 0
+    }
+  },
+  "low_participation": {
+    "threshold": 0.4,
+    "total": 1,
+    "students": [
+      {
+        "student_id": "student-uuid",
+        "student_name": "John Doe",
+        "student_email": "john@example.com",
+        "submitted_sessions": 0,
+        "expected_sessions": 1,
+        "participation_rate": 0
+      }
+    ]
+  },
+  "risk_distribution": {
+    "scored_count": 7,
+    "bins": [
+      { "label": "0.0–<0.1", "min": 0, "max": 0.1, "count": 3 },
+      { "label": "0.1–<0.2", "min": 0.1, "max": 0.2, "count": 1 },
+      { "label": "0.2–<0.3", "min": 0.2, "max": 0.3, "count": 1 },
+      { "label": "0.3–<0.4", "min": 0.3, "max": 0.4, "count": 1 },
+      { "label": "0.4–<0.5", "min": 0.4, "max": 0.5, "count": 0 },
+      { "label": "0.5–<0.6", "min": 0.5, "max": 0.6, "count": 1 },
+      { "label": "0.6–<0.7", "min": 0.6, "max": 0.7, "count": 0 },
+      { "label": "0.7–<0.8", "min": 0.7, "max": 0.8, "count": 0 },
+      { "label": "0.8–<0.9", "min": 0.8, "max": 0.9, "count": 0 },
+      { "label": "0.9–1.0", "min": 0.9, "max": 1, "count": 0 }
+    ]
+  },
+  "trend": [
+    {
+      "start": "2026-10-01",
+      "end": "2026-10-08",
+      "recorded": 4,
+      "expected": 5,
+      "rate": 0.8,
+      "provisional": false
+    },
+    {
+      "start": "2026-10-08",
+      "end": "2026-10-15",
+      "recorded": 0,
+      "expected": 0,
+      "rate": null,
+      "provisional": false
+    },
+    {
+      "start": "2026-10-15",
+      "end": "2026-10-22",
+      "recorded": 0,
+      "expected": 0,
+      "rate": null,
+      "provisional": false
+    },
+    {
+      "start": "2026-10-22",
+      "end": "2026-11-01",
+      "recorded": 3,
+      "expected": 5,
+      "rate": 0.6,
+      "provisional": true
+    }
+  ],
+  "recent_sessions": [
+    {
+      "session_id": "session-uuid",
+      "name": "Lecture 1",
+      "status": "closed",
+      "scheduled_start": "2026-10-05T06:00:00",
+      "scheduled_end": "2026-10-05T08:00:00",
+      "recorded": 4,
+      "expected": 5,
+      "rate": 0.8
+    }
+  ]
+}
+```
+
+**Aggregation rules:**
+
+- Attendance includes `active` and `closed` sessions in the selected period,
+  counting check-ins regardless of verification status. `expected` is the current
+  active enrollment count multiplied by held sessions. `rate` is recorded / expected,
+  capped at `1` and rounded to four decimal places, or `0` when expected is zero.
+  `approval_rate` is approved / all held-session
+  check-ins, or `null` when there are none.
+- `historical_enrollment_limited` is `true`: expected attendance uses current
+  active enrollments rather than enrollment history at each session date.
+- `outstanding` counts flagged and appealed check-ins across the whole course,
+  independent of the selected period. `today` counts sessions by status for the
+  current local day, also independent of the selected period.
+- Low participation includes currently active enrollees with check-ins in
+  **40% or fewer of the selected closed sessions**. Any check-in status counts
+  as submitted. With no eligible closed sessions, the list is empty.
+- Risk distribution includes only non-null scores from selected held sessions.
+  The API returns ten width-0.1 bins; each is lower-inclusive and upper-exclusive,
+  except the final bin includes `1.0`. The dashboard combines these into
+  **Low `<0.3`**, **Medium `0.3–<0.5`**, and **High `≥0.5`**.
+- With both bounds supplied, periods longer than seven days use four buckets:
+  the first three span seven days each, and the fourth spans the remaining days.
+  Periods up to seven days use daily buckets. Bucket ends are exclusive; rates
+  use summed recorded / expected totals and are `null` when expected is zero.
+  `provisional` indicates a bucket containing an active session.
+- `recent_sessions` returns up to five selected closed sessions, ordered by
+  scheduled end descending, then scheduled start descending.
+
+**Errors:** `400` for `start_date >= end_date`, `403` for an authenticated user
+without access, `404` for an unknown course, and `422` for invalid datetime input.
+
 #### GET /stats/students/{student_id}
 Get attendance statistics for a specific student. **Requires auth (instructor for student's courses, or admin).**
 
@@ -1197,8 +1393,9 @@ Get all students enrolled in a course. **Requires auth (instructor/TA for course
 the returned students after filtering. The roster is not paginated or truncated.
 Search matches name/email case-insensitively and treats SQL wildcard characters
 literally. Instructor access requires `course.instructor_id` to match the caller;
-unassigned courses are admin-only. The project has no TA assignment model, so
-TA roster requests fail closed (403) until explicit course assignments exist.
+unassigned courses are admin-only for instructor access. TAs may read rosters
+only for courses explicitly assigned through the course TA assignment endpoints;
+otherwise requests fail closed (403).
 
 #### POST /enrollments/
 Enroll a student in a course. **Requires auth (instructor for course, or admin).**
@@ -1254,11 +1451,29 @@ enrollments are reactivated. Non-student or disabled accounts are reported as
 as `not_found` unless `create_accounts=true`. Successful entries and audit rows
 commit together; concurrent unique-constraint conflicts roll back the batch
 and return 409, so clients can retry. Single enrollment conflicts return 400.
-New accounts receive a queued email invitation. Accounts and enrollments commit
-before delivery; SMTP failure does not undo enrollment. New-account results add
-`invitation_status: "queued"` and `invitation_pending: true`. Pending accounts
-cannot log in until password setup completes. Existing usable accounts are not
-sent setup invitations and their passwords cannot be reset through this flow.
+When `create_accounts=true`, each newly created student receives a distinct,
+cryptographically generated 24-character URL-safe initial password. Only its
+bcrypt hash is stored. The successful response includes `initial_password` in
+that student's detail entry, for the authorized enrolling instructor/admin to
+share with the student. For example:
+
+```json
+{
+  "email": "newstudent@example.edu",
+  "status": "created",
+  "initial_password": "ExampleInitialPassword01"
+}
+```
+
+The response uses `Cache-Control: no-store`. Plaintext initial passwords are
+never written to audit details or exposed by user/roster read endpoints. They
+are returned only when the account is first created, not on repeated enrollment
+requests. Existing accounts and reactivated enrollments retain their passwords
+and never return an `initial_password`. A failed transaction rolls back account
+creation and enrollment and returns no credentials.
+
+New students can sign in immediately through `POST /auth/login` using this
+initial password
 
 #### DELETE /enrollments/{enrollment_id}
 Deactivate an enrollment (`is_active=false`, with `dropped_at` recorded). Attendance history is retained. Re-enrollment reactivates the existing record. **Requires auth (instructor for course, or admin).**
@@ -1267,38 +1482,15 @@ Deactivate an enrollment (`is_active=false`, with `dropped_at` recorded). Attend
 
 ---
 
-### Enrollment invitation setup (Added by ishita)
+### Enrollment account access without email invitations (Updated 31 Oct 2026)
 
-- `GET /enrollments/course/{course_id}/invitations`: owning instructor/admin;
-  returns `items` containing email, invitation_status, invitation_pending and
-  invitation_error (nullable). States: queued, sending, sent, failed, not_needed.
-- `POST /enrollments/invitations/resend`: owning instructor/admin; body
-  `{ "course_id": "uuid", "email": "student@example.edu" }`. Requires an
-  active enrollment and pending account setup. Rotates the link and queues
-  delivery; returns the invitation status. Returns 403 for an unrelated course,
-  400 for no pending setup, and 429 with Retry-After for resends within 60 seconds.
-- `POST /auth/invitations/validate`: public; body `{ "token": "..." }`;
-  returns `{ "email": "..." }` for a valid invitation, otherwise 400.
-- `POST /auth/invitations/complete`: public; body `{ "token": "...", "password": "..." }`;
-  accepts 8-72 characters and at most 72 UTF-8 bytes. Atomically consumes the
-  token and sets a bcrypt password. Returns email and a success message, 400
-  for expired/used/tampered links, or sanitized 422 for invalid input. The
-  frontend then uses the existing login endpoint and cookie flow.
-- `POST /auth/invitations/request`: public; body `{ "email": "..." }`;
-  returns the same generic message for unknown, completed, disabled and pending
-  accounts. Only eligible pending accounts receive another invitation. Requests
-  are limited to five per IP per minute per backend worker, and rotation has a
-  persisted 60-second cooldown per account.
 
-Links expire after 24 hours, are single-use and purpose-bound, and place their
-token in the URL fragment (`/setup-account#token=...`) so HTTP request URLs do
-not contain it. The page clears the fragment after loading. Tokens, passwords
-and SMTP exceptions are excluded from audit details and invitation error output.
-A durable outbox retries interrupted `sending` claims after two minutes. Failed
-SMTP deliveries require resend; sent means accepted by SMTP, not that a user
-has read the email. Delivery worker checks run every three seconds. Only newly
-provisioned accounts use this flow; it is not a password-reset mechanism for
-existing users.
+The Module 4 Add students form shows each newly created student's email and
+initial password in its results. Staff share those credentials before closing
+the dialog. The password is held only in transient component state, is not
+stored in browser storage or the query cache, and clears when the dialog closes
+or its course changes. Existing accounts' passwords remain unchanged.
+
 
 ---
 

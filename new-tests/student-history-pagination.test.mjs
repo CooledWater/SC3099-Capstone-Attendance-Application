@@ -59,6 +59,7 @@ test("table displays session and raw risk; course and session-name search reset 
       return [values[i], value => { values[i] = typeof value === "function" ? value(values[i]) : value; }];
     } };
     if (name === "@tanstack/react-query") return { useMutation: () => ({}), useQueryClient: () => ({}), useQuery(options) {
+      if (options.queryKey[0] !== "my-check-ins") return { data: [] };
       query = options;
       const [, , course, search, page] = options.queryKey;
       return { data: raw.filter(row => (course === "all" || row.course_id === course) && row.session_name.toLowerCase().includes(search.toLowerCase())).slice(page * 50, (page + 1) * 50) };

@@ -16,6 +16,52 @@ worker.addEventListener('activate', event => {
 worker.addEventListener('message', event => {
   if (event.data?.type === 'SKIP_WAITING') void worker.skipWaiting();
 });
+
+// Match the opted-in account before displaying a message on shared browsers.
+async function notificationOwner() {
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('saiv-push', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('settings');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction('settings').objectStore('settings').get('owner');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally { db.close(); }
+}
+
+worker.addEventListener('push', event => {
+  event.waitUntil((async () => {
+    let payload;
+    try { payload = event.data?.json(); } catch { return; }
+    if (payload?.type !== 'attendance-approved' || !payload.user_id || await notificationOwner() !== payload.user_id) return;
+    await worker.registration.showNotification('Attendance approved', {
+      body: typeof payload.body === 'string' && payload.body.trim()
+        ? payload.body.trim().slice(0, 500)
+        : 'Your attendance has been approved. Tap to view your attendance.',
+      icon: '/icon-192.png', badge: '/icon-192.png',
+      tag: `attendance-approved-${payload.checkin_id}`,
+      data: { userId: payload.user_id },
+    });
+  })());
+});
+
+worker.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    if (await notificationOwner() !== event.notification.data?.userId) return;
+    // Fixed same-origin destination; never navigate to a URL supplied by a push.
+    const url = new URL('/dashboard/', worker.location.origin).href;
+    const windows = await worker.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const existing = windows.find(client => client.url.startsWith(url));
+    if (existing) { await existing.navigate(url); await existing.focus(); }
+    else await worker.clients.openWindow(url);
+  })());
+});
 worker.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);

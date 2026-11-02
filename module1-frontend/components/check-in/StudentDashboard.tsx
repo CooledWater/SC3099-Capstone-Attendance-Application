@@ -2,15 +2,15 @@
 import { formatSingaporeDateTime, singaporeGreeting } from '@/lib/time';
 import { AppLogo } from '@/components/AppLogo';
 
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { useCamera } from '@/features/camera/useCamera';
 import { FaceVerification, type FaceEvidence } from './FaceVerification';
 import { useGeolocation } from '@/features/geolocation/useGeolocation';
-import { getActiveSessions, getMySessionCheckIn, submitCheckIn } from '@/lib/api/checkins';
+import { getActiveSessions, getMySessionCheckIn, getRecentSessionSnapshot, submitCheckIn } from '@/lib/api/checkins';
 import { createDeviceProof } from '@/lib/device';
 import { ApiError, isConnectivityError } from '@/lib/api/client';
 import { SavedSessions } from './SavedSessions';
-import { cacheActiveSessions, getCachedActiveSessions, type CachedActiveSessions } from '@/lib/offline/sessionCache';
+import { cacheActiveSessions, cacheSessionAttendance, getCachedActiveSessions, type CachedActiveSessions } from '@/lib/offline/sessionCache';
 import type { CheckIn, Session, User } from '@/types/api';
 
 type Phase = 'camera' | 'location' | 'liveness' | 'review' | 'submitting' | 'result';
@@ -41,6 +41,8 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [attendance, setAttendance] = useState<{ key: string; error?: string }>();
   const [attendanceRetry, setAttendanceRetry] = useState(0);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   const selected = sessions.find(item => item.id === selectedId);
   const requiresMotion = selected?.require_motion_check === true;
   const attendanceKey = `${user.id}:${selectedId}:${requiresMotion}`;
@@ -66,7 +68,21 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
         setSessions(list);
         setSelectedId(previous => list.some(item => item.id === previous) ? previous : list[0]?.id ?? '');
         setSnapshot(null); setReadOnly(false); setNotice('');
-        void cacheActiveSessions(user.id, list).catch(() => undefined);
+        await cacheActiveSessions(user.id, list).catch(() => undefined);
+        // Include sessions whose check-in window has closed but class is still
+        // running, and cache only the student's status/time, never verification data.
+        try {
+          const recent = await getRecentSessionSnapshot();
+          if (cancelled) return;
+          await cacheActiveSessions(user.id, recent.sessions.map(session => ({ ...session,
+            attendance: recent.checkins.find(record => record.session_id === session.id) ?? null,
+          }))).catch(() => undefined);
+        } catch (error) {
+          if (!cancelled && isConnectivityError(error)) {
+            const cached = await getCachedActiveSessions(user.id).catch(() => null);
+            if (!cancelled) { setSnapshot(cached); setReadOnly(true); }
+          }
+        }
       } catch (error) {
         if (cancelled) return;
         // HTTP authorization/server errors must never be disguised as cached success.
@@ -89,10 +105,16 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
     setAttendance(undefined);
     void getMySessionCheckIn(selectedId).then(result => {
       if (cancelled) return;
+      const session = sessionsRef.current.find(item => item.id === selectedId);
+      if (session) void cacheSessionAttendance(user.id, session, result).catch(() => undefined);
       if (result) dispatch({ type: 'result', result });
       setAttendance({ key: attendanceKey });
     }).catch(error => {
-      if (!cancelled) setAttendance({ key: attendanceKey, error: error instanceof Error ? error.message : 'Could not load your attendance.' });
+      if (cancelled) return;
+      setAttendance({ key: attendanceKey, error: error instanceof Error ? error.message : 'Could not load your attendance.' });
+      if (isConnectivityError(error)) void getCachedActiveSessions(user.id).catch(() => null).then(cached => {
+        if (!cancelled) { setSnapshot(cached); setReadOnly(true); }
+      });
     });
     return () => { cancelled = true; };
   }, [demo, selectedId, user.id, attendanceKey, online, readOnly, attendanceRetry, stopCamera, resetLocation]);
@@ -102,6 +124,21 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
     update(); window.addEventListener('online', update); window.addEventListener('offline', update);
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, []);
+  useEffect(() => {
+    if (demo) return;
+    const refresh = () => {
+      if (document.hidden || !navigator.onLine || !['camera', 'result'].includes(flow.phase)
+          || camera.state === 'ready' || camera.state === 'requesting') return;
+      setRetry(value => value + 1); setAttendanceRetry(value => value + 1);
+    };
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer); window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [demo, flow.phase, camera.state]);
   useEffect(() => { if (camera.state !== 'ready') setEvidence({}); }, [camera.state]);
   useEffect(() => {
     if (!consentReady || profileOpen || registrationError || (!demo && (!online || readOnly))) return;
@@ -154,8 +191,14 @@ export function StudentDashboard({ user, demo, onLogout, onBusyChange, onOpenPro
     }
     try {
       const result = await submitCheckIn({ session_id: selected.id, latitude: geo.point.latitude, longitude: geo.point.longitude, location_accuracy_meters: geo.point.accuracy, ...await createDeviceProof(user.id, selected.id), ...evidence });
+      await cacheSessionAttendance(user.id, selected, result).catch(() => undefined);
       setEvidence({}); camera.stop(); dispatch({ type: 'result', result });
-    } catch (error) { dispatch({ type: 'phase', phase: 'review' }); setNotice(error instanceof Error ? error.message : 'Check-in failed.'); }
+    } catch (error) {
+      dispatch({ type: 'phase', phase: 'review' }); setNotice(error instanceof Error ? error.message : 'Check-in failed.');
+      if (isConnectivityError(error)) {
+        setSnapshot(await getCachedActiveSessions(user.id).catch(() => null)); setReadOnly(true);
+      }
+    }
   }
 
   async function handleLogout() {

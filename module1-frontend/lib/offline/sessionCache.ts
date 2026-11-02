@@ -1,10 +1,10 @@
-import type { Session } from '@/types/api';
+import { parseApiDateTime } from '@/lib/time';
+import type { CheckIn, Session } from '@/types/api';
 
 const DATABASE_NAME = 'saiv-offline';
 const DATABASE_VERSION = 2;
 const SESSION_STORE = 'session-snapshots';
 const ACTIVE_SESSIONS_KEY = 'active-sessions';
-const SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
 const OWNER_KEY = 'saiv-offline-owner';
 
 // This account identifier enables read-only viewing; it never authenticates.
@@ -16,15 +16,22 @@ export function setOfflineAccount(userId: string): void {
   try { localStorage.setItem(OWNER_KEY, userId); } catch { /* Offline storage is optional. */ }
 }
 
+export type SavedAttendance = Pick<CheckIn, 'status' | 'checked_in_at'> & { risk_score?: number };
+export type CachedSession = Session & { attendance?: SavedAttendance | null };
+
+export function sessionAvailableOffline(session: Session, now = Date.now()): boolean {
+  return session.status !== 'cancelled' && parseApiDateTime(session.scheduled_end).getTime() > now;
+}
+
 type SessionSnapshot = {
   key: string;
   cachedAt: number;
-  sessions: Session[];
+  sessions: CachedSession[];
 };
 
 export type CachedActiveSessions = {
   cachedAt: Date;
-  sessions: Session[];
+  sessions: CachedSession[];
 };
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -48,7 +55,7 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-function sanitizeSession(session: Session): Session {
+function sanitizeSession(session: CachedSession): CachedSession {
   return {
     id: session.id,
     course_code: session.course_code,
@@ -59,21 +66,37 @@ function sanitizeSession(session: Session): Session {
     checkin_opens_at: session.checkin_opens_at,
     checkin_closes_at: session.checkin_closes_at,
     venue_name: session.venue_name,
+    ...(session.attendance !== undefined && { attendance: session.attendance ? {
+      status: session.attendance.status, checked_in_at: session.attendance.checked_in_at,
+      ...(typeof session.attendance.risk_score === 'number' && Number.isFinite(session.attendance.risk_score)
+        && session.attendance.risk_score >= 0 && session.attendance.risk_score <= 1
+        && { risk_score: session.attendance.risk_score }),
+    } : null }),
   };
 }
 
-export async function cacheActiveSessions(userId: string, sessions: Session[]): Promise<void> {
+export async function cacheActiveSessions(userId: string, sessions: CachedSession[]): Promise<void> {
   const database = await openDatabase();
 
   try {
     if (getOfflineAccount() !== userId) return;
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(SESSION_STORE, 'readwrite');
-      transaction.objectStore(SESSION_STORE).put({
-        key: `${ACTIVE_SESSIONS_KEY}:${userId}`,
-        cachedAt: Date.now(),
-        sessions: sessions.map(sanitizeSession),
-      } satisfies SessionSnapshot);
+      const store = transaction.objectStore(SESSION_STORE);
+      const key = `${ACTIVE_SESSIONS_KEY}:${userId}`;
+      const request = store.get(key);
+      request.onsuccess = () => {
+        // Read and merge in one transaction: a status update cannot overwrite a
+        // concurrent session refresh, and an empty active list retains unended sessions.
+        if (getOfflineAccount() !== userId) return;
+        const previous = request.result as SessionSnapshot | undefined;
+        const merged = new Map((previous?.sessions ?? []).map(session => [session.id, sanitizeSession(session)]));
+        for (const session of sessions) merged.set(session.id, { ...merged.get(session.id), ...sanitizeSession(session) });
+        store.put({ key, cachedAt: Date.now(), sessions: Array.from(merged.values())
+          .filter(session => sessionAvailableOffline(session))
+          .sort((a, b) => parseApiDateTime(b.scheduled_start).getTime() - parseApiDateTime(a.scheduled_start).getTime())
+          .slice(0, 100) } satisfies SessionSnapshot);
+      };
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error('Could not cache sessions'));
       transaction.onabort = () => reject(transaction.error ?? new Error('Caching sessions was aborted'));
@@ -81,6 +104,10 @@ export async function cacheActiveSessions(userId: string, sessions: Session[]): 
   } finally {
     database.close();
   }
+}
+
+export async function cacheSessionAttendance(userId: string, session: Session, result?: CheckIn): Promise<void> {
+  await cacheActiveSessions(userId, [{ ...session, attendance: result ?? null }]);
 }
 
 export async function getCachedActiveSessions(userId: string): Promise<CachedActiveSessions | null> {
@@ -94,15 +121,12 @@ export async function getCachedActiveSessions(userId: string): Promise<CachedAct
       request.onerror = () => reject(request.error ?? new Error('Could not read cached sessions'));
     });
 
-    if (!snapshot || snapshot.cachedAt > Date.now() || Date.now() - snapshot.cachedAt > SNAPSHOT_MAX_AGE_MS) return null;
+    if (getOfflineAccount() !== userId || !snapshot || snapshot.cachedAt > Date.now()) return null;
 
     const now = Date.now();
     return {
       cachedAt: new Date(snapshot.cachedAt),
-      sessions: snapshot.sessions.filter(session => {
-        const closesAt = Date.parse(session.checkin_closes_at);
-        return Number.isFinite(closesAt) && closesAt >= now;
-      }),
+      sessions: snapshot.sessions.filter(session => sessionAvailableOffline(session, now)).map(sanitizeSession),
     };
   } finally {
     database.close();

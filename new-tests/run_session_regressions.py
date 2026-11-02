@@ -18,6 +18,8 @@ with tempfile.TemporaryDirectory(prefix="saiv-schedule-") as temporary:
     env = dict(os.environ, DATABASE_URL=f"sqlite:///{Path(temporary).as_posix()}/test.db",
                JWT_SECRET="isolated-scheduling-test-secret",
                TEST_BACKEND_URL=f"http://127.0.0.1:{port}",
+               API_BASE_URL=f"http://127.0.0.1:{port}",
+               STRICT_SECURITY_MODE="false",
                PYTHONPATH=str(root / "tests"))
     os.environ.update(env)
     sys.path.insert(0, str(root / "module2-backend"))

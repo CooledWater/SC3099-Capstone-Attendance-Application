@@ -11,8 +11,10 @@ const ts = frontend('typescript');
 const source = readFileSync(new URL('../../module1-frontend/components/PermissionSettings.tsx', import.meta.url), 'utf8');
 function mount(fail = false) {
   const calls = [];
-  const user = { id: 'student', camera_consent: true, geolocation_consent: true };
+  const user = { id: 'student', role: 'student', camera_consent: true, geolocation_consent: true };
   const context = { Error, exports: {}, require: name => {
+    if (name === './DataDeletionSettings') return { DataDeletionSettings: () => null };
+    if (name === './PushNotifications') return { PushNotifications: () => React.createElement('div', { 'data-notification-controls': true }, 'Notification controls') };
     if (name === 'react') return React;
     if (name === 'react/jsx-runtime') return dependencies(name);
     if (name === '@/lib/api/auth') return { updateConsent: async (camera, location) => { calls.push([camera, location]); if (fail) throw new Error('Save failed'); return { ...user, camera_consent: camera, geolocation_consent: location }; } };
@@ -54,6 +56,8 @@ test('check-in restores saved consent and blocks collection after consent is wit
   const camera = { state: 'idle', permissionState: 'granted', stop, start: () => { starts++; } };
   const geo = { state: 'idle', permissionState: 'granted', reset, request: () => {} };
   const context = { exports: {}, Date, navigator: { onLine: true }, window: { addEventListener() {}, removeEventListener() {} }, require: name => {
+    if (name === './DataDeletionSettings') return { DataDeletionSettings: () => null };
+    if (name === './PushNotifications') return { PushNotifications: () => React.createElement('div', { 'data-notification-controls': true }, 'Notification controls') };
     if (name === 'react') return React;
     if (name === 'react/jsx-runtime') return dependencies(name);
     if (name.endsWith('useCamera')) return { useCamera: () => camera };
@@ -76,4 +80,18 @@ test('check-in restores saved consent and blocks collection after consent is wit
   assert.ok(renderer.root.findAllByType('h2').some(item => item.children.includes('Permission required')));
   assert.ok(!renderer.root.findAllByType('button').some(item => item.children.includes('Start camera')));
   act(() => renderer.unmount());
+});
+
+test('notification controls open under Settings and Back restores permission rows', () => {
+  const app = mount();
+  const panel = () => app.renderer.root.findByProps({ 'data-notification-controls': true }).parent.parent;
+  assert.equal(panel().props.hidden, true);
+  const row = app.renderer.root.findAllByType('button').find(button => button.findAllByType('span').some(span => span.children.includes('Attendance notifications')));
+  act(() => row.props.onClick());
+  assert.equal(panel().props.hidden, false);
+  assert.equal(app.renderer.root.findByType('h2').children.join(''), 'Attendance notifications');
+  act(() => app.renderer.root.findByProps({ 'aria-label': 'Back to settings' }).props.onClick());
+  assert.equal(panel().props.hidden, true);
+  assert.equal(app.renderer.root.findByType('h2').children.join(''), 'Settings');
+  act(() => app.renderer.unmount());
 });

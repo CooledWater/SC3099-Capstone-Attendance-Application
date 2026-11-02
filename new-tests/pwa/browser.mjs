@@ -23,11 +23,12 @@ try {
     let code = 200;
     if (path.endsWith('/auth/refresh')) body = { access_token: 'test-token' };
     else if (path.endsWith('/users/me')) body = user;
-    else if (path.endsWith('/sessions/active')) {
+    else if (path.endsWith('/sessions/active') || path.endsWith('/sessions/my-sessions')) {
       sessionRequests++;
       code = status;
       body = status === 200 ? [{ id: 'session-a', name: sessionName, status: 'active', course_code: 'SC3099', scheduled_start: new Date().toISOString(), scheduled_end: new Date(Date.now() + 3600000).toISOString(), checkin_opens_at: new Date().toISOString(), checkin_closes_at: new Date(Date.now() + 3600000).toISOString(), venue_name: 'Test room' }] : { detail: 'Permission denied' };
-    } else body = {};
+    } else if (path.endsWith('/checkins/my-checkins')) body = [];
+    else body = {};
     await route.fulfill({ status: code, contentType: 'application/json', body: JSON.stringify(body) });
   });
   const page = await context.newPage();

@@ -4,7 +4,8 @@ import { AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 import type { CourseRow } from "@/lib/attendance";
 import { statusText } from "@/lib/attendance";
-import { formatSingaporeDateTime } from "@/lib/time";
+import { formatSingaporeDateTime, parseApiDateTime } from "@/lib/time";
+import type { CheckInFilter } from "./CheckInsPanel";
 import { exportFilename, saveExport } from "@/lib/exports";
 import {
   attendanceLabels,
@@ -33,12 +34,20 @@ export function InstructorCheckIns({
   onCourseChange,
   userId,
   initialSessionId = "",
+  onSessionChange,
+  reviewOnly = false,
+  canExport = true,
+  initialFilter = {},
 }: {
   courses: CourseRow[];
   selectedCourseId: string;
   onCourseChange: (id: string) => void;
   userId: string;
   initialSessionId?: string;
+  onSessionChange?: (sessionId: string) => void;
+  reviewOnly?: boolean;
+  canExport?: boolean;
+  initialFilter?: CheckInFilter;
 }) {
   const courseId =
     courses.find((course) => course.id === selectedCourseId)?.id ?? courses[0]?.id ?? "";
@@ -73,6 +82,10 @@ export function InstructorCheckIns({
           courseId={courseId}
           userId={userId}
           initialSessionId={initialSessionId}
+          {...(onSessionChange ? { onSessionChange } : {})}
+          reviewOnly={reviewOnly}
+          canExport={canExport}
+          initialFilter={initialFilter}
         />
       ) : (
         <p className="rounded-2xl border border-border p-5 text-sm text-muted-foreground">
@@ -87,10 +100,18 @@ function CourseCheckIns({
   courseId,
   userId,
   initialSessionId,
+  onSessionChange,
+  reviewOnly,
+  canExport = true,
+  initialFilter = {},
 }: {
   courseId: string;
   userId: string;
   initialSessionId: string;
+  onSessionChange?: (sessionId: string) => void;
+  reviewOnly: boolean;
+  canExport?: boolean;
+  initialFilter?: CheckInFilter;
 }) {
   const [selection, setSelection] = useState(initialSessionId);
   const sessions = useQuery({
@@ -98,7 +119,20 @@ function CourseCheckIns({
     queryFn: ({ signal }) => fetchCourseSessions(courseId, signal),
     refetchInterval: 30000,
   });
-  const session = sessions.data?.find((row) => row.id === selection) ?? sessions.data?.[0];
+  const day = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const today = day.format(new Date());
+  const availableSessions = (sessions.data ?? []).filter(
+    (row) => !initialFilter.today || day.format(parseApiDateTime(row.scheduled_start)) === today,
+  );
+  const session = availableSessions.find((row) => row.id === selection) ?? availableSessions[0];
+  useEffect(() => {
+    if (session && session.id !== initialSessionId) onSessionChange?.(session.id);
+  }, [session, initialSessionId, onSessionChange]);
   if (sessions.isPending)
     return (
       <p role="status" className="text-sm text-muted-foreground">
@@ -117,7 +151,9 @@ function CourseCheckIns({
   if (!session)
     return (
       <p className="rounded-2xl border border-border p-5 text-sm text-muted-foreground">
-        No active or closed sessions are available for this course.
+        {initialFilter.today
+          ? "No active or closed sessions are scheduled today (SGT) for this course."
+          : "No active or closed sessions are available for this course."}
       </p>
     );
   return (
@@ -130,7 +166,7 @@ function CourseCheckIns({
           value={session.id}
           onChange={(event) => setSelection(event.target.value)}
         >
-          {sessions.data.map((row) => (
+          {availableSessions.map((row) => (
             <option value={row.id} key={row.id}>
               {row.name} ·{" "}
               {formatSingaporeDateTime(row.scheduled_start, {
@@ -146,7 +182,15 @@ function CourseCheckIns({
           ))}
         </select>
       </label>
-      <SessionCheckIns key={session.id} session={session} courseId={courseId} userId={userId} />
+      <SessionCheckIns
+        key={session.id}
+        session={session}
+        courseId={courseId}
+        userId={userId}
+        reviewOnly={reviewOnly}
+        canExport={canExport}
+        initialFilter={initialFilter}
+      />
     </>
   );
 }
@@ -155,12 +199,20 @@ function SessionCheckIns({
   session,
   courseId,
   userId,
+  reviewOnly: initialReviewOnly,
+  canExport = true,
+  initialFilter = {},
 }: {
   session: RosterSession;
   courseId: string;
   userId: string;
+  reviewOnly: boolean;
+  canExport?: boolean;
+  initialFilter?: CheckInFilter;
 }) {
-  const [verification, setVerification] = useState<string[]>([]);
+  const [verification, setVerification] = useState<string[]>(
+    initialFilter.statuses ?? (initialReviewOnly ? ["flagged", "appealed"] : []),
+  );
   const reviewOnly =
     verification.length > 0 &&
     verification.every((value) => value === "flagged" || value === "appealed");
@@ -188,6 +240,7 @@ function SessionCheckIns({
       ? roster.data
       : undefined;
   async function exportSession() {
+    if (!canExport) return;
     if (exportBusy.current) return;
     exportBusy.current = true;
     setExporting(true);
@@ -221,6 +274,26 @@ function SessionCheckIns({
     : reviewOnly && flagged.isError
       ? message(flagged.error)
       : null;
+  const dayFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const today = dayFormatter.format(new Date());
+  const visibleRows = (data?.items ?? []).filter((row) => {
+    if (
+      initialFilter.today &&
+      (!row.checked_in_at || dayFormatter.format(parseApiDateTime(row.checked_in_at)) !== today)
+    )
+      return false;
+    if (
+      initialFilter.minRisk != null &&
+      (row.risk_score == null || row.risk_score < initialFilter.minRisk)
+    )
+      return false;
+    return true;
+  });
   return (
     <>
       {roster.isError && (
@@ -248,7 +321,7 @@ function SessionCheckIns({
         </p>
       )}
       <AttendanceRoster
-        rows={data?.items ?? []}
+        rows={visibleRows}
         loading={roster.isPending || (reviewOnly && flagged.isPending)}
         error={tableError}
         verification={verification}
@@ -257,6 +330,7 @@ function SessionCheckIns({
         onSelect={setSelected}
         onExport={() => void exportSession()}
         exporting={exporting}
+        canExport={canExport}
       />
       {reviewOnly && flagged.isError && (
         <button className={control} onClick={() => void flagged.refetch()}>
@@ -354,7 +428,7 @@ function ReviewSummary({ data, onFilter }: { data: SessionAttendance; onFilter: 
   );
 }
 
-function CheckInDetail({
+export function CheckInDetail({
   entry,
   session,
   courseId,
@@ -395,13 +469,24 @@ function CheckInDetail({
       ? detail.data
       : undefined;
   const reviewable = record?.status === "flagged" || record?.status === "appealed";
-  const appealedReview = record?.status === "appealed";
+  const appealedReview =
+    record?.status === "appealed" ||
+    (record?.status === "flagged" && Boolean(record.appeal_reason));
   const showRiskFactors = reviewable || record?.status === "rejected";
   const reviewEvidence = useQuery({
-    queryKey: ["checkin-review-evidence", userId, courseId, session.id, entry.checkin_id, record?.status],
+    queryKey: [
+      "checkin-review-evidence",
+      userId,
+      courseId,
+      session.id,
+      entry.checkin_id,
+      record?.status,
+    ],
     queryFn: ({ signal }) =>
       record?.status === "rejected"
-        ? api.request<FlaggedCheckIn[]>(`/checkins/session/${encodeURIComponent(session.id)}`, { signal })
+        ? api.request<FlaggedCheckIn[]>(`/checkins/session/${encodeURIComponent(session.id)}`, {
+            signal,
+          })
         : fetchFlaggedSession(courseId, session.id, signal),
     enabled: showRiskFactors,
     staleTime: 30_000,
@@ -430,10 +515,31 @@ function CheckInDetail({
           "sessions",
           "api-metrics",
           "audit-logs",
+          "session-stats",
+          "check-ins",
+          "admin-overview",
         ].map((name) => qc.invalidateQueries({ queryKey: [name] })),
       ]);
     } catch (failure) {
       if (mounted.current) setError(message(failure));
+      if (
+        failure &&
+        typeof failure === "object" &&
+        "status" in failure &&
+        [400, 409].includes(Number(failure.status))
+      ) {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: key }),
+          ...[
+            "session-attendance",
+            "session-flagged",
+            "session-stats",
+            "check-ins",
+            "admin-overview",
+            "checkin-review-evidence",
+          ].map((name) => qc.invalidateQueries({ queryKey: [name] })),
+        ]);
+      }
     } finally {
       busy.current = false;
       if (mounted.current) setSaving(false);

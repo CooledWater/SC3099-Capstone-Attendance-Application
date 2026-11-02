@@ -231,6 +231,7 @@ test("approval blocks duplicate submission and refreshes details, roster and rev
   assert.equal(h.record.status, "approved");
   assert.ok(h.invalidations.some(key => key[0] === "session-attendance"));
   assert.ok(h.invalidations.some(key => key[0] === "session-flagged"));
+  assert.ok(h.invalidations.some(key => key[0] === "session-stats"));
   assert.equal(button(h.render(), "Approve"), undefined);
   assert.match(text(h.render()), /Check-in approved/);
 });
@@ -246,6 +247,18 @@ test("failed rejection retains notes and re-enables review controls", async () =
   assert.equal(elements(tree).find(node => node.type === "textarea").props.value, "Keep these notes");
   assert.match(text(tree), /Review service unavailable/);
   assert.equal(button(tree, "Approve").props.disabled, false);
+});
+
+test("a record changed by another reviewer refreshes session statistics and evidence without resubmitting", async () => {
+  const h = detailHarness();
+  h.setHandler(async () => { const error = new Error("Only flagged or appealed check-ins can be reviewed"); error.status = 400; throw error; });
+  elements(h.render()).find(node => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await new Promise(setImmediate);
+  assert.equal(h.calls.length, 1);
+  for (const key of ["session-attendance", "session-flagged", "session-stats", "checkin-review-evidence"]) {
+    assert.ok(h.invalidations.some(value => value[0] === key));
+  }
+  assert.match(text(h.render()), /Only flagged or appealed/);
 });
 
 test("summary uses whole-session counts and combined review filter, including quiet zero state", () => {

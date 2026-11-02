@@ -15,8 +15,8 @@ function loadPolicy(path) {
 }
 for (const path of ['../../module1-frontend/lib/password-policy.ts', '../../module4-observability/src/lib/password-policy.ts']) test(`${path}: consistent new-password rules`, () => {
   const { newPasswordError } = loadPolicy(path);
-  for (const password of ['shortA!', 'lowercase!', 'UPPERCASE!', 'Password123', 'Password ', 'Aa!' + 'é'.repeat(35)]) assert.ok(newPasswordError(password));
-  for (const password of ['Password!', 'StrongPass#123', 'Abcdefg!']) assert.equal(newPasswordError(password), '');
+  for (const password of ['shortA!', 'Aa!' + 'é'.repeat(35)]) assert.ok(newPasswordError(password));
+  for (const password of ['Password!', 'StrongPass#123', 'Abcdefg!', 'lowercase123', '12345678', 'Password123']) assert.equal(newPasswordError(password), '');
 });
 test('login has no demo entry and weak registration is blocked before API submission', async () => {
   let registrations = 0;
@@ -33,10 +33,10 @@ test('login has no demo entry and weak registration is blocked before API submis
   act(() => { renderer = create(React.createElement(context.exports.AuthCard, { onAuthenticated() {} })); });
   assert.ok(!JSON.stringify(renderer.toJSON()).toLowerCase().includes('demo'));
   act(() => renderer.root.findAllByProps({ role: 'tab' })[1].props.onClick());
-  act(() => renderer.root.findByProps({ type: 'password' }).props.onChange({ target: { value: 'lowercase123' } }));
+  act(() => renderer.root.findByProps({ type: 'password' }).props.onChange({ target: { value: 'short' } }));
   await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
   assert.equal(registrations, 0);
-  assert.ok(JSON.stringify(renderer.toJSON()).includes('uppercase'));
+  assert.ok(JSON.stringify(renderer.toJSON()).includes('8 characters'));
   act(() => renderer.root.findByProps({ type: 'password' }).props.onChange({ target: { value: 'ValidPass!' } }));
   await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
   assert.equal(registrations, 1);

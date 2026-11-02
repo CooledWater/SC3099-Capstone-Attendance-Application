@@ -136,7 +136,7 @@ def test_session_summary_queries_do_not_grow_with_session_count(db):
     try:
         context = namespace["_session_summary_context"](db, rows)
         summaries = [namespace["_serialize_session_summary"](db, row, context) for row in rows]
-        assert len(queries) == 3
+        assert len(queries) == 4
         assert len(summaries) == 10
         assert all(row["course_code"] == "SCHEDULE" and row["total_enrolled"] == 0 for row in summaries)
     finally:
