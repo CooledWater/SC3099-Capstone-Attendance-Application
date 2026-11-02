@@ -25,7 +25,7 @@ def api_request(base, path, *, token=None, body=None):
 
 def session_payload(course_id, label, now, minutes):
     return {
-        'course_id': course_id, 'name': f'PAD shadow {label} {now:%Y-%m-%d %H:%M UTC}',
+        'course_id': course_id, 'name': f'PAD {label} {now:%Y-%m-%d %H:%M UTC}',
         'session_type': 'lecture',
         'scheduled_start': (now + timedelta(minutes=1)).isoformat(),
         'scheduled_end': (now + timedelta(minutes=minutes)).isoformat(),
@@ -37,7 +37,7 @@ def session_payload(course_id, label, now, minutes):
 
 def create_pair(base, token, course_id, minutes, config_path, request=api_request):
     now = datetime.now(timezone.utc)
-    config = {'monitor_since': now.isoformat(), 'pad_mode': 'shadow', 'sessions': []}
+    config = {'monitor_since': now.isoformat(), 'pad_mode': 'enforce', 'sessions': []}
     # Refuse to overwrite historical trial configuration before creating anything.
     with config_path.open('x') as output:
         json.dump(config, output, indent=2)

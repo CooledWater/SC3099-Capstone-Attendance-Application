@@ -151,7 +151,7 @@ def api(monkeypatch):
     monkeypatch.setenv('CHECKIN_DIAGNOSTIC_SESSION_IDS', sid)
     def transport(request):
         data = {
-            '/liveness/check': {'liveness_passed': True, 'liveness_score': .9, 'liveness_threshold': .6,
+            '/liveness/check': {'liveness_passed': True, 'liveness_score': .9, 'liveness_threshold': .85,
                 'challenge_type': 'passive', 'details': {'depth_score': .8, 'weighted_contributions': {'depth': .24}}},
             '/face/verify': {'match_passed': True, 'match_score': .95, 'match_threshold': .7},
             '/risk/assess': {'risk_score': .2125, 'risk_threshold': .5,
@@ -173,13 +173,15 @@ def test_http_instrumentation_links_components_decision_and_commit(api, records)
     response = client.post('/api/v1/checkins/', json=payload)
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body['status'] == 'approved' and body['risk_score'] == .2125
+    # This fixture has an unknown browser: replacement device risk adds .10
+    # and independently flags an otherwise passing biometric check.
+    assert body['status'] == 'flagged' and body['risk_score'] == .3125
     assert 'diagnostic_id' not in body and 'details' not in body
     rows = records()
     assert [row['stage'] for row in rows] == ['attempt_started', 'liveness', 'face_match', 'module3_risk', 'decision', 'attendance_committed']
     assert len({row['diagnostic_id'] for row in rows}) == 1
     assert rows[-1]['values']['checkin_id'] == body['id']
-    assert rows[-2]['values']['risk_score'] == max(rows[-2]['values']['venue_risk_score'], .2125)
+    assert rows[-2]['values']['risk_score'] == max(rows[-2]['values']['venue_risk_score'], .3125)
     assert 'IMAGE_NOT_FOR_LOGS' not in json.dumps(rows) and 'not-for-logs' not in json.dumps(rows)
     schema = client.get('/openapi.json').json()['paths']['/api/v1/checkins/']['post']['requestBody']
     assert schema['content']['application/json']['schema']['$ref'].endswith('/CheckInCreate')
@@ -200,7 +202,7 @@ def test_service_outage_is_not_reported_as_a_liveness_pass(api, records, monkeyp
 
 
 @pytest.mark.parametrize('score,passed,expected', [
-    (0., False, 'rejected'), (.849999, False, 'rejected'), (.85, True, 'approved'),
+    (0., False, 'rejected'), (.849999, False, 'rejected'), (.85, True, 'flagged'),
 ])
 def test_liveness_policy_verdict_reaches_saved_attendance_despite_low_risk(
     api, records, monkeypatch, score, passed, expected
@@ -212,8 +214,7 @@ def test_liveness_policy_verdict_reaches_saved_attendance_despite_low_risk(
         bodies = {
             '/liveness/check': {'liveness_passed': passed, 'liveness_score': score,
                 'liveness_threshold': .85, 'challenge_type': 'passive', 'details': {
-                    'depth_threshold': .8, 'mesh_threshold': .8,
-                    'depth_passed': score != 0., 'mesh_passed': True,
+                    'pad_mode': 'enforce', 'pad_passed': score != 0.,
                     'pre_gate_liveness_score': .95 if score == 0. else score,
                     'unapproved_field': 'DO_NOT_RECORD'}},
             '/face/verify': {'match_passed': True, 'match_score': .99, 'match_threshold': .7},
@@ -228,17 +229,16 @@ def test_liveness_policy_verdict_reaches_saved_attendance_despite_low_risk(
     assert body['status'] == expected
     assert body['liveness_passed'] is passed
     assert body['face_match_passed'] is True
-    assert body['risk_score'] == .01
+    assert body['risk_score'] == .208  # Existing unknown-device risk replacement.
     with SessionLocal() as db:
         saved = db.get(CheckIn, body['id'])
         assert saved.status == expected
         assert saved.liveness_passed is passed
         assert saved.liveness_score == score
-        assert (saved.verified_at is not None) is passed
+        assert saved.verified_at is None  # Untrusted browsers are never auto-approved.
     observed = next(row['values']['details'] for row in records() if row['stage'] == 'liveness')
-    assert observed['depth_threshold'] == observed['mesh_threshold'] == .8
-    assert observed['depth_passed'] is (score != 0.)
-    assert observed['mesh_passed'] is True
+    assert observed['pad_mode'] == 'enforce'
+    assert observed['pad_passed'] is (score != 0.)
     assert observed['pre_gate_liveness_score'] == (.95 if score == 0. else score)
     assert 'DO_NOT_RECORD' not in json.dumps(records())
     assert records()[-1]['stage'] == 'attendance_committed'

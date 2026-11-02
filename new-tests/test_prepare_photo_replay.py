@@ -19,6 +19,7 @@ def test_setup_explicitly_creates_photo_sessions_and_never_saves_token(tmp_path)
     config = prepare.create_pair('http://test', 'SECRET_TOKEN', str(uuid.uuid4()), 60, path, request)
     assert [s['label'] for s in config['sessions']] == ['real_face_control', 'phone_screen']
     assert len(calls) == 2
+    assert config['pad_mode'] == 'enforce'
     for endpoint, payload in calls:
         assert endpoint == '/sessions/'
         assert payload['require_motion_check'] is False

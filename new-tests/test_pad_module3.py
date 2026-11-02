@@ -20,7 +20,7 @@ from app.motion_diagnostics import SequenceDiagnostics, _details
 ASSETS = ROOT / 'module3-face-recognition/app/assets/pad'
 
 
-@pytest.mark.parametrize('name,value', [('PAD_MODE', 'enforce'), ('PAD_MODE', 'unexpected'),
+@pytest.mark.parametrize('name,value', [('PAD_MODE', 'unexpected'),
     ('PAD_THRESHOLD', 'nan'), ('PAD_THRESHOLD', 'inf'), ('PAD_THRESHOLD', '-.1'), ('PAD_THRESHOLD', '1.1')])
 def test_reject_unsupported_modes_and_invalid_cutoffs(name, value):
     with pytest.raises(RuntimeError):
@@ -31,7 +31,8 @@ def test_explicit_shadow_config_uses_independent_cutoff():
     policy = load_settings({'PAD_MODE': 'shadow', 'PAD_THRESHOLD': '.42'})
     assert policy.pad_mode == 'shadow' and policy.pad_threshold == .42
     assert policy.liveness_threshold == .85
-    assert Settings().pad_mode == 'off'
+    assert Settings().pad_mode == 'enforce'
+    assert Settings().pad_threshold == .75
 
 
 @pytest.mark.parametrize('bbox,scale,expected', [
@@ -133,10 +134,10 @@ def test_shadow_pass_failure_and_outage_preserve_legacy_decisions(legacy, passed
         assert 'sensitive' not in json.dumps(details)
 
 
-def test_shadow_pad_pass_cannot_rescue_a_legacy_failure(legacy):
-    legacy.update(pad_passed=True, depth=.5)
+def test_shadow_pad_pass_cannot_rescue_a_low_overall_score(legacy):
+    legacy.update(pad_passed=True, depth=.4)
     result = liveness.assess_liveness(object(), face_bbox=(0, 0, 40, 40))
-    assert result.liveness_passed is False and result.liveness_score == 0.
+    assert result.liveness_passed is False and result.liveness_score == .82
     assert result.details['pad_passed'] is True
     assert result.details['pad_would_veto'] is False
 

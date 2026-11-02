@@ -123,9 +123,12 @@ def frame_table(rows):
             lines.append(f'| {name} | {label} | — | — | — | — | not evaluated | — | — |')
             continue
         components = frame.get('details', {})
+        gates = (f'{components.get("depth_passed", "unknown")} / {components.get("mesh_passed", "unknown")}'
+                 if 'depth_passed' in components or 'mesh_passed' in components else
+                 'not used' if components.get('pad_mode') == 'enforce' else 'unknown')
         values = [components.get('depth_score', 'unknown'), components.get('mesh_plausibility_score', 'unknown'),
                   frame.get('liveness_score', 'unknown'),
-                  f'{components.get("depth_passed", "unknown")} / {components.get("mesh_passed", "unknown")}',
+                  gates,
                   components.get('pad_status', 'unknown'),
                   components.get('pad_live_score'), components.get('pad_passed')]
         lines.append(f'| {name} | yes | ' + ' | '.join(map(str, values)) + ' |')
@@ -134,13 +137,17 @@ def frame_table(rows):
 
 
 def pad_table(rows):
-    """Keep the shadow PAD verdict separate from saved attendance outcomes."""
+    """Show the effective PAD mode while preserving historical shadow reports."""
     response = next((r['values'] for r in reversed(rows) if r['stage'] == 'liveness'), {})
     details = response.get('details', {})
     status = details.get('pad_status', 'unknown')
     if response.get('outcome') == 'unavailable':
         status = 'unavailable'
-    lines = ['PAD is observational in shadow mode; its verdict does not change attendance.', '']
+    mode = details.get('pad_mode')
+    description = ('PAD is enforced; an evaluated failure rejects liveness.' if mode == 'enforce' else
+                   'PAD is observational in shadow mode; its verdict does not change attendance.' if mode == 'shadow' else
+                   'PAD is disabled.' if mode == 'off' else 'PAD mode was not recorded.')
+    lines = [description, '']
     if details.get('pad_evaluated') is not True:
         return lines + [f'PAD status: **{status}**. No measured PAD verdict is available.', '']
     values = [
@@ -148,7 +155,7 @@ def pad_table(rows):
         ('Model version', details.get('pad_model_version', 'unknown')),
         ('Ensemble live score', details.get('pad_live_score')),
         ('V2 / V1SE live scores', f'{details.get("pad_v2_live_score")} / {details.get("pad_v1se_live_score")}'),
-        ('Exploratory PAD cutoff (uncalibrated)', details.get('pad_threshold')),
+        ('PAD cutoff' if mode == 'enforce' else 'Exploratory PAD cutoff (uncalibrated)', details.get('pad_threshold')),
         ('PAD passed', details.get('pad_passed')),
         ('PAD processing time (ms)', details.get('pad_inference_ms')),
         ('Liveness before PAD / returned', f'{details.get("pre_pad_liveness_score")} / {response.get("liveness_score")}'),
@@ -199,10 +206,17 @@ def original_liveness_tables(rows):
     ):
         values = [details.get(score_key), weights.get(key), contributions.get(key)]
         values += ([details.get(key + '_threshold'), details.get(key + '_passed')]
-                   if key in ('depth', 'mesh') else ['—', '—'])
+                   if key in ('depth', 'mesh') and (details.get('pad_mode') != 'enforce'
+                       or key + '_threshold' in details) else ['—', '—'])
         lines.append(f'| {label} | ' + ' | '.join(_display(value) for value in values) + ' |')
-    lines += ['', 'Depth and mesh must each pass their gate. A failed gate can set returned liveness to 0 '
-              'even when the pre-gate score is high. Texture and color have no separate gate.', '']
+    if 'depth_threshold' in details or 'mesh_threshold' in details:
+        explanation = ('This historical capture used separate depth and mesh gates. A failed gate can '
+                       'set returned liveness to 0 even when the pre-gate score is high.')
+    elif details.get('pad_mode') == 'enforce':
+        explanation = 'Depth and mesh contribute to the overall score without separate gates. PAD can reject liveness.'
+    else:
+        explanation = 'Separate depth and mesh gates were not recorded.'
+    lines += ['', explanation, '']
     measurements = [(f'`{key}`', details.get(key)) for key in (
         'face_detection_confidence', 'face_mesh_complete', 'multiple_faces', 'landmark_count',
         'depth_detected', 'depth_quality', 'landmark_z_variance', 'relative_nose_depth',

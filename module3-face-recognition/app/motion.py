@@ -99,7 +99,6 @@ def analyze_sequence(request, verify_image, observe=None):
     note("started", frame_count=len(request.frames),
          duration_ms=request.frames[-1].timestamp_ms-request.frames[0].timestamp_ms,
          liveness_threshold=settings.liveness_threshold,
-         depth_threshold=settings.liveness_depth_threshold, mesh_threshold=settings.liveness_mesh_threshold,
          face_match_threshold=settings.face_match_threshold)
     # A fresh tracker per request avoids mixing students or timestamp histories.
     mp, detector = _create_landmarker()

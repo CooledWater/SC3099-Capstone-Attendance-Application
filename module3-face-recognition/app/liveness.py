@@ -585,10 +585,6 @@ def assess_liveness(
             "mesh_plausibility_score": 0.0,
             "texture_analysis_score": 0.0,
             "color_distribution_score": 0.0,
-            "depth_threshold": settings.liveness_depth_threshold,
-            "mesh_threshold": settings.liveness_mesh_threshold,
-            "depth_passed": False,
-            "mesh_passed": False,
             "pre_gate_liveness_score": 0.0,
             "challenge_evidence_score": 0.0,
             "challenge_integrity_score": 0.0,
@@ -646,14 +642,15 @@ def assess_liveness(
         component_score * presentation_integrity * challenge_integrity
     )
     pre_gate_score = round(pre_gate_score, 6)
-    depth_passed = snapshot.depth_score >= settings.liveness_depth_threshold
-    mesh_passed = snapshot.mesh_score >= settings.liveness_mesh_threshold
-    # The approved geometry minimums cannot be compensated by texture/colour.
-    # Zero the final score on failure so downstream risk sees failed evidence,
-    # while retaining the original weighted result in scalar diagnostics.
-    geometry_passed = depth_passed and mesh_passed
-    score = pre_gate_score if geometry_passed else 0.0
-    passed = geometry_passed and score >= threshold
+    # Depth and mesh are weighted components, with no independent cutoffs.
+    score = pre_gate_score
+    passed = score >= threshold
+    pad_observation = pad_details(image_rgb, face_bbox, score, passed)
+    if settings.pad_mode == "enforce" and pad_observation["pad_passed"] is False:
+        # Preserve the pre-PAD score in details while making the existing
+        # backend liveness-failure rule reject an evaluated presentation attack.
+        score = 0.0
+        passed = False
 
     details = {
         "face_detection_confidence": _round(confidence),
@@ -668,10 +665,6 @@ def assess_liveness(
         "mesh_plausibility_score": _round(snapshot.mesh_score),
         "texture_analysis_score": _round(texture_score),
         "color_distribution_score": _round(color_score),
-        "depth_threshold": settings.liveness_depth_threshold,
-        "mesh_threshold": settings.liveness_mesh_threshold,
-        "depth_passed": depth_passed,
-        "mesh_passed": mesh_passed,
         "pre_gate_liveness_score": pre_gate_score,
         "weighted_contributions": {name: _round(value, 6) for name, value in weighted.items()},
         "component_weights": dict(COMPONENT_WEIGHTS),
@@ -688,7 +681,7 @@ def assess_liveness(
         "threshold": _round(threshold),
     }
     details.update({key: value for key, value in challenge_details.items() if key != "challenge_score"})
-    details.update(pad_details(image_rgb, face_bbox, score, passed))
+    details.update(pad_observation)
 
     # Explicitly discard request-scoped views/references before returning the
     # scalar result.  Python/NumPy may retain allocator pages, but no application
@@ -699,7 +692,7 @@ def assess_liveness(
 
 
 def pad_details(image_rgb, face_bbox, legacy_score, legacy_passed):
-    """Shadow inference failure must not change the existing liveness result."""
+    """Measure PAD; enforcement outages use the existing service-error path."""
     details = unevaluated_details(settings.pad_mode, settings.pad_threshold)
     details.update(pre_pad_liveness_score=legacy_score,
                    pre_pad_liveness_passed=legacy_passed, pad_would_veto=None)
@@ -710,8 +703,10 @@ def pad_details(image_rgb, face_bbox, legacy_score, legacy_passed):
                                 manifest_path=settings.pad_manifest_path)
         details.update(analysis.details())
         details["pad_would_veto"] = legacy_passed and not analysis.passed
-    except PadUnavailableError:
+    except PadUnavailableError as exc:
         details["pad_status"] = "unavailable"
+        if settings.pad_mode == "enforce":
+            raise LivenessUnavailableError("PAD inference is unavailable") from exc
     return details
 
 

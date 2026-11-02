@@ -42,3 +42,15 @@ def test_unperformed_and_unavailable_are_not_fabricated_scores():
         assert status in table and 'No measured PAD verdict' in table
         assert 'Ensemble live score' not in table
     assert 'No measured PAD verdict' in '\n'.join(monitor.pad_table([]))
+
+
+def test_enforced_pad_and_ungated_geometry_are_reported_accurately():
+    record = row(pad_mode='enforce', pad_status='evaluated', pad_evaluated=True,
+        pad_live_score=.500035, pad_threshold=.75, pad_passed=False,
+        pre_pad_liveness_score=.97, depth_score=.72203, mesh_plausibility_score=.76884)
+    table = '\n'.join(monitor.pad_table([record]))
+    assert 'PAD is enforced' in table and 'shadow mode' not in table
+    assert '| PAD cutoff | 0.75 |' in table
+    components = '\n'.join(monitor.original_liveness_tables([record]))
+    assert 'without separate gates' in components
+    assert 'must each pass their gate' not in components

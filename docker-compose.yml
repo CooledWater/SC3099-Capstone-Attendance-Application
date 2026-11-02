@@ -76,8 +76,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      PAD_MODE: ${PAD_MODE:-shadow}
-      PAD_THRESHOLD: ${PAD_THRESHOLD:-0.50}
+      PAD_MODE: ${PAD_MODE:-enforce}
+      PAD_THRESHOLD: ${PAD_THRESHOLD:-0.75}
     depends_on:
       redis:
         condition: service_healthy

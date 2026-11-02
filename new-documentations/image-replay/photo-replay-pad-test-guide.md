@@ -5,11 +5,11 @@ You need Docker Compose, Python 3, an instructor/admin login, an enrolled test
 student, and a second phone displaying that student's photograph. The setup helper
 uses Python's standard library; no local pip installation is needed.
 
-PAD runs in **shadow mode**: it measures the capture, but its result does not change
-attendance. The existing liveness, identity, device and location rules still apply.
-The default PAD cutoff, **0.50**, is exploratory and has not been calibrated for
-these cameras. A low live-class score suggests a presentation attack; it is not a
-probability or a guarantee. Enforcement is not implemented.
+PAD runs in **enforce mode** at a **0.75** cutoff. An evaluated PAD failure makes
+liveness fail and rejects the check-in, even if the weighted liveness score passes.
+The overall liveness cutoff remains **0.85**. Depth and mesh contribute 30% and 25%
+without separate minimums. Identity, device and location rules still apply.
+These settings need continued physical validation; model scores are not calibrated probabilities.
 
 ## 1. Build and start the updated services
 
@@ -19,8 +19,8 @@ Rebuild both services because the backend diagnostic allowlist also changed:
 ```sh
 docker compose build face-recognition backend
 
-export PAD_MODE=shadow
-export PAD_THRESHOLD=0.50
+export PAD_MODE=enforce
+export PAD_THRESHOLD=0.75
 CHECKIN_DIAGNOSTICS_ENABLED=false CHECKIN_DIAGNOSTIC_SESSION_IDS='' \
   docker compose -f docker-compose.yml -f new-tests/docker-compose.phone-replay.yml \
   up -d --no-deps face-recognition backend
@@ -37,7 +37,8 @@ docker compose exec -T face-recognition python - <<'PY'
 import numpy as np
 from app.config import settings
 from app.pad import initialize_pad, evaluate_pad
-assert settings.pad_mode == 'shadow', settings.pad_mode
+assert settings.pad_mode == 'enforce', settings.pad_mode
+assert settings.pad_threshold == 0.75, settings.pad_threshold
 initialize_pad()
 result = evaluate_pad(np.zeros((160, 200, 3), np.uint8), (50, 40, 60, 80))
 print('Mode:', settings.pad_mode)
@@ -46,9 +47,9 @@ print('Synthetic smoke-test live score:', result.live_score)
 PY
 ```
 
-Expect `shadow`, `minifasnet-v2-v1se-onnx-v1`, and a finite score. This only checks
+Expect `enforce`, `minifasnet-v2-v1se-onnx-v1`, and a finite score. This only checks
 that inference works. `/health` checks service health and can remain healthy when
-shadow PAD is unavailable; the smoke check is the model check.
+PAD is unavailable; the smoke check is the model check.
 
 ## 2. Create a fresh pair of photo sessions
 
@@ -140,17 +141,16 @@ The original-check tables show:
 | --- | --- |
 | Identity score, threshold and passed | The separate `/face/verify` comparison against the enrolled face |
 | Returned liveness score, threshold and passed | The existing `/liveness/check` verdict used by attendance |
-| Depth / mesh scores, gate thresholds and passed | Both geometry gates must pass, even if the combined score is high |
+| Depth / mesh scores | Weighted liveness components; no independent gates in the current policy |
 | Texture / color scores | Original weighted components; these have no separate pass/fail cutoff |
 | Component weights and weighted contributions | The recorded contributions to `weighted_component_score` |
-| `pre_gate_liveness_score` | Score before depth/mesh gates; a failed gate can turn a high pre-gate score into returned liveness `0.0` |
+| `pre_gate_liveness_score` | Compatibility name for the weighted score after integrity factors and before PAD; current geometry has no gates |
 | Mesh completeness, landmark count, depth quality and depth statistics | Aggregate geometry diagnostics; raw landmarks are excluded |
 | Presentation integrity, texture signals and color signals | Existing periodicity, sharpness, diversity and color measurements |
 | Calculated status, reason, risk and saved attendance status | Distinguishes the decision from a confirmed database commit |
 
 Identity is not a liveness component. An identity match can pass for a displayed
-photograph, and a PAD pass cannot override a failed legacy geometry gate in shadow
-mode. Original measurements remain visible when PAD is off, unavailable or not
+photograph. A PAD pass cannot override an overall liveness score below 0.85. Original measurements remain visible when PAD is off, unavailable or not
 evaluated. `unknown` in these tables means a value was absent or null in the
 diagnostics; it does not mean a measured zero or a failed check. Before a commit
 event arrives, saved attendance status remains `unknown`.
@@ -159,22 +159,23 @@ The PAD table shows:
 
 | Field | What to look for |
 | --- | --- |
-| `pad_mode` / `pad_status` / `pad_evaluated` | Expect `shadow` / `evaluated` / `true` for a measured result |
+| `pad_mode` / `pad_status` / `pad_evaluated` | Expect `enforce` / `evaluated` / `true` for a measured result |
 | `pad_model_version` | Identifies the pinned model pair and preprocessing recipe |
 | `pad_live_score` | Mean live-class score from both models; compare genuine versus photo |
 | `pad_v2_live_score`, `pad_v1se_live_score` | Shows whether the two models disagree |
-| `pad_threshold`, `pad_passed` | Comparison against the exploratory cutoff, separate from legacy liveness |
+| `pad_threshold`, `pad_passed` | Comparison against 0.75; an enforced failure vetoes liveness |
 | `pad_inference_ms` | Crop, inference and neutral-input cleanup time; excludes model loading and lock wait |
-| `pre_pad_liveness_score`, `pre_pad_liveness_passed` | Existing geometry-gated liveness result |
-| `pad_would_veto` | `true` means legacy liveness passed while PAD failed; observation only |
+| `pre_pad_liveness_score`, `pre_pad_liveness_passed` | Weighted liveness result before PAD |
+| `pad_would_veto` | `true` means the weighted liveness passed while PAD failed; this veto is applied in enforce mode |
 | `decision`, `attendance_committed` stages | Calculated decision versus actual saved status |
 
 `off`, `not_evaluated`, or `unavailable` is not a measured PAD rejection. Missing
 scores/verdicts are `null`, not measured zeros. A no-face/multiple-face/mesh failure
 can stop before PAD. A measured score of `0.0` with `pad_evaluated=true` is different.
 
-In shadow mode, a phone photo may have `pad_passed=false` and still receive approved
-attendance if the existing rules pass. A flagged attendance caused by device or
+In enforce mode, an evaluated `pad_passed=false` returns `liveness_passed=false`
+and rejects attendance. An unavailable PAD model returns a service error, not a
+measured spoof verdict; the existing backend unavailable-service policy applies. A flagged attendance caused by device or
 geofence rules does not establish PAD rejection. Confirm what was physically
 presented and check the saved record in the dashboard.
 
@@ -215,7 +216,7 @@ docker compose exec -T face-recognition python -c \
 Expected flags are `false` and `''`. Preserve test attendance and notes. For more
 repetitions, create another session pair. To stop PAD processing as well, run
 `PAD_MODE=off docker compose up -d --no-deps face-recognition`; disabling diagnostic
-logging alone leaves shadow inference active.
+logging alone leaves PAD enforcement active.
 
 ## Troubleshooting and limits
 

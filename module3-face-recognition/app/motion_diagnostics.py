@@ -19,7 +19,7 @@ DETAIL_FLAGS = {"face_mesh_complete", "depth_detected", "depth_passed", "mesh_pa
                 "pad_evaluated", "pad_passed", "pre_pad_liveness_passed", "pad_would_veto"}
 PAD_NULLABLE = {"pad_live_score", "pad_passed", "pad_inference_ms", "pad_v2_live_score",
                 "pad_v1se_live_score", "pad_would_veto"}
-PAD_ENUMS = {"pad_mode": {"off", "shadow"},
+PAD_ENUMS = {"pad_mode": {"off", "shadow", "enforce"},
              "pad_status": {"off", "not_evaluated", "evaluated", "unavailable"},
              "pad_model_version": {"minifasnet-v2-v1se-onnx-v1"}}
 DETAIL_GROUPS = {

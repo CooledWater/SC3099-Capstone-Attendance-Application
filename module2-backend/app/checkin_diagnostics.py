@@ -59,7 +59,7 @@ DETAILS = {
                               "pad_v1se_live_score", "pre_pad_liveness_score")},
     **{key: BOOL for key in ("pad_evaluated", "pad_passed", "pre_pad_liveness_passed", "pad_would_veto")},
     "pad_inference_ms": NUMBER,
-    "pad_mode": {"off", "shadow"},
+    "pad_mode": {"off", "shadow", "enforce"},
     "pad_status": {"off", "not_evaluated", "evaluated", "unavailable"},
     "pad_model_version": {"minifasnet-v2-v1se-onnx-v1"},
 }

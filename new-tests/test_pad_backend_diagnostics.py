@@ -10,6 +10,41 @@ from app.face_service import face_service
 VERSION = 'minifasnet-v2-v1se-onnx-v1'
 
 
+@pytest.mark.parametrize('pad_passed', [False, True])
+def test_enforced_pad_failure_is_committed_as_rejected_despite_low_risk(api, records, monkeypatch, pad_passed):
+    from app.database import SessionLocal
+    from app.models import CheckIn
+    client, payload, _ = api
+    details = {'pad_mode': 'enforce', 'pad_status': 'evaluated', 'pad_evaluated': True,
+               'pad_live_score': .9 if pad_passed else .500035, 'pad_threshold': .75,
+               'pad_passed': pad_passed, 'pre_pad_liveness_score': .97,
+               'pre_pad_liveness_passed': True, 'pad_would_veto': not pad_passed}
+    def transport(request):
+        bodies = {
+            '/liveness/check': {'liveness_passed': pad_passed, 'liveness_score': .97 if pad_passed else 0.,
+                'liveness_threshold': .85, 'challenge_type': 'passive', 'details': details},
+            '/face/verify': {'match_passed': True, 'match_score': .99, 'match_threshold': .7},
+            '/risk/assess': {'risk_score': .01, 'risk_level': 'LOW'},
+        }
+        return httpx.Response(200, json=bodies[request.url.path])
+    with httpx.Client(transport=httpx.MockTransport(transport), base_url='http://test') as service:
+        monkeypatch.setattr(face_service, '_client', service)
+        response = client.post('/api/v1/checkins/', json=payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    # This fixture's unknown browser flags an otherwise valid capture.
+    assert body['status'] == ('flagged' if pad_passed else 'rejected')
+    assert body['liveness_passed'] is pad_passed
+    assert body['risk_score'] < .5
+    with SessionLocal() as db:
+        saved = db.get(CheckIn, body['id'])
+        assert saved.status == body['status']
+        assert saved.liveness_score == (.97 if pad_passed else 0.)
+    observed = next(r['values']['details'] for r in records() if r['stage'] == 'liveness')
+    assert observed == details
+    assert records()[-1]['stage'] == 'attendance_committed'
+
+
 @pytest.mark.parametrize('pad_status,pad_passed', [('evaluated', False), ('evaluated', True), ('unavailable', None)])
 def test_shadow_pad_diagnostics_survive_backend_without_changing_saved_attendance(
     api, records, monkeypatch, pad_status, pad_passed

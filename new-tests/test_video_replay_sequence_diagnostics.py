@@ -103,7 +103,7 @@ def test_measurements_preserve_verdict_and_processing_order(scenario, failure, r
     assert details['last_frame']['evaluated'] is last
     assert details['identity_checks'] == sum(kind == 'identity' for kind, _ in calls)
     assert details['liveness_threshold'] == .85
-    assert details['depth_threshold'] == details['mesh_threshold'] == .8
+    assert 'depth_threshold' not in details and 'mesh_threshold' not in details
     if first:
         assert details['first_frame']['frame_index'] == 0
         assert 'depth_score' in details['first_frame']['details']

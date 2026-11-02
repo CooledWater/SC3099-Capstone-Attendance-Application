@@ -43,12 +43,9 @@ class Settings(BaseModel):
     face_detection_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     face_quality_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
     liveness_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
-    liveness_depth_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
-    liveness_mesh_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
-    # Shadow PAD is observational; its exploratory cutoff is independent of
-    # the approved legacy liveness threshold and needs physical calibration.
-    pad_mode: Literal["off", "shadow"] = "off"
-    pad_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    # Geometry contributes to liveness; learned PAD independently vetoes attacks.
+    pad_mode: Literal["off", "shadow", "enforce"] = "enforce"
+    pad_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     pad_manifest_path: str = str(Path(__file__).resolve().parent / "assets/pad/manifest.json")
     risk_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
 
@@ -79,8 +76,6 @@ class Settings(BaseModel):
         "face_detection_threshold",
         "face_quality_threshold",
         "liveness_threshold",
-        "liveness_depth_threshold",
-        "liveness_mesh_threshold",
         "pad_threshold",
         "risk_threshold",
     )
@@ -234,10 +229,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             ),
             face_quality_threshold=_parse_float(env, "FACE_QUALITY_THRESHOLD", 0.50),
             liveness_threshold=_parse_float(env, "LIVENESS_THRESHOLD", 0.85),
-            liveness_depth_threshold=_parse_float(env, "LIVENESS_DEPTH_THRESHOLD", 0.80),
-            liveness_mesh_threshold=_parse_float(env, "LIVENESS_MESH_THRESHOLD", 0.80),
-            pad_mode=str(_get_env(env, "PAD_MODE", "off")),
-            pad_threshold=_parse_float(env, "PAD_THRESHOLD", 0.50),
+            pad_mode=str(_get_env(env, "PAD_MODE", "enforce")),
+            pad_threshold=_parse_float(env, "PAD_THRESHOLD", 0.75),
             pad_manifest_path=str(_get_env(env, "PAD_MANIFEST_PATH", Settings.model_fields["pad_manifest_path"].default)),
             risk_threshold=_parse_float(env, "RISK_THRESHOLD", 0.50),
             simhash_seed=_parse_int(env, "SIMHASH_SEED", DEFAULT_SIMHASH_SEED),
@@ -276,8 +269,6 @@ FACE_MATCH_HAMMING_FRACTION = settings.face_match_hamming_fraction
 FACE_DETECTION_THRESHOLD = settings.face_detection_threshold
 FACE_QUALITY_THRESHOLD = settings.face_quality_threshold
 LIVENESS_THRESHOLD = settings.liveness_threshold
-LIVENESS_DEPTH_THRESHOLD = settings.liveness_depth_threshold
-LIVENESS_MESH_THRESHOLD = settings.liveness_mesh_threshold
 RISK_THRESHOLD = settings.risk_threshold
 SIMHASH_SEED = settings.simhash_seed
 MAX_IMAGE_BYTES = settings.max_image_bytes
@@ -306,8 +297,6 @@ __all__ = [
     "FACE_DETECTION_THRESHOLD",
     "FACE_QUALITY_THRESHOLD",
     "LIVENESS_THRESHOLD",
-    "LIVENESS_DEPTH_THRESHOLD",
-    "LIVENESS_MESH_THRESHOLD",
     "RISK_THRESHOLD",
     "SIMHASH_SEED",
     "MAX_IMAGE_BYTES",

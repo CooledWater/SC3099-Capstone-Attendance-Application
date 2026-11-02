@@ -21,7 +21,7 @@ def snapshot(depth, mesh):
 
 @pytest.fixture
 def components(monkeypatch):
-    policy = Settings()
+    policy = Settings(pad_mode="off")
     for module in (liveness, main, motion):
         monkeypatch.setattr(module, 'settings', policy)
     state = {'depth': 1., 'mesh': 1., 'texture': 1., 'color': 1., 'periodicity': 0.}
@@ -36,35 +36,34 @@ def components(monkeypatch):
 
 def test_approved_defaults_and_valid_environment_overrides():
     for policy in (Settings(), load_settings({})):
-        assert (policy.liveness_threshold, policy.liveness_depth_threshold,
-                policy.liveness_mesh_threshold) == (.85, .80, .80)
-    policy = load_settings({'LIVENESS_THRESHOLD': '.9', 'LIVENESS_DEPTH_THRESHOLD': '.81',
-                            'LIVENESS_MESH_THRESHOLD': '.82'})
-    assert (policy.liveness_threshold, policy.liveness_depth_threshold,
-            policy.liveness_mesh_threshold) == (.9, .81, .82)
+        assert policy.liveness_threshold == .85
+        assert policy.pad_mode == 'enforce' and policy.pad_threshold == .75
+        assert not hasattr(policy, 'liveness_depth_threshold')
+        assert not hasattr(policy, 'liveness_mesh_threshold')
+    assert load_settings({'LIVENESS_THRESHOLD': '.9'}).liveness_threshold == .9
+    # Obsolete environment variables cannot silently reintroduce geometry gates.
+    policy = load_settings({'LIVENESS_DEPTH_THRESHOLD': '1', 'LIVENESS_MESH_THRESHOLD': '1'})
+    assert not hasattr(policy, 'liveness_depth_threshold')
+    assert not hasattr(policy, 'liveness_mesh_threshold')
 
 
-@pytest.mark.parametrize('name', ['LIVENESS_THRESHOLD', 'LIVENESS_DEPTH_THRESHOLD', 'LIVENESS_MESH_THRESHOLD'])
 @pytest.mark.parametrize('value', ['nan', 'inf', '-0.1', '1.01'])
-def test_invalid_policy_configuration_fails_at_startup(name, value):
+def test_invalid_policy_configuration_fails_at_startup(value):
     with pytest.raises(RuntimeError):
-        load_settings({name: value})
+        load_settings({'LIVENESS_THRESHOLD': value})
 
 
 @pytest.mark.parametrize('depth,mesh,passed', [
     (.80, .80, True), (.800001, .800001, True),
-    (.799999, 1., False), (1., .799999, False), (.799999, .799999, False),
+    (.799999, 1., True), (1., .799999, True), (.799999, .799999, True),
+    (.72203, .76884, True), (.82596, .76996, True), (.2, .2, False),
 ])
-def test_component_minimums_cannot_be_offset_by_texture_or_colour(components, depth, mesh, passed):
+def test_geometry_only_contributes_to_overall_score(components, depth, mesh, passed):
     components.update(depth=depth, mesh=mesh)
     result = liveness.assess_liveness(object())
-    assert result.details['pre_gate_liveness_score'] >= .85
+    assert result.liveness_score == round(.3 * depth + .25 * mesh + .45, 6)
     assert result.liveness_passed is passed
-    assert result.details['depth_passed'] is (depth >= .8)
-    assert result.details['mesh_passed'] is (mesh >= .8)
-    assert result.details['depth_threshold'] == result.details['mesh_threshold'] == .8
-    if not passed:
-        assert result.liveness_score == 0.
+    assert not {'depth_threshold', 'mesh_threshold', 'depth_passed', 'mesh_passed'} & result.details.keys()
     assert result.liveness_passed == (result.liveness_score >= result.liveness_threshold)
 
 
@@ -99,18 +98,18 @@ def test_missing_landmarks_cannot_pass_even_with_zero_threshold(components, monk
     result = liveness.assess_liveness(object(), threshold=0.)
     assert result.liveness_passed is False
     assert result.liveness_score == 0.
-    assert result.details['depth_passed'] is result.details['mesh_passed'] is False
+    assert result.details['landmark_count'] == 0
 
 
-def test_lower_final_override_does_not_bypass_component_minimums(components):
+def test_lower_final_override_uses_weighted_geometry_without_gates(components):
     components['depth'] = .799999
     result = liveness.assess_liveness(object(), threshold=0.)
-    assert result.liveness_passed is False
-    assert result.liveness_score == 0.
+    assert result.liveness_passed is True
+    assert result.liveness_score > 0.
 
 
-@pytest.mark.parametrize('depth,mesh,passed', [(1., 1., True), (.799999, 1., False), (1., .799999, False)])
-def test_photo_endpoint_exposes_consistent_scores_and_scalar_gate_details(components, monkeypatch,
+@pytest.mark.parametrize('depth,mesh,passed', [(1., 1., True), (.799999, 1., True), (1., .799999, True)])
+def test_photo_endpoint_exposes_consistent_scores_without_geometry_gates(components, monkeypatch,
                                                                          depth, mesh, passed):
     components.update(depth=depth, mesh=mesh)
     monkeypatch.setattr(main, 'decode_base64_image', lambda image: object())
@@ -125,13 +124,14 @@ def test_photo_endpoint_exposes_consistent_scores_and_scalar_gate_details(compon
     assert body['liveness_threshold'] == .85
     assert body['liveness_passed'] is passed
     assert body['liveness_passed'] == (body['liveness_score'] >= body['liveness_threshold'])
-    assert body['details']['depth_passed'] is (depth >= .8)
-    assert body['details']['mesh_passed'] is (mesh >= .8)
+    assert body['details']['depth_score'] == pytest.approx(depth, abs=.00001)
+    assert body['details']['mesh_plausibility_score'] == pytest.approx(mesh, abs=.00001)
+    assert 'depth_threshold' not in body['details']
     assert 'REQUEST_ONLY_IMAGE' not in response.text
     assert 'landmarks' not in body['details']
 
 
-def test_no_face_endpoint_reports_failed_component_checks(components, monkeypatch):
+def test_no_face_endpoint_still_rejects_without_geometry_gates(components, monkeypatch):
     monkeypatch.setattr(main, 'decode_base64_image', lambda image: object())
     monkeypatch.setattr(main, 'detect_face', lambda image: N(detected=False))
     with TestClient(main.app) as client:
@@ -140,11 +140,11 @@ def test_no_face_endpoint_reports_failed_component_checks(components, monkeypatc
     body = response.json()
     assert body['liveness_passed'] is False
     assert body['liveness_threshold'] == .85
-    assert body['details']['depth_passed'] is body['details']['mesh_passed'] is False
-    assert body['details']['depth_threshold'] == body['details']['mesh_threshold'] == .8
+    assert body['details']['landmark_count'] == 0
+    assert 'depth_threshold' not in body['details'] and 'mesh_threshold' not in body['details']
 
 
-@pytest.mark.parametrize('failure', [None, 'first_depth', 'last_mesh', 'configured_threshold'])
+@pytest.mark.parametrize('failure', [None, 'first_score', 'last_score', 'configured_threshold'])
 def test_sequence_uses_real_passive_policy_on_both_endpoint_frames(components, monkeypatch, failure):
     # Stub landmark tracking and identity; keep the real passive scoring function.
     ears = [.3] * 3 + [.1] * 2 + [.3] * 4 + [.1] * 2 + [.3] * 9
@@ -162,13 +162,13 @@ def test_sequence_uses_real_passive_policy_on_both_endpoint_frames(components, m
     monkeypatch.setattr(motion, 'blink_metrics', lambda points: {'eye_aspect_ratio': next(samples)})
     monkeypatch.setattr(motion, 'detect_face', lambda image: N(confidence=.99, bbox=(0, 0, 40, 40)))
     monkeypatch.setattr(main, '_verify_image', lambda *args: (N(match_passed=True, match_score=.99), ''))
-    first = snapshot(.799999 if failure == 'first_depth' else 1., 1.)
+    first = snapshot(.4 if failure == 'first_score' else 1., 1.)
     last = snapshot(.8 if failure == 'configured_threshold' else 1.,
-                    .799999 if failure == 'last_mesh' else .8 if failure == 'configured_threshold' else 1.)
+                    .3 if failure == 'last_score' else .8 if failure == 'configured_threshold' else 1.)
     snapshots = iter((first, last))
     monkeypatch.setattr(liveness, '_mesh_snapshot', lambda points: next(snapshots))
     threshold = .9 if failure == 'configured_threshold' else .85
-    policy = Settings(liveness_threshold=threshold)
+    policy = Settings(liveness_threshold=threshold, pad_mode="off")
     for module in (liveness, motion, main):
         monkeypatch.setattr(module, 'settings', policy)
     checks = []
@@ -185,8 +185,8 @@ def test_sequence_uses_real_passive_policy_on_both_endpoint_frames(components, m
     assert response.status_code == 200, response.text
     body = response.json()
     assert body['passed'] is (failure is None)
-    assert checks == [threshold] * (1 if failure == 'first_depth' else 2)
-    if failure in ('last_mesh', 'configured_threshold'):
+    assert checks == [threshold] * (1 if failure == 'first_score' else 2)
+    if failure in ('last_score', 'configured_threshold'):
         assert body['blink_count'] == 2  # Two blinks cannot override passive failure.
     if failure == 'configured_threshold':
         assert body['liveness_score'] == .89
