@@ -34,7 +34,8 @@ function mount(path, name, props, imports) {
   };
   const context = {
     exports: {}, navigator: { onLine: true },
-    window: { addEventListener() {}, removeEventListener() {} },
+    window: { addEventListener() {}, removeEventListener() {}, setInterval() { return 1; }, clearInterval() {} },
+    document: { hidden: false, addEventListener() {}, removeEventListener() {} },
     require: module => module === 'react' ? react : module === 'react/jsx-runtime'
       ? { jsx, jsxs: jsx, Fragment: 'fragment' } : imports[module] ?? {},
   };
@@ -101,7 +102,7 @@ function instructor() {
   view.render();
   const change = (label, value) => { view.input(label).props.onChange({ target: { value } }); view.render(); };
   const open = () => { view.button('New session').props.onClick(); view.render(); };
-  const requireLiveness = checked => { view.input('Require liveness check').props.onChange({ target: { checked } }); view.render(); };
+  const requireMotion = checked => { view.input('Require active motion check').props.onChange({ target: { checked } }); view.render(); };
   const submit = async () => {
     change('Session name', 'Neural Networks Lecture');
     change('Session type', 'lecture');
@@ -109,15 +110,17 @@ function instructor() {
     await view.find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
     view.render();
   };
-  return { ...view, requests, open, requireLiveness, submit };
+  return { ...view, requests, open, requireMotion, submit };
 }
 
-for (const requireLivenessValue of [false, true]) {
-  test(`instructor creation sends the session name, type, and liveness policy (${requireLivenessValue})`, async () => {
+for (const requireMotionValue of [false, true]) {
+  test(`instructor creation keeps liveness enabled with active motion ${requireMotionValue}`, async () => {
     const view = instructor(); view.open();
-    assert.equal(view.input('Require liveness check').props.checked, true);
+    assert.equal(view.input('Require active motion check').props.checked, true);
+    assert.ok(view.text().includes('When enabled, students complete the active motion challenge (blink twice) before checking in.'));
+    assert.ok(!view.text().includes('Require liveness check'));
     assert.equal(view.input('Venue').type, 'select');
-    view.requireLiveness(requireLivenessValue); await view.submit();
+    view.requireMotion(requireMotionValue); await view.submit();
     assert.equal(view.requests.length, 1);
     assert.equal(view.requests[0].path, '/sessions/');
     assert.equal(view.requests[0].body.name, 'Neural Networks Lecture');
@@ -125,22 +128,22 @@ for (const requireLivenessValue of [false, true]) {
     assert.equal(view.requests[0].body.venue_name, 'LT1');
     assert.equal('venue_latitude' in view.requests[0].body, false);
     assert.equal('venue_longitude' in view.requests[0].body, false);
-    assert.equal(view.requests[0].body.require_liveness_check, requireLivenessValue);
-    assert.equal(view.requests[0].body.require_motion_check, requireLivenessValue);
+    assert.equal(view.requests[0].body.require_liveness_check, true);
+    assert.equal(view.requests[0].body.require_motion_check, requireMotionValue);
     view.open();
-    assert.equal(view.input('Require liveness check').props.checked, true);
+    assert.equal(view.input('Require active motion check').props.checked, true);
   });
 }
 
 test('cancel/reopen and calendar creation reset the checkbox to checked', () => {
-  const view = instructor(); view.open(); view.requireLiveness(false);
+  const view = instructor(); view.open(); view.requireMotion(false);
   view.button('Cancel').props.onClick(); view.render(); view.open();
-  assert.equal(view.input('Require liveness check').props.checked, true);
-  view.requireLiveness(false);
+  assert.equal(view.input('Require active motion check').props.checked, true);
+  view.requireMotion(false);
   view.button('Calendar').props.onClick(); view.render();
   view.find(node => node.type === 'SessionCalendar').props.onCreate(Date.now() + 86400000);
   view.render();
-  assert.equal(view.input('Require liveness check').props.checked, true);
+  assert.equal(view.input('Require active motion check').props.checked, true);
 });
 
 function verification(session, initiallyEnrolled = true) {
@@ -155,7 +158,7 @@ function verification(session, initiallyEnrolled = true) {
     capture: () => 'captured-photo', demo: false, onComplete: value => completed.push(value),
   }, {
     '@/features/camera/useFaceGuidance': { useFaceGuidance: () => face },
-    '@/lib/api/auth': { getMe: async () => ({ face_enrolled: initiallyEnrolled, geolocation_consent: true }), updateConsent: async () => {} },
+    '@/lib/api/auth': { getMe: async () => ({ face_enrolled: initiallyEnrolled, camera_consent: true, geolocation_consent: true }), updateConsent: async () => {} },
     '@/lib/api/checkins': {
       enrollFace: async image => { calls.push(['enroll', image]); },
       startMotion: async id => { calls.push(['start', id]); return { challenge_id: 'challenge', expires_at: new Date(Date.now() + 60000).toISOString() }; },
@@ -212,7 +215,7 @@ async function student(requireMotion) {
   const camera = { state: 'idle', stop() { camera.state = 'idle'; }, start() {}, capture() {} };
   const geo = { state: 'idle', point: undefined, reset() { geo.state = 'idle'; geo.point = undefined; } };
   const view = mount('module1-frontend/components/check-in/StudentDashboard.tsx', 'StudentDashboard', {
-    user: { id: 'student', full_name: 'Student', email: 'student@example.test' }, demo: false,
+    user: { id: 'student', full_name: 'Student', email: 'student@example.test', camera_consent: true, geolocation_consent: true }, demo: false,
     onLogout() {}, onBusyChange() {}, onOpenProfile() {},
   }, {
     './FaceVerification': { FaceVerification: 'FaceVerification' },
@@ -224,9 +227,9 @@ async function student(requireMotion) {
       submitCheckIn: async payload => { submitted.push(payload); return { id: 'checkin', status: 'approved', risk_score: 0 }; },
     },
     '@/lib/api/auth': { updateConsent: async () => {} },
-    '@/lib/device': { createDeviceFingerprint: async () => 'device' },
+    '@/lib/device': { createDeviceProof: async () => ({ device_fingerprint: 'device' }) },
     '@/lib/api/client': { ApiError: class extends Error {}, isConnectivityError: () => false },
-    '@/lib/offline/sessionCache': { cacheActiveSessions: async () => {} },
+    '@/lib/offline/sessionCache': { cacheActiveSessions: async () => {}, cacheSessionAttendance: async () => {} },
   });
   await view.settle();
   camera.state = 'ready'; geo.state = 'ready'; geo.point = { latitude: 1, longitude: 103, accuracy: 10 };
@@ -275,7 +278,7 @@ test('stopping the camera prevents submission of an already captured photo', asy
   view.complete({ liveness_challenge_response: 'photo' });
   view.camera.state = 'idle';
   await view.settle();
-  assert.equal(view.button('Submit check-in').props.disabled, true);
-  await view.button('Submit check-in').props.onClick();
+  assert.ok(view.text().includes('Camera access'));
+  assert.ok(!view.text().includes('Submit check-in'));
   assert.equal(view.submitted.length, 0);
 });
