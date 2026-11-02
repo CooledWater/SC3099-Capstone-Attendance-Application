@@ -24,6 +24,7 @@ _ROUTES = frozenset(
         "/face/verify",
         "/face/match",
         "/liveness/check",
+        "/liveness/sequence",
         "/risk/assess",
         "/device/attest",
     }
@@ -85,6 +86,20 @@ RISK_OUTCOMES = _metric(
     "Risk decisions by bounded risk level and pass decision.",
     ["risk_level", "decision"],
 )
+PAD_OUTCOMES = _metric(
+    Counter, "pad_outcomes_total", "MiniFASNet evaluations, independent of attendance decisions.",
+    ["outcome"],
+)
+PAD_DURATION = _metric(
+    Histogram, "pad_duration_seconds", "PAD evaluation latency including lock wait and input clearing.",
+    [], buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
+
+def record_pad_outcome(outcome: str, latency_seconds: float) -> None:
+    _increment(PAD_OUTCOMES, outcome=_bounded(outcome, frozenset({"passed", "failed", "unavailable"})))
+    if PAD_DURATION is not None:
+        PAD_DURATION.observe(max(0.0, latency_seconds))
 
 
 def _bounded(value: Any, allowed: frozenset[str], fallback: str = "other") -> str:

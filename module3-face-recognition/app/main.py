@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -43,6 +44,7 @@ from .metrics import (
     setup_metrics,
 )
 from .quality import assess_face_quality
+from .pad import initialize_pad, unevaluated_details, PadUnavailableError
 from .risk import assess_risk as calculate_risk
 from .risk import detect_vpn_proxy
 from .schemas import (
@@ -86,6 +88,18 @@ logger = (
     else logging.getLogger(settings.service_name)
 )
 
+
+@asynccontextmanager
+async def lifespan(application):
+    try:
+        initialize_pad()
+        application.state.pad_ready = settings.pad_mode != "off"
+    except PadUnavailableError:
+        application.state.pad_ready = False
+        logger.warning("PAD models unavailable; shadow measurements will be marked unavailable")
+    yield
+
+
 app = FastAPI(
     title="SAIV Face Recognition Service",
     description=(
@@ -93,6 +107,7 @@ app = FastAPI(
         "service"
     ),
     version=settings.service_version,
+    lifespan=lifespan,
 )
 
 
@@ -479,6 +494,9 @@ def _empty_liveness_details(
         "pre_gate_liveness_score": 0.0,
     }
     details.update(extra)
+    details.update(unevaluated_details(settings.pad_mode, settings.pad_threshold))
+    details.update(pre_pad_liveness_score=0.0, pre_pad_liveness_passed=False,
+                   pad_would_veto=None)
     return details
 
 

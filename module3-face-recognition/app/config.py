@@ -12,7 +12,8 @@ import json
 import math
 import os
 from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -44,6 +45,11 @@ class Settings(BaseModel):
     liveness_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     liveness_depth_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     liveness_mesh_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    # Shadow PAD is observational; its exploratory cutoff is independent of
+    # the approved legacy liveness threshold and needs physical calibration.
+    pad_mode: Literal["off", "shadow"] = "off"
+    pad_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    pad_manifest_path: str = str(Path(__file__).resolve().parent / "assets/pad/manifest.json")
     risk_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
 
     simhash_seed: int = Field(
@@ -75,6 +81,7 @@ class Settings(BaseModel):
         "liveness_threshold",
         "liveness_depth_threshold",
         "liveness_mesh_threshold",
+        "pad_threshold",
         "risk_threshold",
     )
     @classmethod
@@ -229,6 +236,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             liveness_threshold=_parse_float(env, "LIVENESS_THRESHOLD", 0.85),
             liveness_depth_threshold=_parse_float(env, "LIVENESS_DEPTH_THRESHOLD", 0.80),
             liveness_mesh_threshold=_parse_float(env, "LIVENESS_MESH_THRESHOLD", 0.80),
+            pad_mode=str(_get_env(env, "PAD_MODE", "off")),
+            pad_threshold=_parse_float(env, "PAD_THRESHOLD", 0.50),
+            pad_manifest_path=str(_get_env(env, "PAD_MANIFEST_PATH", Settings.model_fields["pad_manifest_path"].default)),
             risk_threshold=_parse_float(env, "RISK_THRESHOLD", 0.50),
             simhash_seed=_parse_int(env, "SIMHASH_SEED", DEFAULT_SIMHASH_SEED),
             max_image_bytes=_parse_int(

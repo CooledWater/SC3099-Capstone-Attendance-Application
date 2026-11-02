@@ -12,8 +12,16 @@ DETAIL_SCORES = {
     "texture_analysis_score", "color_distribution_score", "weighted_component_score",
     "presentation_integrity_score", "challenge_evidence_score", "challenge_integrity_score",
     "threshold", "depth_threshold", "mesh_threshold", "pre_gate_liveness_score",
+    "pad_live_score", "pad_threshold", "pad_v2_live_score", "pad_v1se_live_score",
+    "pre_pad_liveness_score",
 }
-DETAIL_FLAGS = {"face_mesh_complete", "depth_detected", "depth_passed", "mesh_passed"}
+DETAIL_FLAGS = {"face_mesh_complete", "depth_detected", "depth_passed", "mesh_passed",
+                "pad_evaluated", "pad_passed", "pre_pad_liveness_passed", "pad_would_veto"}
+PAD_NULLABLE = {"pad_live_score", "pad_passed", "pad_inference_ms", "pad_v2_live_score",
+                "pad_v1se_live_score", "pad_would_veto"}
+PAD_ENUMS = {"pad_mode": {"off", "shadow"},
+             "pad_status": {"off", "not_evaluated", "evaluated", "unavailable"},
+             "pad_model_version": {"minifasnet-v2-v1se-onnx-v1"}}
 DETAIL_GROUPS = {
     "weighted_contributions": {"depth", "mesh", "texture", "color"},
     "component_weights": {"depth", "mesh", "texture", "color"},
@@ -51,6 +59,10 @@ def _details(values):
         return {}
     clean = _numbers(values, DETAIL_SCORES)
     clean.update({key: values[key] for key in DETAIL_FLAGS if type(values.get(key)) is bool})
+    clean.update(_numbers(values, {"pad_inference_ms"}, 1e12))
+    clean.update({key: None for key in PAD_NULLABLE if key in values and values[key] is None})
+    clean.update({key: values[key] for key, choices in PAD_ENUMS.items()
+                  if isinstance(values.get(key), str) and values[key] in choices})
     for group, keys in DETAIL_GROUPS.items():
         if isinstance(values.get(group), dict):
             clean[group] = _numbers(values[group], keys)

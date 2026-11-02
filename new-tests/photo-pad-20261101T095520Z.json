@@ -1,0 +1,16 @@
+{
+  "monitor_since": "2026-11-01T09:55:37.059753+00:00",
+  "pad_mode": "shadow",
+  "sessions": [
+    {
+      "id": "008dc5ae-ed71-4bc6-8f2f-ed2a73bc2fa4",
+      "label": "real_face_control",
+      "name": "PAD shadow real_face_control 2026-11-01 09:55 UTC"
+    },
+    {
+      "id": "8b5dd9dd-d319-4f78-9bd0-ab89b241c7ab",
+      "label": "phone_screen",
+      "name": "PAD shadow phone_screen 2026-11-01 09:55 UTC"
+    }
+  ]
+}

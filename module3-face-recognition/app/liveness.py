@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Sequence
 
 from .config import settings
+from .pad import evaluate_pad, unevaluated_details, PadUnavailableError
 
 
 COMPONENT_WEIGHTS: dict[str, float] = {
@@ -594,6 +595,9 @@ def assess_liveness(
             "single_image_challenge_proxy": challenge_type != "passive",
             "threshold": _round(threshold),
         }
+        details.update(unevaluated_details(settings.pad_mode, settings.pad_threshold))
+        details.update(pre_pad_liveness_score=0.0, pre_pad_liveness_passed=False,
+                       pad_would_veto=None)
         return LivenessAnalysis(False, 0.0, threshold, challenge_type, details)
 
     crop = _face_crop(image_rgb, face_bbox, landmarks)
@@ -684,6 +688,7 @@ def assess_liveness(
         "threshold": _round(threshold),
     }
     details.update({key: value for key, value in challenge_details.items() if key != "challenge_score"})
+    details.update(pad_details(image_rgb, face_bbox, score, passed))
 
     # Explicitly discard request-scoped views/references before returning the
     # scalar result.  Python/NumPy may retain allocator pages, but no application
@@ -691,6 +696,23 @@ def assess_liveness(
     del crop
     del landmarks
     return LivenessAnalysis(passed, score, threshold, challenge_type, details)
+
+
+def pad_details(image_rgb, face_bbox, legacy_score, legacy_passed):
+    """Shadow inference failure must not change the existing liveness result."""
+    details = unevaluated_details(settings.pad_mode, settings.pad_threshold)
+    details.update(pre_pad_liveness_score=legacy_score,
+                   pre_pad_liveness_passed=legacy_passed, pad_would_veto=None)
+    if settings.pad_mode == "off":
+        return details
+    try:
+        analysis = evaluate_pad(image_rgb, face_bbox, threshold=settings.pad_threshold,
+                                manifest_path=settings.pad_manifest_path)
+        details.update(analysis.details())
+        details["pad_would_veto"] = legacy_passed and not analysis.passed
+    except PadUnavailableError:
+        details["pad_status"] = "unavailable"
+    return details
 
 
 # Readable compatibility alias for route wiring and external tests.

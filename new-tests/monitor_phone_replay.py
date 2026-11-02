@@ -114,21 +114,121 @@ def completed_sessions(records, mode='image'):
 def frame_table(rows):
     details = next((r['values'].get('diagnostics', {}) for r in reversed(rows)
                     if r['stage'] == 'motion_sequence'), {})
-    lines = ['| Passive frame | Evaluated | Depth | Mesh | Liveness | Depth / mesh gates |',
-             '| --- | --- | --- | --- | --- | --- |']
+    lines = ['| Passive frame | Evaluated | Depth | Mesh | Liveness | Depth / mesh gates | PAD status | PAD live score | PAD passed |',
+             '| --- | --- | --- | --- | --- | --- | --- | --- | --- |']
     for name in ('first_frame', 'last_frame'):
         frame = details.get(name, {})
         if frame.get('evaluated') is not True:
             label = 'not evaluated' if frame.get('evaluated') is False else 'unknown'
-            lines.append(f'| {name} | {label} | — | — | — | — |')
+            lines.append(f'| {name} | {label} | — | — | — | — | not evaluated | — | — |')
             continue
         components = frame.get('details', {})
         values = [components.get('depth_score', 'unknown'), components.get('mesh_plausibility_score', 'unknown'),
                   frame.get('liveness_score', 'unknown'),
-                  f'{components.get("depth_passed", "unknown")} / {components.get("mesh_passed", "unknown")}']
+                  f'{components.get("depth_passed", "unknown")} / {components.get("mesh_passed", "unknown")}',
+                  components.get('pad_status', 'unknown'),
+                  components.get('pad_live_score'), components.get('pad_passed')]
         lines.append(f'| {name} | yes | ' + ' | '.join(map(str, values)) + ' |')
     lines += ['', 'Sequence stop reason: ' + details.get('reason', 'unknown') + '.', '']
     return lines
+
+
+def pad_table(rows):
+    """Keep the shadow PAD verdict separate from saved attendance outcomes."""
+    response = next((r['values'] for r in reversed(rows) if r['stage'] == 'liveness'), {})
+    details = response.get('details', {})
+    status = details.get('pad_status', 'unknown')
+    if response.get('outcome') == 'unavailable':
+        status = 'unavailable'
+    lines = ['PAD is observational in shadow mode; its verdict does not change attendance.', '']
+    if details.get('pad_evaluated') is not True:
+        return lines + [f'PAD status: **{status}**. No measured PAD verdict is available.', '']
+    values = [
+        ('Mode / status', f'{details.get("pad_mode", "unknown")} / {status}'),
+        ('Model version', details.get('pad_model_version', 'unknown')),
+        ('Ensemble live score', details.get('pad_live_score')),
+        ('V2 / V1SE live scores', f'{details.get("pad_v2_live_score")} / {details.get("pad_v1se_live_score")}'),
+        ('Exploratory PAD cutoff (uncalibrated)', details.get('pad_threshold')),
+        ('PAD passed', details.get('pad_passed')),
+        ('PAD processing time (ms)', details.get('pad_inference_ms')),
+        ('Liveness before PAD / returned', f'{details.get("pre_pad_liveness_score")} / {response.get("liveness_score")}'),
+        ('Would PAD veto a legacy pass?', details.get('pad_would_veto')),
+    ]
+    return lines + ['| PAD observation | Value |', '| --- | --- |'] + [
+        f'| {name} | {value} |' for name, value in values] + ['']
+
+
+def _display(value):
+    return 'unknown' if value is None else str(value)
+
+
+def _value_table(title, values):
+    return [f'#### {title}', '', '| Measurement | Value |', '| --- | --- |'] + [
+        f'| {name} | {_display(value)} |' for name, value in values] + ['']
+
+
+def original_liveness_tables(rows):
+    """Render the existing allowlisted measurements even when PAD cannot run."""
+    response = next((r['values'] for r in reversed(rows) if r['stage'] == 'liveness'), {})
+    identity = next((r['values'] for r in reversed(rows) if r['stage'] == 'face_match'), {})
+    details = response.get('details') or {}
+    lines = _value_table('Original liveness and identity', [
+        ('Liveness response', response.get('outcome', 'not observed')),
+        ('Identity response', identity.get('outcome', 'not observed')),
+        ('Challenge type', response.get('challenge_type')),
+        ('Liveness score (returned)', response.get('liveness_score')),
+        ('Liveness threshold', response.get('liveness_threshold', details.get('threshold'))),
+        ('Liveness passed', response.get('liveness_passed')),
+        ('Identity score (face match)', identity.get('match_score')),
+        ('Identity threshold', identity.get('match_threshold')),
+        ('Identity passed', identity.get('match_passed')),
+        ('Identity face detected', identity.get('face_detected')),
+    ])
+    lines += ['`unknown` means the value was absent or null in the scoped diagnostics. '
+              'Identity is a separate enrolled-face comparison, not a liveness component.', '',
+              '#### Original liveness components', '',
+              '| Component | Score | Weight | Weighted contribution | Gate threshold | Gate passed |',
+              '| --- | --- | --- | --- | --- | --- |']
+    weights = details.get('component_weights') or {}
+    contributions = details.get('weighted_contributions') or {}
+    for label, key, score_key in (
+        ('Depth', 'depth', 'depth_score'),
+        ('Mesh', 'mesh', 'mesh_plausibility_score'),
+        ('Texture', 'texture', 'texture_analysis_score'),
+        ('Color', 'color', 'color_distribution_score'),
+    ):
+        values = [details.get(score_key), weights.get(key), contributions.get(key)]
+        values += ([details.get(key + '_threshold'), details.get(key + '_passed')]
+                   if key in ('depth', 'mesh') else ['—', '—'])
+        lines.append(f'| {label} | ' + ' | '.join(_display(value) for value in values) + ' |')
+    lines += ['', 'Depth and mesh must each pass their gate. A failed gate can set returned liveness to 0 '
+              'even when the pre-gate score is high. Texture and color have no separate gate.', '']
+    measurements = [(f'`{key}`', details.get(key)) for key in (
+        'face_detection_confidence', 'face_mesh_complete', 'multiple_faces', 'landmark_count',
+        'depth_detected', 'depth_quality', 'landmark_z_variance', 'relative_nose_depth',
+        'weighted_component_score', 'presentation_integrity_score', 'challenge_evidence_score',
+        'challenge_integrity_score', 'single_image_challenge_proxy', 'pre_gate_liveness_score',
+    )]
+    for group in ('presentation_integrity_checks', 'texture_signals', 'color_signals'):
+        signals = details.get(group) or {}
+        measurements += [(f'`{group}.{key}`', signals[key]) for key in diag.DETAILS[group]
+                         if key in signals]
+    return lines + _value_table('Original liveness details', measurements)
+
+
+def decision_table(rows):
+    decision = next((r['values'] for r in reversed(rows) if r['stage'] == 'decision'), {})
+    committed = next((r['values'] for r in reversed(rows) if r['stage'] == 'attendance_committed'), {})
+    return _value_table('Attendance decision', [
+        ('Calculated status', decision.get('status')),
+        ('Decision reason', decision.get('reason')),
+        ('Final risk score', decision.get('risk_score')),
+        ('Effective risk threshold', decision.get('effective_threshold')),
+        ('Venue risk score', decision.get('venue_risk_score')),
+        ('Module 3 risk score (at decision)', decision.get('module3_risk_score')),
+        ('Saved attendance status', committed.get('status')),
+        ('Saved attendance risk score', committed.get('risk_score')),
+    ])
 
 
 def update_report(path, config, records, state, mode='image'):
@@ -148,6 +248,10 @@ def update_report(path, config, records, state, mode='image'):
         if mode == 'video':
             lines += frame_table(rows)
         else:
+            lines += original_liveness_tables(rows)
+            lines += ['#### PAD observation', '']
+            lines += pad_table(rows)
+            lines += decision_table(rows)
             lines += ['The final risk is the maximum of venue risk and Module 3 risk; a liveness failure can independently reject attendance.', '']
         lines += ['```json', json.dumps(rows, indent=2, allow_nan=False), '```', '']
     lines += [END]
@@ -233,6 +337,11 @@ def main():
             seen.add(key); records.append(record)
             update_report(args.report, config, records, state, args.mode)
             print(f'OBSERVED {record["stage"]} for {record["session_id"]}', flush=True)
+            if record['stage'] == 'liveness':
+                details = record['values'].get('details', {})
+                print(f'PAD {details.get("pad_status", "unknown")}: live={details.get("pad_live_score")} '
+                      f'passed={details.get("pad_passed")} mode={details.get("pad_mode", "unknown")} '
+                      f'would_veto={details.get("pad_would_veto")}', flush=True)
             if completed_sessions(records, args.mode) == sessions:
                 state = ('all sessions reached terminal motion outcomes' if args.mode == 'video'
                          else 'both sessions committed') + '; participant presentation confirmation still required'
