@@ -1,0 +1,17 @@
+{
+  "monitor_since": "2026-11-02T04:53:23.604777+00:00",
+  "pad_mode": "enforce",
+  "setup_complete": true,
+  "sessions": [
+    {
+      "id": "0c2306d0-b222-4641-98b9-dcd90db8abc4",
+      "label": "real_face_control",
+      "name": "Video PAD real_face_control 2026-11-02 04:53 UTC"
+    },
+    {
+      "id": "ac1eebea-2de3-4f08-9093-640c42dfb60a",
+      "label": "phone_video",
+      "name": "Video PAD phone_video 2026-11-02 04:53 UTC"
+    }
+  ]
+}
