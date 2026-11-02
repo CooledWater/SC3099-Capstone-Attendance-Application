@@ -2,9 +2,10 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .imaging import decode_base64_image
 from .liveness import blink_metrics, assess_liveness
-from .config import settings
+from .config import settings, SIMHASH_BITS
 from .detection import detect_face
 from .liveness import LivenessUnavailableError
+from .template import hamming_distance
 from pathlib import Path
 import hashlib
 import time
@@ -132,7 +133,22 @@ def analyze_sequence(request, verify_image, observe=None):
             if index % 8 == 0 or counter.count != before or index == len(request.frames)-1:
                 match, _ = verify_image(frame.image, request.reference_template_hash)
                 matches.append(match.match_score)
-                note("identity")
+                identity = {}
+                if observe is not None:
+                    try:
+                        identity = {'frame_index': index, 'timestamp_ms': frame.timestamp_ms,
+                                    'match_score': match.match_score, 'match_passed': match.match_passed,
+                                    'face_detected': getattr(match, 'face_detected', None),
+                                    'hamming_evaluated': False}
+                        # Reuse the compared request-local templates; no extra face inference.
+                        distance = hamming_distance(request.reference_template_hash,
+                                                    getattr(match, 'current_template_hash', ''))
+                        identity.update(hamming_evaluated=True, hamming_distance=distance,
+                                        hamming_fraction=distance / SIMHASH_BITS)
+                    except Exception:
+                        # Missing/no-face templates or failed diagnostics cannot change the verdict.
+                        pass
+                note("identity", **identity)
                 if not match.match_passed:
                     return result(reason="identity_failed")
             if index == 0 or index == len(request.frames)-1:

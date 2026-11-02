@@ -77,10 +77,21 @@ SERVICE_FIELDS = {
 PASSIVE_FRAME = {"evaluated": BOOL, "frame_index": NUMBER, "timestamp_ms": NUMBER,
                  "liveness_passed": BOOL, "liveness_score": SCORE,
                  "liveness_threshold": SCORE, "details": DETAILS}
+IDENTITY_COMPARISON = {
+    "frame_index": NUMBER, "timestamp_ms": NUMBER, "match_score": SCORE,
+    "match_passed": BOOL, "face_detected": BOOL, "hamming_evaluated": BOOL,
+    "hamming_distance": NUMBER, "hamming_fraction": SCORE,
+}
 SEQUENCE_DETAILS = {
     "frame_count": NUMBER, "processed_frames": NUMBER, "duration_ms": NUMBER,
     "last_frame_index": NUMBER, "last_timestamp_ms": NUMBER,
     "identity_checks": NUMBER, "face_match_threshold": SCORE,
+    "simhash_bits": NUMBER, "face_match_hamming_fraction": SCORE,
+    "max_accepted_hamming_distance": NUMBER, "max_hamming_distance": NUMBER,
+    "min_hamming_distance": NUMBER, "identity_comparisons_truncated": BOOL,
+    "identity_comparisons": [IDENTITY_COMPARISON],
+    "matcher_version": {"dlib128-simhash256-v1"},
+    "score_mapping_version": {"piecewise-hamming-v1"},
     "liveness_threshold": SCORE, "depth_threshold": SCORE, "mesh_threshold": SCORE,
     "ear_closed_threshold": SCORE, "ear_open_threshold": SCORE,
     "min_closure_ms": NUMBER, "max_closure_ms": NUMBER,
@@ -137,6 +148,10 @@ def sanitize(values, schema):
         if isinstance(rule, dict):
             if isinstance(value, dict):
                 clean[key] = sanitize(value, rule)
+        elif isinstance(rule, list):
+            if isinstance(value, list):
+                clean[key] = [sanitize(item, rule[0]) for item in value[:64]
+                              if isinstance(item, dict)]
         elif value is None:
             clean[key] = None
         elif isinstance(rule, set):

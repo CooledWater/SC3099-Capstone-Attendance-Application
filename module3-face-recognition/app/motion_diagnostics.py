@@ -2,6 +2,10 @@
 import math
 import os
 import uuid
+from .config import FACE_MATCH_HAMMING_FRACTION, FACE_MATCH_THRESHOLD, SIMHASH_BITS
+from .template import match_score
+
+MAX_IDENTITY_COMPARISONS = 64
 
 
 REASONS = {"passed", "face_count", "face_jump", "identity_failed",
@@ -73,10 +77,18 @@ class SequenceDiagnostics:
     """Observer only: measurements never participate in recognition decisions."""
     def __init__(self):
         self.data = {"first_frame": {"evaluated": False}, "last_frame": {"evaluated": False},
-                     "processed_frames": 0, "identity_checks": 0}
+                     "processed_frames": 0, "identity_checks": 0,
+                     "identity_comparisons": [], "identity_comparisons_truncated": False}
 
     def observe(self, stage, **values):
         if stage == "started":
+            self.data.update(simhash_bits=SIMHASH_BITS,
+                             face_match_hamming_fraction=FACE_MATCH_HAMMING_FRACTION,
+                             max_accepted_hamming_distance=max(
+                                 d for d in range(SIMHASH_BITS + 1)
+                                 if match_score(d / SIMHASH_BITS) >= FACE_MATCH_THRESHOLD),
+                             matcher_version="dlib128-simhash256-v1",
+                             score_mapping_version="piecewise-hamming-v1")
             self.data.update(_numbers(values, {"frame_count", "duration_ms"}, 8000))
             self.data.update(_numbers(values, {"liveness_threshold", "depth_threshold", "mesh_threshold",
                                                "face_match_threshold"}))
@@ -87,6 +99,23 @@ class SequenceDiagnostics:
             self.data.update(_numbers(values, {"last_frame_index", "last_timestamp_ms"}, 8000))
         elif stage == "identity":
             self.data["identity_checks"] += 1
+            item = _numbers(values, {"frame_index", "timestamp_ms"}, 8000)
+            item.update(_numbers(values, {"match_score", "hamming_fraction"}))
+            item.update(_numbers(values, {"hamming_distance"}, SIMHASH_BITS))
+            item.update({key: values[key] for key in
+                         ("match_passed", "face_detected", "hamming_evaluated")
+                         if type(values.get(key)) is bool})
+            if 'hamming_distance' in item:
+                distance = item['hamming_distance']
+                self.data['max_hamming_distance'] = max(distance, self.data.get('max_hamming_distance', distance))
+                self.data['min_hamming_distance'] = min(distance, self.data.get('min_hamming_distance', distance))
+            samples = self.data['identity_comparisons']
+            if len(samples) < MAX_IDENTITY_COMPARISONS:
+                samples.append(item)
+            else:
+                # Keep the beginning and most recent comparison, including a terminal failure.
+                samples[-1] = item
+                self.data['identity_comparisons_truncated'] = True
         elif stage == "passive" and values.get("position") in ("first_frame", "last_frame"):
             frame = {"evaluated": True, **_numbers(values, {"frame_index", "timestamp_ms"}, 8000),
                      **_numbers(values, {"liveness_score", "liveness_threshold"})}

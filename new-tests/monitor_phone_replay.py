@@ -245,22 +245,116 @@ def decision_table(rows):
     ])
 
 
+def identity_table(rows):
+    sequence = next((r['values'] for r in reversed(rows) if r['stage'] == 'motion_sequence'), {})
+    details = sequence.get('diagnostics', {})
+    score, threshold = sequence.get('face_match_score'), details.get('face_match_threshold')
+    margin = score - threshold if type(score) in (int, float) and type(threshold) in (int, float) else None
+    maximum, limit = details.get('max_hamming_distance'), details.get('max_accepted_hamming_distance')
+    bit_margin = limit - maximum if type(maximum) in (int, float) and type(limit) in (int, float) else None
+    lines = _value_table('Identity comparison', [
+        ('Minimum identity score', score), ('Identity score cutoff', threshold),
+        ('Score margin above cutoff', margin), ('Identity comparisons performed', details.get('identity_checks')),
+        ('Matcher version', details.get('matcher_version')), ('Score mapping version', details.get('score_mapping_version')),
+        ('Template bits', details.get('simhash_bits')),
+        ('Hamming fraction boundary', details.get('face_match_hamming_fraction')),
+        ('Maximum accepted differing bits', limit),
+        ('Minimum observed differing bits', details.get('min_hamming_distance')),
+        ('Maximum observed differing bits', maximum),
+        ('Bit margin below acceptance limit', bit_margin),
+    ])
+    samples = details.get('identity_comparisons', [])
+    if not samples:
+        return lines + ['Per-comparison Hamming measurements were not recorded; they cannot be recovered from this report.', '']
+    lines += ['| Frame | Time (ms) | Face detected | Hamming evaluated | Differing bits | Hamming fraction | Identity score | Identity passed |',
+              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for sample in samples:
+        lines.append('| ' + ' | '.join(_display(sample.get(k)) for k in (
+            'frame_index', 'timestamp_ms', 'face_detected', 'hamming_evaluated',
+            'hamming_distance', 'hamming_fraction', 'match_score', 'match_passed')) + ' |')
+    lines += ['', 'Hamming is computed from the compared templates without additional face inference. '
+              'An unavailable comparison is unknown, not a measured zero.', '']
+    if details.get('identity_comparisons_truncated'):
+        lines += ['Trace capped at 64 comparisons: first 63 and most recent retained; total count and distance extrema cover all observed comparisons.', '']
+    return lines
+
+
+def impersonation_classification(rows, session):
+    verified = next((r['values'] for r in reversed(rows) if r['stage'] == 'motion_verified'), {})
+    sequence = next((r['values'] for r in reversed(rows) if r['stage'] == 'motion_sequence'), {})
+    if verified.get('passed') is False:
+        details = sequence.get('diagnostics', {})
+        reason = details.get('reason')
+        comparisons = details.get('identity_comparisons', [])
+        measured = bool(comparisons and comparisons[-1].get('hamming_evaluated') is True)
+        if reason in ('identity_failed', 'identity_threshold') and measured:
+            return ('Identity mismatch observed; ' +
+                    ('unexpected rejection of the genuine control.' if session['expected_identity_match']
+                     else 'expected impersonation rejection.') + ' No attendance commit is required.')
+        return 'Inconclusive for identity discrimination: motion/liveness/capture failed without an established identity mismatch.'
+    if verified.get('passed') is True:
+        committed = next((r['values'] for r in reversed(rows) if r['stage'] == 'attendance_committed'), {})
+        result = ('Expected genuine identity acceptance.' if session['expected_identity_match'] else
+                  'Identity acceptance contrary to the expected mismatch: potential false acceptance, subject to account/presenter confirmation.')
+        return result + (' Saved attendance status: ' + committed['status'] + '.' if 'status' in committed else
+                         ' Attendance commitment not confirmed.')
+    return 'No completed server identity verdict; request failures or browser-only captures are inconclusive.'
+
+
+def validate_impersonation_config(config, mode):
+    if config.get('trial_type') != 'impersonation':
+        return
+    sessions = config.get('sessions', [])
+    if mode != 'video' or config.get('setup_complete') is not True or len(sessions) != 2:
+        raise ValueError('impersonation requires completed two-session setup and --mode video')
+    expected = {'genuine_control': True, 'impersonation_test': False}
+    if {s.get('label') for s in sessions} != set(expected):
+        raise ValueError('impersonation requires genuine_control and impersonation_test')
+    accounts = []
+    for session in sessions:
+        email = session.get('account_email')
+        if (type(session.get('expected_identity_match')) is not bool
+                or session['expected_identity_match'] != expected[session['label']]
+                or session.get('presenter') != 'same_live_presenter'
+                or not isinstance(email, str) or not 3 <= len(email) <= 254 or email.count('@') != 1
+                or not all(email.split('@'))
+                or any(c.isspace() or c in '|<>`\\' for c in email)):
+            raise ValueError('invalid impersonation account/presenter assignment')
+        accounts.append(email.lower())
+    if len(set(accounts)) != 2:
+        raise ValueError('impersonation accounts must differ')
+
+
 def update_report(path, config, records, state, mode='image'):
     groups = {}
     for record in records:
         key = record.get('challenge_id', record['diagnostic_id']) if mode == 'video' else record['diagnostic_id']
         groups.setdefault((record['session_id'], key), []).append(record)
     labels = {session['id']: session['label'] for session in config['sessions']}
+    assignments = {session['id']: session for session in config['sessions']}
+    impersonation = config.get('trial_type') == 'impersonation'
     lines = [BEGIN, '## Instrumented observations', '', f'Monitor state: **{state}**.', '',
              'Updated: ' + datetime.now(SGT).isoformat(timespec='seconds') + '.', '',
              'Presentation labels identify the assigned session; they do not independently establish what the camera saw.', '']
+    if impersonation:
+        lines += ['### Planned account assignments', '',
+                  '| Session | Intended signed-in account | Actual presenter assignment | Expected identity match |',
+                  '| --- | --- | --- | --- |']
+        for session in config['sessions']:
+            lines.append(f'| {session["label"]} | {session["account_email"]} | Same live participant | {session["expected_identity_match"]} |')
+        lines += ['', 'Assignments are operator-provided, not authenticated account readback. Confirm the displayed login, actual presenter, and saved attendance ownership separately.', '']
     if not groups:
         lines += ['No diagnostic submissions observed yet. Neither test has a measured result.', '']
     for (_, attempt), rows in groups.items():
-        lines += [f'### {labels[rows[0]["session_id"]]} / {attempt}', '',
-                  classification(rows, mode), '']
+        session = assignments[rows[0]['session_id']]
+        account_suffix = ' — ' + session['account_email'] if impersonation else ''
+        lines += [f'### {labels[rows[0]["session_id"]]}{account_suffix} / {attempt}', '',
+                  impersonation_classification(rows, session) if impersonation else classification(rows, mode), '']
         if mode == 'video':
             lines += frame_table(rows)
+            lines += identity_table(rows)
+            if impersonation:
+                lines += decision_table(rows)
         else:
             lines += original_liveness_tables(rows)
             lines += ['#### PAD observation', '']
@@ -306,6 +400,10 @@ def main():
             parser.error('--mode video requires a unique --report path')
         args.report = ROOT / 'new-documentations/test-logs/phone-replay-test.md'
     config = json.loads(args.config.read_text())
+    try:
+        validate_impersonation_config(config, args.mode)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 0 < args.minutes <= 1440:
         parser.error('--minutes must be greater than zero and at most 1440')
     sessions_config = config.get('sessions', [])
@@ -313,8 +411,10 @@ def main():
         parser.error('config requires unique session IDs')
     for session in sessions_config:
         uuid.UUID(session['id'])
-        if session['label'] not in ('real_face_control', 'phone_screen', 'phone_video'):
-            parser.error('use a fixed presentation label: real_face_control, phone_screen, or phone_video')
+        allowed_labels = (('genuine_control', 'impersonation_test') if config.get('trial_type') == 'impersonation'
+                          else ('real_face_control', 'phone_screen', 'phone_video'))
+        if session['label'] not in allowed_labels:
+            parser.error('use a fixed presentation label for the selected trial type')
     sessions = {session['id'] for session in config['sessions']}
     records, seen = [], set()
     lines = queue.Queue()
