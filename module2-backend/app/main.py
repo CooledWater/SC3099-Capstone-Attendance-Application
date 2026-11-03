@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 from app.database import engine, Base, get_db, get_read_db
 from app.session_lifecycle import session_lifespan, get_session_db
 from app import models
-from app.models import AuditLog, User, Course, Enrollment, Session as SessionModel, CheckIn, Device
+from app.models import AuditLog, User, Course, Enrollment, Session as SessionModel, SessionAssistant, CheckIn, Device
 from app.schemas import (
     UserRegister,
     UserLogin,
@@ -78,7 +78,7 @@ from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
 from app import device_binding, audit, motion, prometheus_metrics, stats, attendance_roster, student_overview, venues, course_assistants
-from app.permissions import assigned_course_scope, assists, can_staff_course, teaches
+from app.permissions import assigned_course_scope, assigned_session_scope, assists, can_staff_session, teaches
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 from app import checkin_diagnostics, push_notifications, device_rotation, data_deletion
@@ -98,6 +98,7 @@ app.include_router(attendance_roster.router)
 app.include_router(student_overview.router)
 app.include_router(venues.router)
 app.include_router(course_assistants.router)
+app.include_router(course_assistants.session_router)
 app.include_router(motion.router)
 app.include_router(device_binding.router)
 app.include_router(stats.router)
@@ -1693,7 +1694,8 @@ def list_active_sessions(
             SessionModel.status == "active",
             SessionModel.checkin_opens_at <= now,
             SessionModel.checkin_closes_at >= now,
-            *assigned_course_scope(current_user)
+            *assigned_course_scope(current_user),
+            *assigned_session_scope(current_user)
         )
         .all()
     )
@@ -1720,8 +1722,10 @@ def list_sessions(
     query = db.query(SessionModel)
 
     if current_user.role in ("instructor", "ta"):
+        # TAs additionally see only the sessions assigned to them.
         query = query.join(Course, Course.id == SessionModel.course_id).filter(
-            *assigned_course_scope(current_user)
+            *assigned_course_scope(current_user),
+            *assigned_session_scope(current_user)
         )
 
     if status_filter:
@@ -1837,8 +1841,10 @@ def list_my_sessions(
         return [_serialize_session_summary(db, session, context) for session in sessions]
     else:
         # Spec covers students (enrolled) and instructors (teaching); TAs get
-        # the courses they assist. Admins get courses they teach, as before.
-        scope = (assigned_course_scope(current_user) if current_user.role in ("instructor", "ta")
+        # their assigned sessions in courses they assist. Admins get courses
+        # they teach, as before.
+        scope = ([*assigned_course_scope(current_user), *assigned_session_scope(current_user)]
+                 if current_user.role in ("instructor", "ta")
                  else [Course.instructor_id == current_user.id])
         query = query.join(Course, Course.id == SessionModel.course_id).filter(*scope)
 
@@ -1902,7 +1908,7 @@ def get_session(
             return _serialize_session_metadata(session)
     elif current_user.role in ("instructor", "ta"):
         course = db.get(Course, session.course_id)
-        if not course or not can_staff_course(db, current_user, course):
+        if not course or not can_staff_session(db, current_user, session, course):
             raise HTTPException(403, "Insufficient permissions")
     return _serialize_session(db, session)
 
@@ -2047,6 +2053,9 @@ def delete_session(
         ).delete(synchronize_session=False)
         db.query(motion.MotionPolicy).filter(
             motion.MotionPolicy.session_id == session.id
+        ).delete(synchronize_session=False)
+        db.query(SessionAssistant).filter(
+            SessionAssistant.session_id == session.id
         ).delete(synchronize_session=False)
         create_audit_log(
             db, "session_deleted", current_user.id, session.id,
@@ -2660,7 +2669,7 @@ def list_session_checkins(
     session, course = (db.query(SessionModel, Course)
                       .join(Course, Course.id == SessionModel.course_id)
                       .filter(SessionModel.id == session_id).one())
-    if not can_staff_course(db, current_user, course):
+    if not can_staff_session(db, current_user, session, course):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     results = []
@@ -2704,7 +2713,7 @@ def _checkin_listing(
         .join(SessionModel, SessionModel.id == CheckIn.session_id)
         .join(Course, Course.id == SessionModel.course_id)
         .join(User, User.id == CheckIn.student_id)
-        .filter(*assigned_course_scope(user), *filters)
+        .filter(*assigned_course_scope(user), *assigned_session_scope(user), *filters)
     )
 
     total = query.count()
@@ -2852,7 +2861,7 @@ def get_checkin(
 ):
     checkin, session, course = _load_checkin(db, checkin_id)
 
-    if checkin.student_id != current_user.id and not can_staff_course(db, current_user, course):
+    if checkin.student_id != current_user.id and not can_staff_session(db, current_user, session, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -2962,7 +2971,7 @@ def review_checkin(
 ):
     checkin, session, course = _load_checkin(db, checkin_id, lock=True)
 
-    if not can_staff_course(db, current_user, course):
+    if not can_staff_session(db, current_user, session, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"
@@ -3024,6 +3033,7 @@ def _serialize_device(device: Device, metadata: dict | None = None) -> dict:
         "is_trusted": device.is_trusted,
         "trust_score": device.trust_score,
         "is_active": device.is_active,
+        "approval_status": device_binding.approval_status(device),
         "is_removed": device_binding.is_removed(device),
         "public_key_created_at": device.public_key_created_at,
         "public_key_expires_at": device_rotation.key_expiry(device),
@@ -3048,9 +3058,11 @@ def register_device(
         device_rotation.validate_browser_key(db, fingerprint, device_data.public_key)
     device_binding.lock_account(db, current_user.id)
     existing = device_binding.find_device(db, current_user.id, fingerprint)
-    if existing is None:
-        device_binding.require_slot(db, current_user.id)
+    slot_free = device_binding.active_count(db, current_user.id) < device_binding.MAX_ACTIVE_DEVICES
+    if existing is None and not slot_free:
+        device_binding.require_limit_request_capacity(db, current_user.id)
     proven = device_binding.consume_registration_proof(db, current_user.id, device_data)
+    over_limit = False
     if existing:
         if existing.public_key and device_data.public_key and existing.public_key != device_data.public_key:
             raise HTTPException(409, 'Device key cannot be replaced; register a new device')
@@ -3062,24 +3074,46 @@ def register_device(
         existing.public_key = device_data.public_key or existing.public_key
         existing.last_seen_at = datetime.utcnow()
         device = existing
+        if device_binding.is_limit_rejected(existing):
+            if slot_free:
+                # A slot has since been freed: the request becomes an ordinary pending device.
+                existing.is_active = True
+                existing.revoked_at = None
+                existing.revocation_reason = None
+                create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id,
+                    details={'event': 'device_limit_request_pending', 'approval_status': 'pending'})
+            else:
+                over_limit = True
     else:
         now = datetime.utcnow()
+        # 1st device: HIGH trust, auto-approved. 2nd: LOW, pending admin approval.
+        # Beyond the limit: LOW, kept inactive as a rejected request an admin may override.
+        first = not device_binding.has_any_device(db, current_user.id)
+        over_limit = not slot_free
         device = Device(user_id=current_user.id,
             device_fingerprint=device_binding.account_fingerprint(current_user.id, fingerprint) if device_data.public_key else fingerprint,
             device_name=device_data.device_name, platform=device_data.platform, browser=device_data.browser,
             os_version=device_data.os_version, app_version=device_data.app_version, public_key=device_data.public_key,
             first_seen_at=now, last_seen_at=now, public_key_created_at=now if device_data.public_key else None,
-            public_key_expires_at=now + device_rotation.KEY_LIFETIME if device_data.public_key else None)
+            public_key_expires_at=now + device_rotation.KEY_LIFETIME if device_data.public_key else None,
+            is_trusted=first, trust_score="high" if first else "low", is_active=not over_limit,
+            revoked_at=now if over_limit else None,
+            revocation_reason=device_binding.LIMIT_REASON if over_limit else None)
         db.add(device)
         try:
             db.flush()
         except IntegrityError:
             db.rollback()
             raise HTTPException(409, 'Registration changed concurrently. Please refresh devices and retry.')
-        create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id)
+        create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id,
+            details={'event': 'device_limit_rejected' if over_limit else 'device_registered',
+                     'approval_status': device_binding.approval_status(device), 'trust_score': device.trust_score})
     if device_data.public_key:
         device_binding.attach_browser(db, device, fingerprint, device_data.public_key, verified=proven)
     db.commit(); db.refresh(device)
+    if over_limit:
+        # The request is saved for admin review, but normal registration keeps the two-device limit.
+        raise HTTPException(409, device_binding.LIMIT_MESSAGE)
     return _serialize_device(device, device_binding.browser_metadata(db, [device]).get(device.id))
 
 
@@ -3102,6 +3136,7 @@ def list_all_devices(
     user_email: str | None = None,
     is_active: bool | None = None,
     is_trusted: bool | None = None,
+    approval_status: Literal["pending", "approved", "rejected", "inactive"] | None = None,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(require_roles("admin", read_only=True)),
@@ -3122,6 +3157,14 @@ def list_all_devices(
         query = query.filter(Device.is_active == is_active)
     if is_trusted is not None:
         query = query.filter(Device.is_trusted == is_trusted)
+    # Mirrors device_binding.approval_status; removed devices are already excluded.
+    if approval_status == "rejected":
+        query = query.filter(Device.revocation_reason == device_binding.LIMIT_REASON)
+    elif approval_status == "inactive":
+        query = query.filter(Device.is_active.is_(False), or_(
+            Device.revocation_reason.is_(None), Device.revocation_reason != device_binding.LIMIT_REASON))
+    elif approval_status is not None:
+        query = query.filter(Device.is_active.is_(True), Device.is_trusted.is_(approval_status == "approved"))
 
     total = query.count()
     rows = (
@@ -3164,11 +3207,24 @@ def update_device(
             detail="Insufficient permissions"
         )
 
+    override = device_data.override_device_limit is True
+    if device_data.override_device_limit is not None and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can override the device limit"
+        )
+    if override and device_data.is_trusted is not True:
+        raise HTTPException(400, 'override_device_limit is only valid when approving a device (is_trusted: true)')
+    if override and device_data.is_active is False:
+        raise HTTPException(400, 'An approved device-limit exception must be active')
+
     device_binding.lock_account(db, device.user_id)
     db.refresh(device)
-    if device_data.is_active is True and not device.is_active:
+    # An explicit admin override approves and activates a device beyond the two-device limit.
+    activate = device_data.is_active is True or (override and not device.is_active)
+    if activate and not device.is_active and not override:
         device_binding.require_slot(db, device.user_id)
-    if device_data.is_trusted is True and device_binding.active_count(db, device.user_id) > device_binding.MAX_ACTIVE_DEVICES:
+    if device_data.is_trusted is True and not override and device_binding.active_count(db, device.user_id) > device_binding.MAX_ACTIVE_DEVICES:
         raise HTTPException(409, device_binding.LIMIT_MESSAGE)
 
     if device_data.is_trusted is not None:
@@ -3177,7 +3233,7 @@ def update_device(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only admins can change device trust status"
             )
-        if device_data.is_trusted and (not device.public_key or not device.is_active):
+        if device_data.is_trusted and (not device.public_key or not (device.is_active or override)):
             raise HTTPException(400, 'Only an active device with a registered public key can be approved')
         device.is_trusted = device_data.is_trusted
         device.trust_score = "high" if device_data.is_trusted else "low"
@@ -3185,15 +3241,16 @@ def update_device(
     if device_data.device_name is not None:
         device.device_name = device_data.device_name
 
-    if device_data.is_active is not None:
-        device.is_active = device_data.is_active
-        if not device.is_active:
-            device.revoked_at = datetime.utcnow()
-        else:
-            device.revoked_at = None
-            device.revocation_reason = None
-    create_audit_log(db, 'device_registered', current_user.id, device.id,
-        device_id=device.id, details={'event': 'device_updated', 'changes': device_data.model_dump(exclude_unset=True)})
+    if activate:
+        device.is_active = True
+        device.revoked_at = None
+        device.revocation_reason = None
+    elif device_data.is_active is False:
+        device.is_active = False
+        device.revoked_at = datetime.utcnow()
+    details = {'event': 'device_limit_override' if override else 'device_updated',
+               'changes': device_data.model_dump(exclude_unset=True)}
+    create_audit_log(db, 'device_registered', current_user.id, device.id, device_id=device.id, details=details)
 
     db.commit()
     db.refresh(device)

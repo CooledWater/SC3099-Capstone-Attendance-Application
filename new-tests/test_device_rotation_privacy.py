@@ -26,6 +26,8 @@ def test_rotation_keeps_approvals_shared_history_and_rejects_old_proofs(world):
     world[1][0] = world[2][0]
     with SessionLocal() as db:
         db.get(Device, device[3]).is_trusted = True
+        # The other account's first device is auto-approved; make it untrusted to prove rotation never copies trust.
+        db.get(Device, other[3]).is_trusted = False
         db.commit()
     new_key = key()
     payload = start(world, device, new_key)

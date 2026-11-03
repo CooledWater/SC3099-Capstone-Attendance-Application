@@ -92,6 +92,8 @@ def test_admin_can_restore_archived_device_without_restoring_trust_or_old_proofs
     assert response.json()['is_removed'] is False and response.json()['is_trusted'] is False
     assert admin_devices(world)['items'][0]['id'] == device[3]
     current[0] = ids[0]
+    # The restored device is pending again, and its old proof was revoked on removal.
+    assert response.json()['approval_status'] == 'pending'
     assert checkin(world, sid, old_proof).status_code == 409
 
 

@@ -32,10 +32,43 @@ class DeviceChallenge(Base):
 
 MAX_ACTIVE_DEVICES = 2
 REMOVED_REASON = 'device_removed'
+# Over-limit registrations are kept (inactive) so an admin can approve an exception.
+LIMIT_REASON = 'device_limit'
+# Bound how many over-limit requests one account can leave in the admin queue.
+MAX_LIMIT_REJECTIONS = 3
+REJECTED_MESSAGE = 'This device was rejected because your account already has two devices. An administrator must approve an exception before it can be used.'
 
 
 def is_removed(device):
     return device.revocation_reason == REMOVED_REASON
+
+
+def is_limit_rejected(device):
+    return device.revocation_reason == LIMIT_REASON
+
+
+def approval_status(device):
+    if is_removed(device):
+        return 'removed'
+    if is_limit_rejected(device):
+        return 'rejected'
+    if not device.is_active:
+        return 'inactive'
+    return 'approved' if device.is_trusted else 'pending'
+
+
+def has_any_device(db, user_id):
+    # Removed and rejected rows count, so removing devices never resets first-device trust.
+    return db.query(Device.id).filter_by(user_id=user_id).first() is not None
+
+
+def limit_rejection_count(db, user_id):
+    return db.query(Device).filter_by(user_id=user_id, revocation_reason=LIMIT_REASON).count()
+
+
+def require_limit_request_capacity(db, user_id):
+    if limit_rejection_count(db, user_id) >= MAX_LIMIT_REJECTIONS:
+        raise HTTPException(409, LIMIT_MESSAGE)
 
 
 def managed_devices():
@@ -211,8 +244,9 @@ def issue_registration(payload: RegistrationRequest, user: User = Depends(requir
     from app.device_rotation import validate_browser_key
     validate_browser_key(db, payload.device_fingerprint, payload.public_key)
     lock_account(db, user.id)
-    if find_device(db, user.id, payload.device_fingerprint) is None:
-        require_slot(db, user.id)
+    # Registration itself enforces the limit and records an over-limit request for admin review.
+    if find_device(db, user.id, payload.device_fingerprint) is None and active_count(db, user.id) >= MAX_ACTIVE_DEVICES:
+        require_limit_request_capacity(db, user.id)
     now = datetime.utcnow()
     db.query(RegistrationChallenge).filter(RegistrationChallenge.expires_at < now).delete(synchronize_session=False)
     item = RegistrationChallenge(user_id=user.id, browser_fingerprint=payload.device_fingerprint,
@@ -227,6 +261,8 @@ def issue(payload: ChallengeRequest, user: User = Depends(require_roles('student
     enforce_rate_limit('device-challenge', user.id, 20, 60)
     now = datetime.utcnow()
     device = find_device(db, user.id, payload.device_fingerprint)
+    if device and is_limit_rejected(device):
+        raise HTTPException(403, REJECTED_MESSAGE)
     if not device or not device.is_active or not device.public_key:
         raise HTTPException(403, 'This device is unavailable or disabled. Manage it in Profile → My devices.')
     from app.device_rotation import key_expiry
@@ -250,10 +286,15 @@ def resolve(db, user, payload):
     lock_account(db, user.id)
     device = find_device(db, user.id, payload.device_fingerprint)
     active = active_count(db, user.id)
-    if active > MAX_ACTIVE_DEVICES or (device is None and active >= MAX_ACTIVE_DEVICES):
+    # More than two active devices only arises from an explicit admin exception,
+    # so approved devices keep working; unknown devices stay blocked at the limit.
+    if device is None and active >= MAX_ACTIVE_DEVICES:
         raise HTTPException(403, LIMIT_MESSAGE)
+    if device and is_limit_rejected(device):
+        raise HTTPException(403, REJECTED_MESSAGE)
     if device and not device.is_active:
         raise HTTPException(403, 'This device is disabled. Manage it in Profile → My devices.')
+    # An untrusted (pending) device may check in; apply_risk flags it for low device trust.
     from app.device_rotation import key_expiry
     if device and key_expiry(device) and key_expiry(device) <= datetime.utcnow():
         raise HTTPException(403, 'Browser security key expired. Renew it before checking in.')

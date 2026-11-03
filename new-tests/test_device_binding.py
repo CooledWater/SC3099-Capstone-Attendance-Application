@@ -97,7 +97,8 @@ def approve(world, device):
 
 @pytest.mark.parametrize('motion', [False, True])
 def test_pending_flags_approved_passes_and_counts(world, motion):
-    device = register(world)
+    first = register(world)  # First device is auto-approved.
+    device = register(world)  # Second device stays pending until an admin approves it.
     sid = session(world)
     payload = proof(world, device, sid)
     if motion: payload['motion_verification_id'] = str(uuid.uuid4())
@@ -110,6 +111,7 @@ def test_pending_flags_approved_passes_and_counts(world, motion):
     assert response.json()['status'] == 'approved', response.text
     with SessionLocal() as db:
         assert db.get(Device, device[3]).total_checkins == 2
+        assert db.get(Device, first[3]).total_checkins == 0
         assert db.query(CheckIn).filter_by(session_id=sid).one().device_id == device[3]
 
 
@@ -221,7 +223,10 @@ def test_third_registration_blocked_but_management_and_existing_checkins_work(wo
     response = world[0].post('/api/v1/devices/register', json={'device_fingerprint': fingerprint, 'public_key': pem})
     assert response.status_code == 409
     assert 'two active devices' in response.json()['detail']
-    assert len(world[0].get('/api/v1/devices/my-devices').json()) == 2
+    mine = world[0].get('/api/v1/devices/my-devices').json()
+    # The over-limit request is kept, inactive and rejected, for admin review.
+    assert len(mine) == 3
+    assert [d['approval_status'] for d in mine if d['device_fingerprint'] == fingerprint] == ['rejected']
     sid = session(world)
     assert checkin(world, sid, {'device_fingerprint': fingerprint}).status_code == 403
     assert checkin(world, sid, {'device_fingerprint': first[2]}).status_code == 403
@@ -244,7 +249,8 @@ def test_shared_browser_has_separate_account_approvals_but_flags_both(world):
     assert second[3] != first[3]
     mine = world[0].get('/api/v1/devices/my-devices').json()
     assert len(mine) == 1 and mine[0]['shared_browser'] is True
-    assert mine[0]['is_trusted'] is False  # Never inherit another account's approval.
+    # Trusted only by this account's own first-device rule; check-ins below stay flagged as shared.
+    assert mine[0]['approval_status'] == 'approved' and mine[0]['trust_score'] == 'high'
     assert 'user_email' not in mine[0]
     world[1][0] = world[2][0]
     sid = session(world)

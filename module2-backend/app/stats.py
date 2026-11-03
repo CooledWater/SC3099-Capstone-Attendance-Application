@@ -41,7 +41,7 @@ from app.auth import require_roles
 from app.database import get_read_db
 from app.models import AuditLog, CheckIn, Course, Enrollment, Session as SessionModel, User, SessionAttendanceSnapshot
 from app import prometheus_metrics
-from app.permissions import assists, teaches
+from app.permissions import assists_session, teaches
 
 router = APIRouter(prefix="/api/v1", tags=["stats"])
 
@@ -733,7 +733,7 @@ def stats_session(
 
     if current_user.role == "instructor" and not _can_view_course(current_user, course.instructor_id):
         raise _forbidden()
-    if current_user.role == "ta" and not assists(db, current_user, course.id):
+    if current_user.role == "ta" and not assists_session(db, current_user, session.id, course.id):
         raise _forbidden()
 
     checkins = (

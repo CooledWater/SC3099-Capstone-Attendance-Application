@@ -267,6 +267,51 @@ Index(
 )
 
 
+class SessionAssistant(Base):
+    """TA <-> session assignment used for session-level RBAC.
+
+    A TA reaches a session only through this row AND a course_assistants row
+    for the session's course, so removing the course assignment revokes every
+    session in it. Not listed in DATABASE-SCHEMA.md; additive like
+    course_assistants.
+    """
+
+    __tablename__ = "session_assistants"
+
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    session_id = Column(
+        String(36),
+        ForeignKey("sessions.id"),
+        nullable=False
+    )
+
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow
+    )
+
+
+Index(
+    "ix_session_assistants_session_user",
+    SessionAssistant.session_id,
+    SessionAssistant.user_id,
+    unique=True
+)
+
+
 class Session(Base):
     """A class meeting where students check in.
 

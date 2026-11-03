@@ -1,8 +1,10 @@
-"""TA course scoping through course_assistants (RBAC step 7); isolated in-memory SQLite.
+"""TA scoping through course_assistants + session_assistants; isolated in-memory SQLite.
 
-A TA sees courses, sessions, check-ins, the review queue, rosters and session
-stats only for courses they are assigned to, and keeps the TA write limits
-(review only: no session, enrollment, export or course-stats access).
+A TA sees courses and rosters only for courses they are assigned to, and
+sessions, check-ins, the review queue and session stats only for sessions they
+are assigned to within those courses. TAs keep the TA write limits (review
+only: no session, enrollment, export or course-stats access). Session-level
+cases are covered in depth by test_ta_session_scope.py.
 """
 import os
 import sys
@@ -23,7 +25,7 @@ from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.auth import create_access_token
 from app.database import Base, get_db, get_read_db
-from app.models import CheckIn, Course, CourseAssistant, Enrollment, Session as Meeting, User
+from app.models import CheckIn, Course, CourseAssistant, Enrollment, Session as Meeting, SessionAssistant, User
 
 ROLES = {"admin": "admin", "ia": "instructor", "ib": "instructor",
          "t1": "ta", "t2": "ta", "t0": "ta", "sa": "student", "sb": "student"}
@@ -50,6 +52,10 @@ def world():
             db.add(Meeting(id=sid, course_id=course, instructor_id=owner, name=sid, status="active",
                            scheduled_start=start, scheduled_end=start + timedelta(hours=1),
                            checkin_opens_at=start - timedelta(minutes=15), checkin_closes_at=start + timedelta(minutes=30)))
+        # Session access needs an explicit session assignment: t1 -> m_a, t2 -> m_a and m_b.
+        db.add_all([SessionAssistant(session_id="m_a", user_id="t1"),
+                    SessionAssistant(session_id="m_a", user_id="t2"),
+                    SessionAssistant(session_id="m_b", user_id="t2")])
         db.add_all([CheckIn(id="c_a", session_id="m_a", student_id="sa", status="flagged", checked_in_at=now,
                             risk_score=0.6, risk_factors="[]"),
                     CheckIn(id="c_b", session_id="m_b", student_id="sb", status="flagged", checked_in_at=now,

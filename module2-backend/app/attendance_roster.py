@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import require_roles
 from app.database import get_read_db
 from app.models import AuditLog, CheckIn, Course, Enrollment, Session as Meeting, User
-from app.permissions import assists
+from app.permissions import assists_session
 
 router = APIRouter(prefix="/api/v1", tags=["attendance"])
 
@@ -29,13 +29,13 @@ def session_attendance(
         raise HTTPException(404, "Session not found")
     meeting, course = row
     # Instructors keep the documented rule (course owner, session owner, or an
-    # unassigned course). TAs must be assigned to the course.
+    # unassigned course). TAs must be assigned to this session and its course.
     if current_user.role == "instructor" and not (
         course.instructor_id in (None, current_user.id)
         or meeting.instructor_id == current_user.id
     ):
         raise HTTPException(403, "Insufficient permissions")
-    if current_user.role == "ta" and not assists(db, current_user, course.id):
+    if current_user.role == "ta" and not assists_session(db, current_user, meeting.id, course.id):
         raise HTTPException(403, "Insufficient permissions")
 
     # Resolve lifecycle at read time, including between scheduler ticks.

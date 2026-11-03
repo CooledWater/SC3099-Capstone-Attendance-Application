@@ -48,6 +48,11 @@ def test_account_enrollment_ta_review_instructor_export_and_admin_audit(world):
     # Unknown devices are flagged by the actual policy, even at the venue.
     record = submitted.json()
     assert record["status"] == "flagged"
+    # The course TA needs an explicit session assignment before reading or reviewing it.
+    assert client.get(f"/api/v1/sessions/{meeting}/attendance", headers=headers("ta")).status_code == 403
+    session_assigned = client.post("/api/v1/admin/courses/course/tas/ta/sessions", headers=headers("admin"),
+                                   json={"session_ids": [meeting]})
+    assert session_assigned.status_code == 200, session_assigned.text
     assert client.get(f"/api/v1/sessions/{meeting}/attendance", headers=headers("ta")).status_code == 200
     reviewed = client.post(f"/api/v1/checkins/{record['id']}/review", headers=headers("ta"), json={
         "status": "approved", "review_notes": "Independently verified student identity and attendance",

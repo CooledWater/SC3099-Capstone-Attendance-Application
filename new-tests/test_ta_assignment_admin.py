@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.auth import create_access_token
 from app.database import Base, get_db, get_read_db
-from app.models import AuditLog, CheckIn, Course, CourseAssistant, Session as Meeting, User
+from app.models import AuditLog, CheckIn, Course, CourseAssistant, Session as Meeting, SessionAssistant, User
 
 ROLES = {"admin": "admin", "ia": "instructor", "t1": "ta", "t2": "ta", "sa": "student"}
 
@@ -186,11 +186,17 @@ def test_failed_assignment_is_not_audited(world):
 
 
 def test_assignment_grants_and_revokes_ta_access(world):
-    call, _ = world
+    call, db = world
     assert call("t1", "/checkins/session/m_a").status_code == 403
     assign(call, user_id="t1")
+    # Course assignment alone grants no session access.
+    assert call("t1", "/checkins/session/m_a").status_code == 403
+    assert call("t1", "/checkins/flagged").json()["total"] == 0
+    response = call("admin", "/admin/courses/A/tas/t1/sessions", method="POST", json={"session_ids": ["m_a"]})
+    assert response.status_code == 200, response.text
     assert call("t1", "/checkins/session/m_a").status_code == 200
     assert call("t1", "/checkins/flagged").json()["total"] == 1
     call("admin", "/admin/courses/A/tas/t1", method="DELETE")
     assert call("t1", "/checkins/session/m_a").status_code == 403
     assert call("t1", "/checkins/flagged").json()["total"] == 0
+    assert db.query(SessionAssistant).filter_by(user_id="t1").count() == 0

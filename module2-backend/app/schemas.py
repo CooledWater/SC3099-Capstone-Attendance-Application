@@ -88,6 +88,9 @@ class TAAssignmentCreate(RequestModel):
         if (self.user_id is None) == (self.email is None):
             raise ValueError("Provide exactly one of user_id or email")
         return self
+class TASessionAssignmentCreate(RequestModel):
+    # Bulk: one or more sessions of the course; duplicates and existing assignments are skipped.
+    session_ids: list[str] = Field(min_length=1, max_length=200)
 class BulkEnrollmentCreate(RequestModel):
     course_id: str
     student_emails: list[EmailStr] = Field(min_length=1)
@@ -163,3 +166,5 @@ class DeviceUpdate(RequestModel):
     device_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     is_trusted: Optional[bool] = None
     is_active: Optional[bool] = None
+    # Admin only: approve a device beyond the two-device limit (with is_trusted=true).
+    override_device_limit: Optional[bool] = None
