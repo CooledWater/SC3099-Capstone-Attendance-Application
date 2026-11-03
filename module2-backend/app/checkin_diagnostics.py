@@ -83,6 +83,7 @@ IDENTITY_COMPARISON = {
     "hamming_distance": NUMBER, "hamming_fraction": SCORE,
 }
 SEQUENCE_DETAILS = {
+    "challenge_version": NUMBER, "completed_steps": NUMBER, "turn_passed": BOOL,
     "frame_count": NUMBER, "processed_frames": NUMBER, "duration_ms": NUMBER,
     "last_frame_index": NUMBER, "last_timestamp_ms": NUMBER,
     "identity_checks": NUMBER, "face_match_threshold": SCORE,
@@ -98,9 +99,11 @@ SEQUENCE_DETAILS = {
     "first_frame": PASSIVE_FRAME, "last_frame": PASSIVE_FRAME,
     "reason": {"passed", "face_count", "face_jump", "identity_failed",
                "passive_first_failed", "passive_last_failed", "insufficient_blinks",
-               "incomplete_blink", "identity_threshold", "invalid_images", "unavailable"},
+               "incomplete_blink", "identity_threshold", "invalid_images", "unavailable",
+               "baseline_missing", "step_order", "wrong_direction", "insufficient_turn", "neutral_not_restored"},
 }
 SERVICE_FIELDS["motion_sequence"] = {
+    "challenge_version": NUMBER, "completed_steps": NUMBER, "turn_passed": BOOL,
     "passed": BOOL, "blink_count": NUMBER, "liveness_score": SCORE,
     "face_match_score": SCORE, "diagnostics": SEQUENCE_DETAILS,
 }
@@ -109,6 +112,7 @@ SCHEMAS = {
     "motion_challenge_issued": {"max_duration_ms": NUMBER, "max_frames": NUMBER},
     "motion_verification_started": {},
     "motion_verified": {"passed": BOOL, "blink_count": NUMBER,
+                        "challenge_version": NUMBER, "completed_steps": NUMBER, "turn_passed": BOOL,
                         "liveness_score": SCORE, "face_match_score": SCORE},
     "motion_request_failed": {"http_status": NUMBER, "reason": {"http_error", "server_error"}},
     **{stage: {**fields, "outcome": {"received", "unavailable", "invalid_response"},

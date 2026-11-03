@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-os.environ['DATABASE_URL'] = 'sqlite:///' + tempfile.mktemp(prefix='saiv-motion-', suffix='.db')
+os.environ['DATABASE_URL'] = os.environ.get('MOTION_TEST_DATABASE_URL') or 'sqlite:///' + tempfile.mktemp(prefix='saiv-motion-', suffix='.db')
 os.environ['JWT_SECRET'] = 'isolated-test-secret'
 sys.path.insert(0, str(ROOT / 'module2-backend'))
 from fastapi.testclient import TestClient
@@ -37,7 +37,7 @@ def setup(monkeypatch):
         with SessionLocal() as db:
             yield db.get(User, uid)
     app.dependency_overrides[get_current_user] = auth
-    monkeypatch.setattr(face_service, '_post', lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {'passed': True, 'blink_count': 2, 'liveness_score': .95, 'face_match_score': .98}))
+    monkeypatch.setattr(face_service, '_post', lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: {'passed': True, 'blink_count': 2, 'liveness_score': .95, 'face_match_score': .98, 'challenge_version': 2, 'turn_passed': True, 'completed_steps': 2}))
     with TestClient(app) as client:
         yield client, uid, sid
     app.dependency_overrides.clear()
@@ -165,7 +165,7 @@ def test_two_blinks_with_failed_passive_policy_cannot_issue_or_consume_evidence(
         db.add(MotionPolicy(session_id=sid, required=True))
         db.commit()
     monkeypatch.setattr(face_service, '_post', lambda *args: SimpleNamespace(status_code=200, json=lambda: {
-        'passed': False, 'blink_count': 2, 'liveness_score': 0., 'face_match_score': .99}))
+        'passed': False, 'blink_count': 2, 'liveness_score': 0., 'face_match_score': .99, 'challenge_version': 2, 'turn_passed': True, 'completed_steps': 2}))
     challenge = client.post('/api/v1/motion/challenges', json={'session_id': sid}).json()['challenge_id']
     response = client.post(f'/api/v1/motion/challenges/{challenge}/verify', json=frames())
     assert response.status_code == 200, response.text
@@ -211,7 +211,7 @@ def test_new_attempt_invalidates_previous(setup):
 
 def test_failed_sequence_cannot_be_used(setup, monkeypatch):
     client, _, sid = setup
-    monkeypatch.setattr(face_service, '_post', lambda *a: SimpleNamespace(status_code=200, json=lambda: {'passed': False, 'blink_count': 1, 'liveness_score': .7, 'face_match_score': .9}))
+    monkeypatch.setattr(face_service, '_post', lambda *a: SimpleNamespace(status_code=200, json=lambda: {'passed': False, 'blink_count': 1, 'liveness_score': .7, 'face_match_score': .9, 'challenge_version': 2, 'turn_passed': False, 'completed_steps': 0}))
     cid = client.post('/api/v1/motion/challenges', json={'session_id': sid}).json()['challenge_id']
     response = client.post(f'/api/v1/motion/challenges/{cid}/verify', json=frames())
     assert response.status_code == 200

@@ -77,7 +77,7 @@ def cancel_deletion(payload: PasswordConfirmation, db: Session = Depends(get_db)
 def purge_due_students(factory=SessionLocal, now=None):
     from app.device_binding import BrowserIdentity, BrowserRegistration, DeviceChallenge, RegistrationChallenge
     from app.device_rotation import KeyRotation
-    from app.motion import MotionChallenge
+    from app.motion import MotionChallenge, delete_challenges
     from app.push_notifications import PushSubscription, PushDelivery
     now = now or datetime.utcnow()
     with factory() as db:
@@ -87,7 +87,7 @@ def purge_due_students(factory=SessionLocal, now=None):
             checkin_ids = [row[0] for row in db.query(CheckIn.id).filter_by(student_id=user.id)]
             db.query(PushDelivery).filter(PushDelivery.subscription_id.in_(subscription_ids) | PushDelivery.checkin_id.in_(checkin_ids)).delete(synchronize_session=False)
             db.query(PushSubscription).filter_by(user_id=user.id).delete(synchronize_session=False)
-            db.query(MotionChallenge).filter_by(user_id=user.id).delete(synchronize_session=False)
+            delete_challenges(db, db.query(MotionChallenge).filter_by(user_id=user.id))
             db.query(KeyRotation).filter_by(user_id=user.id).delete(synchronize_session=False)
             db.query(DeviceChallenge).filter_by(user_id=user.id).delete(synchronize_session=False)
             db.query(RegistrationChallenge).filter_by(user_id=user.id).delete(synchronize_session=False)

@@ -117,7 +117,7 @@ for (const requireMotionValue of [false, true]) {
   test(`instructor creation keeps liveness enabled with active motion ${requireMotionValue}`, async () => {
     const view = instructor(); view.open();
     assert.equal(view.input('Require active motion check').props.checked, true);
-    assert.ok(view.text().includes('When enabled, students complete the active motion challenge (blink twice) before checking in.'));
+    assert.ok(view.text().includes('When enabled, students complete randomized blink and head-turn actions before checking in.'));
     assert.ok(!view.text().includes('Require liveness check'));
     assert.equal(view.input('Venue').type, 'select');
     view.requireMotion(requireMotionValue); await view.submit();
@@ -161,8 +161,8 @@ function verification(session, initiallyEnrolled = true) {
     '@/lib/api/auth': { getMe: async () => ({ face_enrolled: initiallyEnrolled, camera_consent: true, geolocation_consent: true }), updateConsent: async () => {} },
     '@/lib/api/checkins': {
       enrollFace: async image => { calls.push(['enroll', image]); },
-      startMotion: async id => { calls.push(['start', id]); return { challenge_id: 'challenge', expires_at: new Date(Date.now() + 60000).toISOString() }; },
-      verifyMotion: async (id, submitted) => { calls.push(['verify', id, submitted]); return { passed: true, verification_id: 'proof' }; },
+      startMotion: async id => { calls.push(['start', id]); return { action: 'random_motion', max_duration_ms: 8000, max_frames: 120, challenge: { version: 2, blink_target: 2, turn_direction: 'left', first_action: 'blink' }, challenge_id: 'challenge', expires_at: new Date(Date.now() + 60000).toISOString() }; },
+      verifyMotion: async (id, submitted) => { calls.push(['verify', id, submitted]); return { passed: true, verification_id: 'proof', challenge_version: 2, turn_passed: true, completed_steps: 2 }; },
     },
   });
   return { ...view, completed, calls };
@@ -182,10 +182,10 @@ for (const requireMotion of [false, undefined]) {
   });
 }
 
-test('motion policy shows only the two-blink flow and returns the server proof', async () => {
+test('motion policy shows only the randomized motion flow and returns the server proof', async () => {
   const view = verification({ require_motion_check: true, require_liveness_check: false });
   await view.settle();
-  assert.ok(view.text().includes('Blink twice'));
+  assert.ok(view.text().includes('Follow the motion challenge'));
   assert.ok(!view.text().includes('Capture image'));
   assert.equal([...view.nodes()].filter(node => node.type === 'input').length, 0);
   await view.button('Start challenge').props.onClick(); view.render();
@@ -205,7 +205,7 @@ for (const requireMotion of [false, true]) {
     view.button('Confirm enrollment').props.onClick(); await view.settle();
     assert.equal(view.calls[0][0], 'enroll');
     assert.equal(view.completed.length, 0);
-    assert.ok(view.text().includes(requireMotion ? 'Blink twice' : 'Capture your check-in photo'));
+    assert.ok(view.text().includes(requireMotion ? 'Follow the motion challenge' : 'Capture your check-in photo'));
   });
 }
 

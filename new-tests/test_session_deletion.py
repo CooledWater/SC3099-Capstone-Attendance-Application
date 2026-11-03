@@ -28,13 +28,13 @@ def world():
     actor = SimpleNamespace(id="owner", role="instructor")
     session = SimpleNamespace(id="session", instructor_id="owner", status="scheduled",
                               course_id="course", name="Lecture")
-    session_query, checkin_query, challenge_query, policy_query = [MagicMock() for _ in range(4)]
+    session_query, checkin_query, challenge_query, policy_query, spec_query = [MagicMock() for _ in range(5)]
     session_query.filter.return_value.with_for_update.return_value.first.return_value = session
     checkin_query.filter.return_value.first.return_value = None
-    models = {name: SimpleNamespace(id=MagicMock(), session_id=MagicMock())
-              for name in ("SessionModel", "CheckIn", "MotionChallenge", "MotionPolicy")}
+    models = {name: SimpleNamespace(id=MagicMock(), session_id=MagicMock(), challenge_id=MagicMock())
+              for name in ("SessionModel", "CheckIn", "MotionChallenge", "MotionPolicy", "MotionChallengeSpec")}
     queries = {id(models[name]): query for name, query in zip(models, (
-        session_query, checkin_query, challenge_query, policy_query))}
+        session_query, checkin_query, challenge_query, policy_query, spec_query))}
     queries[id(models["CheckIn"].id)] = checkin_query
     db.query.side_effect = lambda model: queries[id(model)]
     course = SimpleNamespace(id="course", instructor_id="owner")
@@ -46,18 +46,21 @@ def world():
         "Session": object, "get_db": lambda: db, "get_session_db": lambda: db,
         "get_current_user": lambda: actor, "get_read_current_user": lambda: actor,
         "SessionModel": models["SessionModel"], "CheckIn": models["CheckIn"],
+        "MotionChallenge": models["MotionChallenge"], "MotionChallengeSpec": models["MotionChallengeSpec"],
         "motion": SimpleNamespace(MotionChallenge=models["MotionChallenge"],
                                   MotionPolicy=models["MotionPolicy"]),
         "create_audit_log": audit, "Course": SimpleNamespace,
     }
     load_function(ROOT / "module2-backend/app/auth.py", "require_roles", namespace)
     load_function(ROOT / "module2-backend/app/permissions.py", "teaches", namespace)
+    load_function(ROOT / "module2-backend/app/motion.py", "delete_challenges", namespace)
+    namespace['motion'].delete_challenges = namespace['delete_challenges']
     load_function(ROOT / "module2-backend/app/main.py", "_teaches_session_course", namespace)
     load_function(ROOT / "module2-backend/app/main.py", "delete_session", namespace)
     with TestClient(namespace["app"], raise_server_exceptions=False) as client:
         yield SimpleNamespace(db=db, actor=actor, session=session, course=course, client=client, audit=audit,
                               session_query=session_query, checkin_query=checkin_query,
-                              challenge_query=challenge_query, policy_query=policy_query)
+                              challenge_query=challenge_query, policy_query=policy_query, spec_query=spec_query)
 
 
 @pytest.mark.parametrize("role", ["instructor", "admin"])
@@ -69,6 +72,7 @@ def test_success_deletes_motion_records_and_session_and_keeps_audit(world, role)
     assert response.status_code == 204
     assert response.content == b""
     world.challenge_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
+    world.spec_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
     world.policy_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
     world.audit.assert_called_once_with(
         world.db, "session_deleted", world.actor.id, "session",

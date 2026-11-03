@@ -650,14 +650,13 @@ export function SessionsPanel({
               className="mt-0.5"
               checked={form.require_motion_check}
               disabled={saving}
-              onChange={(event) =>
-                setForm({ ...form, require_motion_check: event.target.checked })
-              }
+              onChange={(event) => setForm({ ...form, require_motion_check: event.target.checked })}
             />
             <span>
               Require active motion check
               <small className="mt-1 block">
-                When enabled, students complete the active motion challenge (blink twice) before checking in.
+                When enabled, students complete randomized blink and head-turn actions before
+                checking in.
               </small>
             </span>
           </label>

@@ -1,0 +1,23 @@
+{
+  "monitor_since": "2026-11-03T02:36:51.879047+00:00",
+  "setup_complete": true,
+  "sessions": [
+    {
+      "id": "2a767003-f38a-485c-8a28-e11f653f3df5",
+      "label": "genuine_control",
+      "name": "Impersonation genuine_control 2026-11-03 02:36 UTC",
+      "account_email": "wcstudent1@example.com",
+      "presenter": "same_live_presenter",
+      "expected_identity_match": true
+    },
+    {
+      "id": "7b545bf2-b322-4b3a-8516-698cc134b3af",
+      "label": "impersonation_test",
+      "name": "Impersonation impersonation_test 2026-11-03 02:36 UTC",
+      "account_email": "student1@gmail.com",
+      "presenter": "same_live_presenter",
+      "expected_identity_match": false
+    }
+  ],
+  "trial_type": "impersonation"
+}

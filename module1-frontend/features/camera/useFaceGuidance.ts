@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import type { FaceLandmarker } from '@mediapipe/tasks-vision';
+import { MotionProgress, yawDegrees } from './motionChallenge';
+import type { MotionChallengeSpec } from '@/types/api';
 
 export type CapturedFrame = { image: string; timestamp_ms: number };
 export function useFaceGuidance(video: React.RefObject<HTMLVideoElement>, enabled: boolean) {
@@ -10,9 +12,12 @@ export function useFaceGuidance(video: React.RefObject<HTMLVideoElement>, enable
   const [blinks, setBlinks] = useState(0);
   const [frames, setFrames] = useState<CapturedFrame[]>([]);
   const [error, setError] = useState('');
-  const attempt = useRef<{ start: number; frames: CapturedFrame[]; open: boolean; closed: number | null; count: number }>();
+  const [instruction, setInstruction] = useState('');
+  const [completedSteps, setCompletedSteps] = useState(0);
+  const [remainingSeconds, setRemainingSeconds] = useState(8);
+  const attempt = useRef<{ start: number; frames: CapturedFrame[]; progress: MotionProgress; expires: number }>();
   const model = useRef<FaceLandmarker>();
-  const cancel = () => { attempt.current = undefined; setRecording(false); setFrames([]); setBlinks(0); setError(''); };
+  const cancel = () => { attempt.current = undefined; setRecording(false); setFrames([]); setBlinks(0); setError(''); setInstruction(''); setCompletedSteps(0); setRemainingSeconds(8); };
 
   useEffect(() => {
     if (!enabled) { cancel(); setReady(false); return; }
@@ -27,7 +32,7 @@ export function useFaceGuidance(video: React.RefObject<HTMLVideoElement>, enable
         const files = await FilesetResolver.forVisionTasks('/mediapipe');
         detector = await FaceLandmarker.createFromOptions(files, {
           baseOptions: { modelAssetPath: '/mediapipe/face_landmarker.task', delegate: 'CPU' },
-          runningMode: 'VIDEO', numFaces: 2,
+          runningMode: 'VIDEO', numFaces: 2, outputFacialTransformationMatrixes: true,
         });
         if (disposed) { detector.close(); return; }
         model.current = detector;
@@ -48,7 +53,8 @@ export function useFaceGuidance(video: React.RefObject<HTMLVideoElement>, enable
           canvas.width = Math.round(element.videoWidth * scale); canvas.height = Math.round(element.videoHeight * scale);
           canvas.getContext('2d')!.drawImage(element, 0, 0, canvas.width, canvas.height);
           const now = performance.now();
-          const faces = detector.detectForVideo(canvas, now).faceLandmarks;
+          const output = detector.detectForVideo(canvas, now);
+          const faces = output.faceLandmarks;
           const face = faces.length === 1 ? faces[0] : undefined;
           const centred = !!face && face[1].x > .25 && face[1].x < .75 && face[1].y > .2 && face[1].y < .8;
           setReady(centred);
@@ -58,25 +64,30 @@ export function useFaceGuidance(video: React.RefObject<HTMLVideoElement>, enable
             const elapsed = Math.round(now-current.start);
             const previous = current.frames.at(-1)?.timestamp_ms ?? 0;
             if (!centred || elapsed-previous > 250) throw new Error('Capture interrupted. Keep one face centred and retry.');
-            if (elapsed > 8000 || current.frames.length >= 120) throw new Error('Two complete blinks were not captured. Please retry.');
+            if (Date.now() >= current.expires) throw new Error('Challenge expired. Start again.');
+            if (elapsed > 8000 || current.frames.length >= 120) throw new Error('The actions were not completed in time. Please retry.');
             const distance = (a: number, b: number) => Math.hypot((face![a].x-face![b].x)*canvas.width, (face![a].y-face![b].y)*canvas.height);
             const ear = (ids: number[]) => (distance(ids[1],ids[5])+distance(ids[2],ids[4]))/(2*distance(ids[0],ids[3]));
             const openness = (ear([33,160,158,133,153,144])+ear([362,385,387,263,373,380]))/2;
-            if (openness >= .23) {
-              if (current.closed !== null && elapsed-current.closed >= 40 && elapsed-current.closed <= 700) current.count++;
-              current.closed = null; current.open = true;
-            } else if (openness < .19 && current.open) { current.closed = elapsed; current.open = false; }
+            current.progress.update(openness, yawDegrees(output.facialTransformationMatrixes[0]), elapsed);
+            if (current.progress.reason) throw new Error(current.progress.reason === 'wrong_direction'
+              ? 'Turn in the requested direction. Start again.' : 'Follow the actions in the displayed order. Start again.');
             const image = canvas.toDataURL('image/jpeg', .7).split(',')[1];
             if (image.length > 100000) throw new Error('Camera image is too large. Please retry.');
             current.frames.push({ image, timestamp_ms: elapsed });
-            setBlinks(current.count);
-            if (current.count >= 2 && elapsed >= 1000 && current.frames.length >= 15 && openness >= .23) {
+            if (current.frames.reduce((sum, frame) => sum + frame.image.length, 0) > 6000000) throw new Error('Capture is too large. Please retry.');
+            setBlinks(current.progress.blinks);
+            setInstruction(current.progress.instruction);
+            setCompletedSteps(current.progress.step);
+            setRemainingSeconds(Math.max(0, Math.ceil((8000 - elapsed) / 1000)));
+            if (current.progress.complete && elapsed >= 1000 && current.frames.length >= 15) {
               setFrames(current.frames); attempt.current = undefined; setRecording(false);
             }
           }
         }
       } catch (cause) {
         attempt.current = undefined; setRecording(false); setFrames([]);
+        setBlinks(0); setCompletedSteps(0); setInstruction('Start again when your face is centred.');
         setError(cause instanceof Error ? cause.message : 'Face tracking interrupted. Retry.');
       }
       timer = setTimeout(tick, 66);
@@ -85,11 +96,15 @@ export function useFaceGuidance(video: React.RefObject<HTMLVideoElement>, enable
     return () => { disposed = true; clearTimeout(timer); attempt.current = undefined; model.current = undefined; detector?.close(); };
   }, [enabled, video]);
 
-  function start() {
+  function start(spec: MotionChallengeSpec, expiresAt: string) {
     if (!ready || !model.current) throw new Error('Wait until your face is centred.');
     cancel();
-    attempt.current = { start: performance.now(), frames: [], open: false, closed: null, count: 0 };
+    const expires = Date.parse(expiresAt);
+    if (!Number.isFinite(expires) || expires <= Date.now()) throw new Error('Challenge expired. Start again.');
+    const progress = new MotionProgress(spec);
+    attempt.current = { start: performance.now(), frames: [], progress, expires };
+    setInstruction(progress.instruction);
     setRecording(true);
   }
-  return { guidance, ready, recording, blinks, frames, error, start, cancel };
+  return { guidance, ready, recording, blinks, frames, error, instruction, completedSteps, remainingSeconds, start, cancel };
 }

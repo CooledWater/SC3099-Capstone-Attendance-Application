@@ -1,4 +1,4 @@
-"""Bounded blink-sequence analysis; pixels and landmarks stay request-local."""
+"""Bounded temporal motion analysis; pixels and landmarks stay request-local."""
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .imaging import decode_base64_image
 from .liveness import blink_metrics, assess_liveness
@@ -6,6 +6,7 @@ from .config import settings, SIMHASH_BITS
 from .detection import detect_face
 from .liveness import LivenessUnavailableError
 from .template import hamming_distance
+from .random_motion import ChallengeSpec, MotionProgress, yaw_degrees
 from pathlib import Path
 import hashlib
 import time
@@ -31,6 +32,7 @@ def _create_landmarker():
             min_face_detection_confidence=.5,
             min_face_presence_confidence=.5,
             min_tracking_confidence=.5,
+            output_facial_transformation_matrixes=True,
         )
         return mp, vision.FaceLandmarker.create_from_options(options)
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -47,6 +49,8 @@ class SequenceRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     frames: list[Frame] = Field(min_length=15, max_length=120)
     reference_template_hash: str = Field(pattern=r'^[0-9a-f]{64}$')
+    # Missing spec retains the internal v1 contract; M2 always requires v2.
+    challenge: ChallengeSpec | None = None
 
     @model_validator(mode='after')
     def validate_frames(self):
@@ -82,6 +86,7 @@ class BlinkCounter:
 def analyze_sequence(request, verify_image, observe=None):
     started = time.monotonic()
     counter = BlinkCounter()
+    progress = MotionProgress(request.challenge, counter) if request.challenge is not None else None
     matches = []
     passive_scores = []
     previous = None
@@ -94,7 +99,11 @@ def analyze_sequence(request, verify_image, observe=None):
                 pass
     def result(passed=False, reason="passed"):
         note("finished", reason=reason)
-        return {'passed': passed, 'blink_count': counter.count,
+        if progress:
+            note('actions', challenge_version=2, completed_steps=progress.step, turn_passed=progress.turn_passed)
+        return {**({'challenge_version': 2, 'turn_passed': progress.turn_passed,
+                    'completed_steps': progress.step} if progress else {}),
+                'passed': passed, 'blink_count': counter.count,
                 'liveness_score': min(passive_scores, default=0.0),
                 'face_match_score': min(matches, default=0.0)}
     note("started", frame_count=len(request.frames),
@@ -128,9 +137,24 @@ def analyze_sequence(request, verify_image, observe=None):
             h, w = image.shape[:2]
             points = tuple((p.x*w, p.y*h, p.z*w) for p in landmarks)
             before = counter.count
-            counter.update(blink_metrics(points)['eye_aspect_ratio'], frame.timestamp_ms)
+            before_step = progress.step if progress else 0
+            ear = blink_metrics(points)['eye_aspect_ratio']
+            if progress:
+                matrices = getattr(output, 'facial_transformation_matrixes', None)
+                try:
+                    if matrices is None or len(matrices) != 1:
+                        raise ValueError('Pose output missing')
+                    yaw = yaw_degrees(matrices[0])
+                except ValueError as exc:
+                    raise LivenessUnavailableError('Face pose is unavailable') from exc
+                progress.update(ear, yaw, frame.timestamp_ms)
+                if progress.reason:
+                    return result(reason=progress.reason)
+            else:
+                counter.update(ear, frame.timestamp_ms)
             # Sample identity regularly and at blink completion, including final frame.
-            if index % 8 == 0 or counter.count != before or index == len(request.frames)-1:
+            if (index % 8 == 0 or counter.count != before or index == len(request.frames)-1
+                    or (progress and progress.step != before_step)):
                 match, _ = verify_image(frame.image, request.reference_template_hash)
                 matches.append(match.match_score)
                 identity = {}
@@ -164,8 +188,16 @@ def analyze_sequence(request, verify_image, observe=None):
                          details=getattr(passive, "details", {}))
                 if not passive.liveness_passed:
                     return result(reason="passive_first_failed" if index == 0 else "passive_last_failed")
-    passed = (counter.count >= 2 and counter.open and counter.closed_at is None
-              and min(matches, default=0) >= settings.face_match_threshold)
-    reason = ("passed" if passed else "insufficient_blinks" if counter.count < 2 else
-              "incomplete_blink" if not counter.open or counter.closed_at is not None else "identity_threshold")
+    motion_passed = progress.complete if progress else (counter.count >= 2 and counter.open and counter.closed_at is None)
+    passed = motion_passed and min(matches, default=0) >= settings.face_match_threshold
+    if passed:
+        reason = 'passed'
+    elif progress:
+        reason = progress.failure_reason() if not motion_passed else 'identity_threshold'
+    elif counter.count < 2:
+        reason = 'insufficient_blinks'
+    elif not counter.open or counter.closed_at is not None:
+        reason = 'incomplete_blink'
+    else:
+        reason = 'identity_threshold'
     return result(passed, reason)

@@ -2042,9 +2042,9 @@ def delete_session(
 
     try:
         # Explicit cleanup also works on SQLite when FK cascades are disabled.
-        db.query(motion.MotionChallenge).filter(
+        motion.delete_challenges(db, db.query(motion.MotionChallenge).filter(
             motion.MotionChallenge.session_id == session.id
-        ).delete(synchronize_session=False)
+        ))
         db.query(motion.MotionPolicy).filter(
             motion.MotionPolicy.session_id == session.id
         ).delete(synchronize_session=False)
