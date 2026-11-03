@@ -33,10 +33,10 @@ class Settings(BaseModel):
     service_version: str = "1.0.0"
 
     face_match_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
-    # Midpoint measured by scripts/calibrate.py on the supplied Obama/Biden
-    # corpus (max same-person 0.113281, min different-person 0.203125).
+    # Provisional boundary for live impersonation trials: accept at most 23/256
+    # differing bits. Broader genuine/impostor calibration is still required.
     face_match_hamming_fraction: float = Field(
-        default=0.158203,
+        default=0.08984375,
         gt=0.0,
         lt=0.5,
     )
@@ -222,7 +222,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             service_version=str(_get_env(env, "FACE_SERVICE_VERSION", "1.0.0")),
             face_match_threshold=_parse_float(env, "FACE_MATCH_THRESHOLD", 0.70),
             face_match_hamming_fraction=_parse_float(
-                env, "FACE_MATCH_HAMMING_FRACTION", 0.158203
+                env, "FACE_MATCH_HAMMING_FRACTION", 0.08984375
             ),
             face_detection_threshold=_parse_float(
                 env, "FACE_DETECTION_THRESHOLD", 0.70
