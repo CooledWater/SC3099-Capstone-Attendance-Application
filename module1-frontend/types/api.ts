@@ -1,3 +1,28 @@
+export type MotionChallengeSpec = {
+  version: 2;
+  blink_target: 1 | 2;
+  turn_direction: 'left' | 'right';
+  first_action: 'blink' | 'head_turn';
+};
+
+export type MotionChallenge = {
+  challenge_id: string;
+  action: 'random_motion';
+  challenge: MotionChallengeSpec;
+  expires_at: string;
+  max_duration_ms: number;
+  max_frames: number;
+};
+
+export type MotionVerification = {
+  passed: boolean;
+  verification_id: string | null;
+  blink_count: number;
+  challenge_version: 2;
+  completed_steps: number;
+  turn_passed: boolean;
+};
+
 export type User = {
   id: string;
   email: string;

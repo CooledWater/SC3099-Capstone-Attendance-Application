@@ -1,10 +1,12 @@
 """Authenticated, expiring motion challenges. Never persists captured frames."""
 import json
+import secrets
 import uuid
+from typing import Literal
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ConfigDict, model_validator
-from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey
+from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey, Integer, CheckConstraint
 from sqlalchemy.orm import Session
 from app.database import Base
 from app.session_lifecycle import get_session_db
@@ -33,7 +35,53 @@ class MotionChallenge(Base):
 
 
 class StartChallenge(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     session_id: str
+
+
+class ChallengeSpec(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    version: Literal[2]
+    blink_target: int = Field(ge=1, le=2)
+    turn_direction: Literal['left', 'right']
+    first_action: Literal['blink', 'head_turn']
+
+
+class MotionChallengeSpec(Base):
+    """Immutable scalar requirements, kept separate from verification outcomes."""
+    __tablename__ = 'motion_challenge_specs'
+    challenge_id = Column(String(36), ForeignKey('motion_challenges.id', ondelete='CASCADE'), primary_key=True)
+    version = Column(Integer, nullable=False)
+    blink_target = Column(Integer, nullable=False)
+    turn_direction = Column(String(5), nullable=False)
+    first_action = Column(String(9), nullable=False)
+    __table_args__ = (
+        CheckConstraint('version = 2'),
+        CheckConstraint('blink_target IN (1, 2)'),
+        CheckConstraint("turn_direction IN ('left', 'right')"),
+        CheckConstraint("first_action IN ('blink', 'head_turn')"),
+    )
+
+    def descriptor(self):
+        return ChallengeSpec(**{key: getattr(self, key) for key in
+                                ('version', 'blink_target', 'turn_direction', 'first_action')}).model_dump()
+
+
+def delete_challenges(db, query):
+    """Explicit child cleanup supports SQLite tests without FK enforcement too."""
+    db.query(MotionChallengeSpec).filter(MotionChallengeSpec.challenge_id.in_(
+        query.with_entities(MotionChallenge.id))).delete(synchronize_session=False)
+    return query.delete(synchronize_session=False)
+
+
+def issued_spec(db, challenge_id):
+    row = db.get(MotionChallengeSpec, challenge_id)
+    if row is None:
+        raise HTTPException(409, 'Challenge version changed; start a new challenge')
+    try:
+        return row.descriptor()
+    except ValueError:
+        raise HTTPException(409, 'Invalid challenge; start a new challenge')
 
 
 class Frame(BaseModel):
@@ -86,15 +134,24 @@ def start(payload: StartChallenge, user: User = Depends(require_roles('student')
     with checkin_diagnostics.capture(session.id, start_stage=None, failure_stage='motion_request_failed'):
         # Serialize issuance per user so concurrent retries cannot leave two active attempts.
         db.query(User).filter_by(id=user.id).with_for_update().first()
-        db.query(MotionChallenge).filter(MotionChallenge.expires_at < datetime.utcnow()).delete(synchronize_session=False)
-        db.query(MotionChallenge).filter_by(user_id=user.id, session_id=session.id).delete(synchronize_session=False)
+        delete_challenges(db, db.query(MotionChallenge).filter(MotionChallenge.expires_at < datetime.utcnow()))
+        delete_challenges(db, db.query(MotionChallenge).filter_by(user_id=user.id, session_id=session.id))
         item = MotionChallenge(user_id=user.id, session_id=session.id, reference_hash=user.face_embedding_hash,
                                expires_at=min(datetime.utcnow()+timedelta(minutes=3), session.checkin_closes_at))
-        db.add(item); db.commit(); db.refresh(item)
-        checkin_diagnostics.bind_challenge(item.id)
+        db.add(item); db.flush()
+        spec = MotionChallengeSpec(challenge_id=item.id, version=2,
+                                   blink_target=secrets.choice((1, 2)),
+                                   turn_direction=secrets.choice(('left', 'right')),
+                                   first_action=secrets.choice(('blink', 'head_turn')))
+        db.add(spec)
+        # Snapshot before commit: a concurrent retry may delete this row as
+        # soon as the per-user lock is released. Never lazy-load it afterward.
+        body = {'challenge_id': item.id, 'action': 'random_motion', 'challenge': spec.descriptor(),
+                'expires_at': item.expires_at.isoformat()+'Z', 'max_duration_ms': 8000, 'max_frames': 120}
+        db.commit()
+        checkin_diagnostics.bind_challenge(body['challenge_id'])
         checkin_diagnostics.event('motion_challenge_issued', max_duration_ms=8000, max_frames=120)
-        return {'challenge_id': item.id, 'action': 'blink_twice', 'expires_at': item.expires_at.isoformat()+'Z',
-                'max_duration_ms': 8000, 'max_frames': 120}
+        return body
 
 
 @router.post('/challenges/{challenge_id}/verify')
@@ -107,6 +164,7 @@ def verify(challenge_id: str, payload: Sequence, user: User = Depends(require_ro
         eligible(db, user, item.session_id)
         if item.reference_hash != user.face_embedding_hash:
             raise HTTPException(409, 'Enrollment changed; start a new challenge')
+        spec = issued_spec(db, item.id)
         claimed = db.query(MotionChallenge).filter_by(id=item.id, state='issued').filter(
             MotionChallenge.expires_at > datetime.utcnow()).update({'state': 'processing'}, synchronize_session=False)
         db.commit()
@@ -115,6 +173,7 @@ def verify(challenge_id: str, payload: Sequence, user: User = Depends(require_ro
         try:
             response = face_service._post('/liveness/sequence', {
                 'frames': [f.model_dump() for f in payload.frames], 'reference_template_hash': user.face_embedding_hash,
+                'challenge': spec,
             }, 45.0)
             if response.status_code != 200:
                 raise ValueError('Unusable service response')
@@ -131,8 +190,16 @@ def verify(challenge_id: str, payload: Sequence, user: User = Depends(require_ro
             if type(count) is not int or not 0 <= count <= 60:
                 raise ValueError('Invalid blink count')
             safe['blink_count'] = count
-            if safe['passed'] and safe['blink_count'] < 2:
-                raise ValueError('Missing blink evidence')
+            if type(result.get('challenge_version')) is not int or result['challenge_version'] != 2:
+                raise ValueError('Missing versioned challenge evidence')
+            if type(result.get('turn_passed')) is not bool:
+                raise ValueError('Invalid turn evidence')
+            steps = result.get('completed_steps')
+            if type(steps) is not int or not 0 <= steps <= 2:
+                raise ValueError('Invalid action evidence')
+            safe.update(challenge_version=2, turn_passed=result['turn_passed'], completed_steps=steps)
+            if safe['passed'] and (count < spec['blink_target'] or not safe['turn_passed'] or steps != 2):
+                raise ValueError('Missing required motion evidence')
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             db.query(MotionChallenge).filter_by(id=challenge_id).update({'state': 'failed'})
             db.commit()
@@ -153,6 +220,7 @@ def consume(db, user, session_id, verification_id):
     item = db.get(MotionChallenge, verification_id)
     if not item or item.user_id != user.id or item.session_id != session_id or item.reference_hash != user.face_embedding_hash:
         raise HTTPException(400, 'Verification does not match this student and session')
+    issued_spec(db, item.id)  # Old two-blink proofs cannot survive the rollout.
     changed = db.query(MotionChallenge).filter_by(id=item.id, state='verified').filter(
         MotionChallenge.expires_at > datetime.utcnow()).update({'state': 'consumed'}, synchronize_session=False)
     if not changed:
@@ -160,7 +228,7 @@ def consume(db, user, session_id, verification_id):
     # This update commits atomically with the attendance insert in main.py.
     result = json.loads(item.result)
     score = result['liveness_score']; match = result['face_match_score']
-    return {'liveness': LivenessResult(True, score, 'blink', None),
+    return {'liveness': LivenessResult(True, score, 'random_motion', None),
             'face_match': FaceMatchResult(True, match, None),
             'module3_risk': RiskResult(max(1-score, 1-match), '', {}, []),
             'face_embedding_hash': None}

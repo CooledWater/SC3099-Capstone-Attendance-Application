@@ -53,6 +53,8 @@ def world():
     }
     load_function(ROOT / "module2-backend/app/auth.py", "require_roles", namespace)
     load_function(ROOT / "module2-backend/app/permissions.py", "teaches", namespace)
+    load_function(ROOT / "module2-backend/app/motion.py", "delete_challenges", namespace)
+    namespace['motion'].delete_challenges = namespace['delete_challenges']
     load_function(ROOT / "module2-backend/app/main.py", "_teaches_session_course", namespace)
     load_function(ROOT / "module2-backend/app/main.py", "delete_session", namespace)
     with TestClient(namespace["app"], raise_server_exceptions=False) as client:
@@ -71,6 +73,7 @@ def test_success_deletes_motion_records_and_session_and_keeps_audit(world, role)
     assert response.status_code == 204
     assert response.content == b""
     world.challenge_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
+    world.spec_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
     world.policy_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)
     # TA session assignments are removed with the session.
     world.assistant_query.filter.return_value.delete.assert_called_once_with(synchronize_session=False)

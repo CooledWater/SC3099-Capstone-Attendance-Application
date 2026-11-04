@@ -8,6 +8,7 @@ from app.device_binding import BrowserRegistration, DeviceChallenge
 from app.device_rotation import KeyRotation
 from app.data_deletion import purge_due_students
 from app.auth import hash_password
+from app.motion import MotionChallenge, MotionChallengeSpec
 
 
 def start(world, device, new_key):
@@ -110,6 +111,12 @@ def test_due_deletion_removes_personal_data_and_preserves_audit(world):
     sid = session(world)
     with SessionLocal() as db:
         db.add(CheckIn(student_id=world[2][0], session_id=sid, status='approved', risk_score=.1, latitude=1, longitude=2))
+        challenge = MotionChallenge(user_id=world[2][0], session_id=sid, reference_hash='a'*64,
+                                    expires_at=datetime.utcnow()+timedelta(minutes=1))
+        db.add(challenge); db.flush()
+        challenge_id = challenge.id
+        db.add(MotionChallengeSpec(challenge_id=challenge_id, version=2, blink_target=1,
+                                   turn_direction='left', first_action='blink'))
         db.commit()
         before = db.query(AuditLog).count()
     assert world[0].post('/api/v1/users/me/deletion-request', json=credentials).status_code == 200
@@ -123,6 +130,8 @@ def test_due_deletion_removes_personal_data_and_preserves_audit(world):
         assert not db.query(Device).filter_by(user_id=user.id).count()
         assert not db.query(KeyRotation).filter_by(user_id=user.id).count()
         assert not db.query(Enrollment).filter_by(student_id=user.id).count()
+        assert db.get(MotionChallenge, challenge_id) is None
+        assert db.get(MotionChallengeSpec, challenge_id) is None
         assert db.query(AuditLog).count() >= before
         assert db.get(User, world[2][2]).is_active is True
     assert purge_due_students(now=datetime.utcnow() + timedelta(days=32)) == 0

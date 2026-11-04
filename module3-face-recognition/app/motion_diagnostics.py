@@ -10,7 +10,8 @@ MAX_IDENTITY_COMPARISONS = 64
 
 REASONS = {"passed", "face_count", "face_jump", "identity_failed",
            "passive_first_failed", "passive_last_failed", "insufficient_blinks",
-           "incomplete_blink", "identity_threshold", "invalid_images", "unavailable"}
+           "incomplete_blink", "identity_threshold", "invalid_images", "unavailable",
+           "baseline_missing", "step_order", "wrong_direction", "insufficient_turn", "neutral_not_restored"}
 DETAIL_SCORES = {
     "face_detection_confidence", "depth_score", "mesh_plausibility_score",
     "texture_analysis_score", "color_distribution_score", "weighted_component_score",
@@ -123,6 +124,10 @@ class SequenceDiagnostics:
                 frame["liveness_passed"] = values["liveness_passed"]
             frame["details"] = _details(values.get("details"))
             self.data[values["position"]] = frame
+        elif stage == 'actions':
+            self.data.update(_numbers(values, {'challenge_version', 'completed_steps'}, 2))
+            if type(values.get('turn_passed')) is bool:
+                self.data['turn_passed'] = values['turn_passed']
         elif stage == "finished" and values.get("reason") in REASONS:
             self.data["reason"] = values["reason"]
 

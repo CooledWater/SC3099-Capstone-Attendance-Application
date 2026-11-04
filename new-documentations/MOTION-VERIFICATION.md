@@ -1,5 +1,7 @@
 # Face enrollment and motion verification
 
+> Current implementation: [Random blink and head-turn liveness](RANDOM-MOTION-LIVENESS.md) supersedes the fixed two-blink contract below as of 2026-11-03. The following sections describe the historical v1 implementation and its validation history. New attendance motion proofs require a server-issued v2 blink/head-turn specification.
+
 Students enroll once through the existing `POST /api/v1/users/me/face/enroll` endpoint. The frontend reads `/users/me` before deciding whether enrollment is needed. Enrollment uses a manual photo, preview, and retake. It binds a face to the authenticated account; it does not establish school identity independently.
 
 The instructor dashboard's New session form includes **Allow single photo check-in**, unchecked for each new session (including calendar creation). Unchecked sends `require_motion_check: true`, requiring the current two-blink challenge. Checked sends `require_motion_check: false`, selecting a photo-only student flow with preview and retake and no motion-challenge calls. Students have no verification-mode checkbox: their flow follows the session's returned `require_motion_check`, independently of `require_liveness_check`. Enrollment remains a separate one-time photo step when motion or face matching requires it.
