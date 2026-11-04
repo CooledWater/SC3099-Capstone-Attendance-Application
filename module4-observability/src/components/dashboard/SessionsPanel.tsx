@@ -154,7 +154,7 @@ export function SessionsPanel({
     starts_at: "",
     duration_minutes: "60",
     geofence_radius_m: "100",
-    require_liveness_check: true,
+    require_motion_check: true,
   });
   const [editForm, setEditForm] = useState({
     course_id: "",
@@ -288,8 +288,8 @@ export function SessionsPanel({
           ).toISOString(),
           venue_name: venueCode(venueOptions, form.venue),
           geofence_radius_meters: Number(form.geofence_radius_m) || 100,
-          require_motion_check: form.require_liveness_check,
-          require_liveness_check: form.require_liveness_check,
+          require_motion_check: form.require_motion_check,
+          require_liveness_check: true,
         }),
       });
     } catch (error) {
@@ -306,7 +306,7 @@ export function SessionsPanel({
       session_type: "lecture",
       venue: "",
       starts_at: "",
-      require_liveness_check: true,
+      require_motion_check: true,
     });
     qc.invalidateQueries({ queryKey: ["sessions"] });
   }
@@ -536,7 +536,7 @@ export function SessionsPanel({
             onClick={() => {
               setForm({
                 ...form,
-                require_liveness_check: true,
+                require_motion_check: true,
                 course_id:
                   selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
               });
@@ -648,17 +648,16 @@ export function SessionsPanel({
             <input
               type="checkbox"
               className="mt-0.5"
-              checked={form.require_liveness_check}
+              checked={form.require_motion_check}
               disabled={saving}
               onChange={(event) =>
-                setForm({ ...form, require_liveness_check: event.target.checked })
+                setForm({ ...form, require_motion_check: event.target.checked })
               }
             />
             <span>
-              Require liveness check
+              Require active motion check
               <small className="mt-1 block">
-                When enabled, students complete the configured liveness challenge before checking
-                in.
+                When enabled, students complete the active motion challenge (blink twice) before checking in.
               </small>
             </span>
           </label>
@@ -704,7 +703,7 @@ export function SessionsPanel({
           onCreate={(instant) => {
             setForm({
               ...form,
-              require_liveness_check: true,
+              require_motion_check: true,
               course_id:
                 selectedCourseId === "all" ? (availableCourses[0]?.id ?? "") : selectedCourseId,
               starts_at: toSingaporeDateTimeLocal(new Date(instant).toISOString()),

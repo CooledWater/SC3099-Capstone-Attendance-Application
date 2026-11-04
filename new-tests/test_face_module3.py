@@ -127,10 +127,10 @@ def test_templates_are_deterministic_monotonic_and_cancelable() -> None:
     assert compare_templates(first, first).match_passed is True
     assert compare_templates(first, rotated).match_passed is False
 
-    fractions = (0.0, 0.05, 0.10, 0.158203, 0.25, 0.50, 1.0)
+    fractions = (0.0, 0.05, 23 / 256, 0.10, 0.25, 0.50, 1.0)
     scores = [match_score(value) for value in fractions]
     assert scores == sorted(scores, reverse=True)
-    assert match_score(0.158203) == pytest.approx(0.70)
+    assert match_score(23 / 256) == pytest.approx(0.70)
 
 
 def test_liveness_hash_matches_enrollment_pipeline(

@@ -12,7 +12,8 @@ import json
 import math
 import os
 from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -32,16 +33,20 @@ class Settings(BaseModel):
     service_version: str = "1.0.0"
 
     face_match_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
-    # Midpoint measured by scripts/calibrate.py on the supplied Obama/Biden
-    # corpus (max same-person 0.113281, min different-person 0.203125).
+    # Provisional boundary for live impersonation trials: accept at most 23/256
+    # differing bits. Broader genuine/impostor calibration is still required.
     face_match_hamming_fraction: float = Field(
-        default=0.158203,
+        default=0.08984375,
         gt=0.0,
         lt=0.5,
     )
     face_detection_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     face_quality_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
-    liveness_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    liveness_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    # Geometry contributes to liveness; learned PAD independently vetoes attacks.
+    pad_mode: Literal["off", "shadow", "enforce"] = "enforce"
+    pad_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    pad_manifest_path: str = str(Path(__file__).resolve().parent / "assets/pad/manifest.json")
     risk_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
 
     simhash_seed: int = Field(
@@ -71,6 +76,7 @@ class Settings(BaseModel):
         "face_detection_threshold",
         "face_quality_threshold",
         "liveness_threshold",
+        "pad_threshold",
         "risk_threshold",
     )
     @classmethod
@@ -216,13 +222,16 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             service_version=str(_get_env(env, "FACE_SERVICE_VERSION", "1.0.0")),
             face_match_threshold=_parse_float(env, "FACE_MATCH_THRESHOLD", 0.70),
             face_match_hamming_fraction=_parse_float(
-                env, "FACE_MATCH_HAMMING_FRACTION", 0.158203
+                env, "FACE_MATCH_HAMMING_FRACTION", 0.08984375
             ),
             face_detection_threshold=_parse_float(
                 env, "FACE_DETECTION_THRESHOLD", 0.70
             ),
             face_quality_threshold=_parse_float(env, "FACE_QUALITY_THRESHOLD", 0.50),
-            liveness_threshold=_parse_float(env, "LIVENESS_THRESHOLD", 0.60),
+            liveness_threshold=_parse_float(env, "LIVENESS_THRESHOLD", 0.85),
+            pad_mode=str(_get_env(env, "PAD_MODE", "enforce")),
+            pad_threshold=_parse_float(env, "PAD_THRESHOLD", 0.75),
+            pad_manifest_path=str(_get_env(env, "PAD_MANIFEST_PATH", Settings.model_fields["pad_manifest_path"].default)),
             risk_threshold=_parse_float(env, "RISK_THRESHOLD", 0.50),
             simhash_seed=_parse_int(env, "SIMHASH_SEED", DEFAULT_SIMHASH_SEED),
             max_image_bytes=_parse_int(

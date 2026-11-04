@@ -1,0 +1,80 @@
+{
+  "run_id": "phone-other-person-image-replay-20261101T075215Z",
+  "monitor_since": "2026-11-01T07:52:15.753101+00:00",
+  "student_email": "wcstudent1@example.com",
+  "student_id": "41e2d1e3-d1ee-4b15-9c4c-4b71c9afe519",
+  "course": "SC4000",
+  "course_id": "38dc78ce-5726-480f-b588-6be559ce20a7",
+  "venue": "LT1A",
+  "latitude": 1.34721921067674,
+  "longitude": 103.680296622411,
+  "radius_meters": 100.0,
+  "risk_threshold": 0.5,
+  "opens_sgt": "2026-11-01T15:53:45+08:00",
+  "closes_sgt": "2026-11-01T17:53:45+08:00",
+  "conditions": {
+    "capture_device_browser": "unknown",
+    "lighting": "unknown",
+    "screen_brightness": "unknown",
+    "camera_distance": "unknown",
+    "visible_borders_reflections": "unknown"
+  },
+  "sessions": [
+    {
+      "label": "real_face_control",
+      "presentation": "live_enrolled_person",
+      "id": "eda7c7b3-6625-4379-976a-ce3a02b21ae0",
+      "name": "Image replay R6 CONTROL real face (01 Nov 15:53 SGT)"
+    },
+    {
+      "label": "phone_screen",
+      "presentation": "static_photo_other_person",
+      "id": "eb162496-4802-425b-9f53-2ad5f65e2eab",
+      "name": "Image replay R6 TEST other person photo (01 Nov 15:53 SGT)"
+    }
+  ],
+  "control_correlation": {
+    "participant_confirmed": true,
+    "diagnostic_id": "e1851433-1b7e-4fa6-8049-663c464ca85c",
+    "checkin_id": "7aff19bc-b96e-4816-8bf6-d34ab299806b",
+    "saved_attendance_verified": true,
+    "audit_records_verified": true,
+    "status": "approved",
+    "risk_score": 0.4762,
+    "liveness_score": 0.976928,
+    "face_match_score": 0.881481387837146
+  },
+  "replay_correlation": {
+    "participant_confirmed": true,
+    "diagnostic_id": "f92e3a9b-2b07-4b43-967f-b422b6ff5fa3",
+    "checkin_id": "4b56df4a-5a72-48f5-b1df-419a13fad849",
+    "saved_attendance_verified": true,
+    "audit_records_verified": true,
+    "status": "rejected",
+    "risk_score": 0.59,
+    "liveness_score": 0.0,
+    "face_match_score": 0.0,
+    "face_detected": false,
+    "identity_comparison_performed": false,
+    "liveness_components_evaluated": false,
+    "risk_factor_types": [
+      "liveness_failed",
+      "face_match_failed"
+    ]
+  },
+  "completion": {
+    "state": "complete",
+    "observed_replay_outcome": "committed_rejection_with_no_face_reported; identity discrimination and presentation classification not established",
+    "presentations_participant_confirmed": true,
+    "saved_attendance_verified": true,
+    "audit_records_verified": true,
+    "diagnostics_enabled": false,
+    "diagnostic_session_allowlist": [],
+    "face_service_diagnostics_enabled": false,
+    "face_service_diagnostic_session_allowlist": [],
+    "backend_health_http_status": 200,
+    "module3_health_http_status": 200,
+    "existing_files_preserved": 322,
+    "checked_source_hashes_unchanged": 9
+  }
+}

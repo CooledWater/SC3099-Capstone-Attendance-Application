@@ -1,0 +1,56 @@
+{
+  "run_id": "phone-image-replay-20261025T070255Z",
+  "monitor_since": "2026-10-25T07:02:55.441900+00:00",
+  "created_sgt": "2026-10-25T15:02:55.441900+08:00",
+  "student_email": "wcstudent1@example.com",
+  "student_id": "41e2d1e3-d1ee-4b15-9c4c-4b71c9afe519",
+  "course": "SC4000",
+  "course_id": "38dc78ce-5726-480f-b588-6be559ce20a7",
+  "venue": "Test Venue2 25 Oct",
+  "venue_coordinate_source": "participant supplied decimal coordinates",
+  "latitude": 1.263143,
+  "longitude": 103.823512,
+  "radius_meters": 100.0,
+  "risk_threshold": 0.5,
+  "liveness_threshold": 0.85,
+  "depth_threshold": 0.8,
+  "mesh_threshold": 0.8,
+  "face_match_threshold": 0.7,
+  "strict_security_mode": false,
+  "opens_sgt": "2026-10-25T15:04:55+08:00",
+  "closes_sgt": "2026-10-25T17:04:55+08:00",
+  "sessions": [
+    {
+      "label": "real_face_control",
+      "id": "f1c8a0fa-bff6-41de-bfc5-5b1f1f204a70",
+      "name": "Phone replay R2 CONTROL real face (25 Oct 15:04 SGT)"
+    },
+    {
+      "label": "phone_screen",
+      "id": "e7d17ca6-5f16-44d1-9490-4b94505e2010",
+      "name": "Phone replay R2 TEST static phone photo (25 Oct 15:04 SGT)"
+    }
+  ],
+  "conditions": {
+    "capture_device_browser": "unknown",
+    "display_phone": "unknown",
+    "lighting": "participant reports well lit; differences between captures unknown",
+    "screen_brightness": "participant reports bright display; numeric brightness unknown",
+    "camera_distance": "participant reports screen distance around 10 cm; real-face distance unknown",
+    "visible_borders_reflections": "participant reports phone border visible; reflections unknown",
+    "photo_provenance": "unknown"
+  },
+  "completion": {
+    "state": "complete",
+    "presentations_participant_confirmed": true,
+    "saved_attendance_verified": true,
+    "audit_records_verified": true,
+    "control_status": "approved",
+    "phone_photo_status": "rejected",
+    "phone_photo_reason": "liveness_failed",
+    "diagnostics_enabled": false,
+    "diagnostic_session_allowlist": [],
+    "backend_health_http_status": 200,
+    "module3_health_http_status": 200
+  }
+}

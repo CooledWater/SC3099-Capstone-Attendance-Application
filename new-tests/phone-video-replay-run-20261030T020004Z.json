@@ -1,0 +1,15 @@
+{
+  "monitor_since": "2026-10-30T02:00:04.806956+00:00",
+  "sessions": [
+    {
+      "label": "real_face_control",
+      "id": "9d30108b-2513-4d64-8184-c60fc6e27b3b",
+      "name": "Video replay R0 CONTROL real face (30 Oct 10:01 SGT)"
+    },
+    {
+      "label": "phone_video",
+      "id": "f30d828b-6bb4-446a-8f80-876553dd56f0",
+      "name": "Video replay R0 TEST phone video (30 Oct 10:01 SGT)"
+    }
+  ]
+}

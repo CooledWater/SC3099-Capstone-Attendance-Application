@@ -460,8 +460,7 @@ The final risk is the maximum of venue risk and Module 3 risk; a liveness failur
 ## Prompt to start another test session
 Run another phone-image replay test using the existing diagnostic instrumentation.
 
-Use wcstudent1@example.com and LT1A coordinates:
-(1.3472192106767371, 103.68029662241148), with a 100 m radius.
+Use wcstudent1@example.com. Ask me which venue to use for creating a test lecture session.  
 
 1. Review AGENTS.md and the existing instrumentation, monitor, and previous test report. Keep ./docs read-only.
 2. Create two fresh, matching sessions in a course where the student is actively enrolled:
@@ -471,7 +470,7 @@ Use wcstudent1@example.com and LT1A coordinates:
 3. Enable diagnostics only for these new session IDs. Rebuild/recreate the backend if necessary and verify the deployed instrumentation.
 4. Start monitoring before asking me to submit anything. I will perform both captures manually; do not submit attendance or alter my enrollment, face template, consent, location, thresholds, or recognition algorithms.
 5. Use a new run configuration and save the sanitized report to:
-   ./new-documentations/test-logs/phone-image-replay-<YYYY-MM-DD-HHMM-SGT>.md
+   ./new-documentations/image-replay/image-replay-test-X.md. 
    Preserve all previous reports.
 6. Tell me the session names and confirm monitoring is ready. Ask for device/browser, lighting, screen brightness, camera distance, and visible borders/reflections. Mark missing conditions as unknown.
 7. After each submission, correlate diagnostics with the saved attendance record. Compare liveness components, presentation penalties, identity scores, Module 3 risk contributions, venue risk, final risk, and attendance status.

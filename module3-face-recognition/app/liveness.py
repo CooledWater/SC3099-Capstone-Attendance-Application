@@ -19,6 +19,9 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Sequence
 
+from .config import settings
+from .pad import evaluate_pad, unevaluated_details, PadUnavailableError
+
 
 COMPONENT_WEIGHTS: dict[str, float] = {
     "depth": 0.30,
@@ -557,13 +560,13 @@ def assess_liveness(
     face_detection_confidence: float = 0.0,
     face_bbox: Any = None,
     challenge_type: str = "passive",
-    threshold: float = 0.60,
+    threshold: float | None = None,
 ) -> LivenessAnalysis:
     """Analyze one detected face and return aggregate liveness evidence."""
 
     if challenge_type not in SUPPORTED_CHALLENGES:
         raise ValueError(f"Unsupported challenge type: {challenge_type}")
-    threshold = _clamp(threshold)
+    threshold = _clamp(settings.liveness_threshold if threshold is None else threshold)
     try:
         confidence = _clamp(float(face_detection_confidence))
     except (TypeError, ValueError, OverflowError):
@@ -582,11 +585,15 @@ def assess_liveness(
             "mesh_plausibility_score": 0.0,
             "texture_analysis_score": 0.0,
             "color_distribution_score": 0.0,
+            "pre_gate_liveness_score": 0.0,
             "challenge_evidence_score": 0.0,
             "challenge_integrity_score": 0.0,
             "single_image_challenge_proxy": challenge_type != "passive",
             "threshold": _round(threshold),
         }
+        details.update(unevaluated_details(settings.pad_mode, settings.pad_threshold))
+        details.update(pre_pad_liveness_score=0.0, pre_pad_liveness_passed=False,
+                       pad_would_veto=None)
         return LivenessAnalysis(False, 0.0, threshold, challenge_type, details)
 
     crop = _face_crop(image_rgb, face_bbox, landmarks)
@@ -631,11 +638,19 @@ def assess_liveness(
         if challenge_type == "passive"
         else 0.40 + 0.60 * challenge_evidence
     )
-    score = _clamp(
+    pre_gate_score = _clamp(
         component_score * presentation_integrity * challenge_integrity
     )
-    score = round(score, 6)
+    pre_gate_score = round(pre_gate_score, 6)
+    # Depth and mesh are weighted components, with no independent cutoffs.
+    score = pre_gate_score
     passed = score >= threshold
+    pad_observation = pad_details(image_rgb, face_bbox, score, passed)
+    if settings.pad_mode == "enforce" and pad_observation["pad_passed"] is False:
+        # Preserve the pre-PAD score in details while making the existing
+        # backend liveness-failure rule reject an evaluated presentation attack.
+        score = 0.0
+        passed = False
 
     details = {
         "face_detection_confidence": _round(confidence),
@@ -650,6 +665,7 @@ def assess_liveness(
         "mesh_plausibility_score": _round(snapshot.mesh_score),
         "texture_analysis_score": _round(texture_score),
         "color_distribution_score": _round(color_score),
+        "pre_gate_liveness_score": pre_gate_score,
         "weighted_contributions": {name: _round(value, 6) for name, value in weighted.items()},
         "component_weights": dict(COMPONENT_WEIGHTS),
         "weighted_component_score": _round(component_score, 6),
@@ -665,6 +681,7 @@ def assess_liveness(
         "threshold": _round(threshold),
     }
     details.update({key: value for key, value in challenge_details.items() if key != "challenge_score"})
+    details.update(pad_observation)
 
     # Explicitly discard request-scoped views/references before returning the
     # scalar result.  Python/NumPy may retain allocator pages, but no application
@@ -672,6 +689,25 @@ def assess_liveness(
     del crop
     del landmarks
     return LivenessAnalysis(passed, score, threshold, challenge_type, details)
+
+
+def pad_details(image_rgb, face_bbox, legacy_score, legacy_passed):
+    """Measure PAD; enforcement outages use the existing service-error path."""
+    details = unevaluated_details(settings.pad_mode, settings.pad_threshold)
+    details.update(pre_pad_liveness_score=legacy_score,
+                   pre_pad_liveness_passed=legacy_passed, pad_would_veto=None)
+    if settings.pad_mode == "off":
+        return details
+    try:
+        analysis = evaluate_pad(image_rgb, face_bbox, threshold=settings.pad_threshold,
+                                manifest_path=settings.pad_manifest_path)
+        details.update(analysis.details())
+        details["pad_would_veto"] = legacy_passed and not analysis.passed
+    except PadUnavailableError as exc:
+        details["pad_status"] = "unavailable"
+        if settings.pad_mode == "enforce":
+            raise LivenessUnavailableError("PAD inference is unavailable") from exc
+    return details
 
 
 # Readable compatibility alias for route wiring and external tests.

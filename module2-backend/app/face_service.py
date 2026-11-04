@@ -134,7 +134,8 @@ class FaceServiceClient:
 
     def _post(self, path: str, payload: dict, timeout: float) -> httpx.Response:
         try:
-            response = self._get_client().post(path, json=payload, timeout=timeout)
+            headers = checkin_diagnostics.service_headers(path)
+            response = self._get_client().post(path, json=payload, timeout=timeout, headers=headers)
         except httpx.HTTPError:
             checkin_diagnostics.observe_response(path)
             raise

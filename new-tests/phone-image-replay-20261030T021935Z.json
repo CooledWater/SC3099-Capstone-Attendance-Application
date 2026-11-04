@@ -1,0 +1,55 @@
+{
+  "run_id": "phone-image-replay-20261030T021935Z",
+  "monitor_since": "2026-10-30T02:19:35.149246+00:00",
+  "student_email": "wcstudent1@example.com",
+  "student_id": "41e2d1e3-d1ee-4b15-9c4c-4b71c9afe519",
+  "course": "SC4000",
+  "course_id": "38dc78ce-5726-480f-b588-6be559ce20a7",
+  "venue": "LT26",
+  "latitude": 1.3434326,
+  "longitude": 103.6815837,
+  "radius_meters": 100.0,
+  "risk_threshold": 0.5,
+  "opens_sgt": "2026-10-30T10:21:05+08:00",
+  "closes_sgt": "2026-10-30T12:21:05+08:00",
+  "conditions": {
+    "capture_device_browser": "unknown",
+    "lighting": "unknown",
+    "screen_brightness": "unknown",
+    "camera_distance": "unknown",
+    "visible_borders_reflections": "unknown"
+  },
+  "sessions": [
+    {
+      "label": "real_face_control",
+      "id": "715523e9-a1a3-49cc-9c21-7b404ef49b01",
+      "name": "Image replay R3 CONTROL real face (30 Oct 10:21 SGT)"
+    },
+    {
+      "label": "phone_screen",
+      "id": "ccbd4379-1703-41a1-844c-7f2d54a890c5",
+      "name": "Image replay R3 TEST static phone photo (30 Oct 10:21 SGT)"
+    }
+  ],
+  "control_correlation": {
+    "participant_confirmed": true,
+    "diagnostic_id": "a619868f-7540-495b-91c4-e8463f1c5f26",
+    "checkin_id": "e9ba7187-0ffa-46ee-b40d-db2879da4e8f",
+    "saved_attendance_verified": true,
+    "audit_records_verified": true,
+    "status": "rejected",
+    "risk_score": 0.59,
+    "multiple_faces_reported": true,
+    "component_checks_evaluated": false,
+    "identity_comparison_evaluated": false
+  },
+  "completion": {
+    "state": "stopped_for_participant_requested_retry",
+    "phone_photo_submitted": false,
+    "diagnostics_enabled": false,
+    "diagnostic_session_allowlist": [],
+    "prior_attendance_and_audits_preserved": true,
+    "backend_health_http_status": 200,
+    "module3_health_http_status": 200
+  }
+}
