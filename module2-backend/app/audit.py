@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.auth import require_roles
@@ -240,6 +240,7 @@ def _to_naive_utc(value: datetime) -> datetime:
 @router.get("/audit/")
 def list_audit_logs(
     user_id: uuid.UUID | None = None,
+    user_search: str | None = Query(default=None, max_length=254),
     action: str | None = None,
     resource_type: str | None = None,
     resource_id: uuid.UUID | None = None,
@@ -272,6 +273,12 @@ def list_audit_logs(
 
     if user_id is not None:
         query = query.filter(AuditLog.user_id == str(user_id))
+    if user_search and user_search.strip():
+        term = user_search.strip().lower()
+        query = query.filter(or_(
+            func.lower(User.email).contains(term, autoescape=True),
+            func.lower(User.full_name).contains(term, autoescape=True),
+        ))
     if action is not None:
         query = query.filter(AuditLog.action == action)
     if resource_type is not None:

@@ -374,30 +374,36 @@ test("applying full filters resets the page and resetting clears both form and A
   assert.equal(params.get("resource_id"), null);
 });
 
-test("user lookup searches the full user directory and applies the selected user ID", async () => {
+test("typing a user search filters audit events without a selector or Apply step", async () => {
   const h = harness();
   let tree = h.render();
   field(tree, "Find user", "input").props.onChange({
     target: { value: "alice@example.edu" },
   });
   tree = h.render();
-  button(tree, "Next users").props.onClick();
-  tree = h.render();
-  await h.queries
-    .find((q) => q.queryKey[0] === "audit-user-options")
-    .queryFn({ signal: null });
-  let params = new URL(h.calls[0][0], "http://local").searchParams;
-  assert.equal(params.get("search"), "alice@example.edu");
-  assert.equal(params.get("offset"), "25");
-  field(tree, "User", "select").props.onChange({ target: { value: userId } });
-  tree = h.render();
-  find(tree, (node) => node.type === "form").props.onSubmit(prevent);
-  tree = h.render();
   await h.queries
     .find((q) => q.queryKey[0] === "audit-logs")
     .queryFn({ signal: null });
+  let params = new URL(h.calls[0][0], "http://local").searchParams;
+  assert.equal(params.get("user_search"), "alice@example.edu");
+  assert.equal(params.get("offset"), "0");
+  assert.equal(params.has("user_id"), false);
+  assert.equal(h.queries.some(q => q.queryKey[0] === "audit-user-options"), false);
+  field(tree, "Find user", "input").props.onChange({ target: { value: "" } });
+  tree = h.render();
+  await h.queries.find(q => q.queryKey[0] === "audit-logs").queryFn({ signal: null });
   params = new URL(h.calls[1][0], "http://local").searchParams;
-  assert.equal(params.get("user_id"), userId);
+  assert.equal(params.has("user_search"), false);
+});
+
+test("filtered CSV uses the same direct user search as the audit table", async () => {
+  const h = harness({ request: async () => ({ items: [], total: 0 }) });
+  let tree = h.render();
+  field(tree, "Find user", "input").props.onChange({ target: { value: "Alice" } });
+  tree = h.render();
+  await button(tree, "Export filtered CSV").props.onClick();
+  // The click starts an async export; its first request is issued immediately.
+  assert.equal(new URL(h.calls[0][0], "http://local").searchParams.get("user_search"), "Alice");
 });
 
 test("failed loads show an error, not empty results, and non-admin queries stay disabled", () => {

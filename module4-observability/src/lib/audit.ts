@@ -19,6 +19,7 @@ export type AuditRow = {
 export type AuditPage = { items: AuditRow[]; total: number; limit: number; offset: number };
 export type AuditFilters = {
   userId: string;
+  userSearch?: string;
   action: string;
   resourceType: string;
   resourceId: string;
@@ -28,6 +29,7 @@ export type AuditFilters = {
 };
 export const emptyAuditFilters: AuditFilters = {
   userId: "",
+  userSearch: "",
   action: "",
   resourceType: "",
   resourceId: "",
@@ -148,6 +150,7 @@ function filterParams(filters: AuditFilters) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries({
     user_id: filters.userId,
+    user_search: filters.userSearch ?? "",
     action: filters.action,
     resource_type: filters.resourceType,
     resource_id: filters.resourceId,

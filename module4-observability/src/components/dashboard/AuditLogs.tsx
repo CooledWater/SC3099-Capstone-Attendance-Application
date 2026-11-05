@@ -2,7 +2,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { fetchUsers, type AdminUser } from "@/lib/admin";
 import { downloadCsv } from "@/lib/attendance";
 import { formatSingaporeDateTime } from "@/lib/time";
 import {
@@ -44,8 +43,7 @@ export function AuditLogs() {
   const [filterError, setFilterError] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const search = useDebouncedValue(userSearch, 300).trim();
-  const [userPage, setUserPage] = useState(0);
-  const [pickedUser, setPickedUser] = useState<AdminUser | null>(null);
+  const appliedFilters = { ...filters, userSearch: search };
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
   const [selected, setSelected] = useState<AuditRow | null>(null);
@@ -55,25 +53,15 @@ export function AuditLogs() {
   useEffect(() => {
     table.current?.scrollTo({ top: 0 });
     setSelected(null);
-  }, [filters, page, pageSize]);
-  const users = useQuery({
-    queryKey: ["audit-user-options", user?.id, search, userPage],
-    queryFn: ({ signal }) =>
-      fetchUsers(
-        new URLSearchParams({ search, limit: "25", offset: String(userPage * 25) }),
-        signal,
-      ),
-    enabled: permitted && Boolean(search),
-  });
+  }, [filters, search, page, pageSize]);
   const q = useQuery({
-    queryKey: ["audit-logs", user?.id, filters, pageSize, page],
-    queryFn: ({ signal }) => fetchAuditPage(filters, pageSize, page * pageSize, signal),
+    queryKey: ["audit-logs", user?.id, appliedFilters, pageSize, page],
+    queryFn: ({ signal }) => fetchAuditPage(appliedFilters, pageSize, page * pageSize, signal),
     enabled: permitted,
     refetchInterval: 30000,
   });
   const rows = q.isError ? [] : (q.data?.items ?? []);
   const total = q.data?.total ?? 0;
-  const userOptions = users.data?.items ?? [];
   const detailPoints = auditDetailPoints(selected?.details ?? null);
   function update<K extends keyof AuditFilters>(key: K, value: AuditFilters[K]) {
     setDraft((previous) => ({ ...previous, [key]: value }));
@@ -86,7 +74,7 @@ export function AuditLogs() {
     setExporting(true);
     setExportError("");
     try {
-      const records = await fetchAuditExport(filters, controller.signal);
+      const records = await fetchAuditExport(appliedFilters, controller.signal);
       if (!controller.signal.aborted) downloadCsv("audit-trail", auditCsv(records));
     } catch (error) {
       if (!controller.signal.aborted)
@@ -147,35 +135,14 @@ export function AuditLogs() {
             <input
               className={control}
               value={userSearch}
-              placeholder="Search all users"
+              placeholder="Search audit logs by name or email"
+              maxLength={254}
+              type="search"
               onChange={(event) => {
                 setUserSearch(event.target.value);
-                setUserPage(0);
+                setPage(0);
               }}
             />
-          </label>
-          <label className="grid min-w-0 gap-1 text-xs">
-            User
-            <select
-              className={control}
-              value={draft.userId}
-              onChange={(event) => {
-                update("userId", event.target.value);
-                setPickedUser(userOptions.find((item) => item.id === event.target.value) ?? null);
-              }}
-            >
-              <option value="">All users, including system events</option>
-              {pickedUser && !userOptions.some((item) => item.id === pickedUser.id) && (
-                <option value={pickedUser.id}>
-                  {pickedUser.full_name} · {pickedUser.email}
-                </option>
-              )}
-              {userOptions.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.full_name} · {item.email}
-                </option>
-              ))}
-            </select>
           </label>
           <label className="grid min-w-0 gap-1 text-xs">
             Action
@@ -255,42 +222,6 @@ export function AuditLogs() {
             />
           </label>
         </div>
-        {search && (
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            {users.isPending ? (
-              "Finding users…"
-            ) : users.isError ? (
-              <span role="alert">
-                Could not find users.{" "}
-                <button type="button" className={button} onClick={() => void users.refetch()}>
-                  Retry user search
-                </button>
-              </span>
-            ) : (
-              <>
-                <span>{users.data?.total ?? 0} matching users · select a user above</span>
-                <button
-                  type="button"
-                  className={button}
-                  disabled={userPage === 0 || users.isFetching}
-                  onClick={() => setUserPage(userPage - 1)}
-                >
-                  Previous users
-                </button>
-                <button
-                  type="button"
-                  className={button}
-                  disabled={
-                    users.isFetching || !users.data || (userPage + 1) * 25 >= users.data.total
-                  }
-                  onClick={() => setUserPage(userPage + 1)}
-                >
-                  Next users
-                </button>
-              </>
-            )}
-          </div>
-        )}
         {filterError && (
           <p role="alert" className="text-sm text-destructive">
             {filterError}
@@ -309,8 +240,6 @@ export function AuditLogs() {
               setFilters({ ...emptyAuditFilters });
               setPage(0);
               setUserSearch("");
-              setUserPage(0);
-              setPickedUser(null);
               setFilterError("");
               setExportError("");
             }}
@@ -351,24 +280,18 @@ export function AuditLogs() {
         <table className="w-full min-w-[1050px] text-left text-sm">
           <thead className="sticky top-0 z-10 bg-card">
             <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {[
-                "Timestamp",
-                "User",
-                "Action",
-                "Resource",
-                "Severity",
-                "Outcome",
-                "Details",
-              ].map((title) => (
-                <th
-                  key={title}
-                  className="px-5 py-3 font-medium"
-                  aria-sort={title === "Timestamp" ? "descending" : undefined}
-                >
-                  {title}
-                  {title === "Timestamp" && <span aria-hidden="true"> ↓</span>}
-                </th>
-              ))}
+              {["Timestamp", "User", "Action", "Resource", "Severity", "Outcome", "Details"].map(
+                (title) => (
+                  <th
+                    key={title}
+                    className="px-5 py-3 font-medium"
+                    aria-sort={title === "Timestamp" ? "descending" : undefined}
+                  >
+                    {title}
+                    {title === "Timestamp" && <span aria-hidden="true"> ↓</span>}
+                  </th>
+                ),
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
