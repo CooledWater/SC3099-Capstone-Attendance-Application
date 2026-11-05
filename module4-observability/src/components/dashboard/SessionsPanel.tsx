@@ -755,7 +755,10 @@ export function SessionsPanel({
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-medium text-foreground">
-                          {s.courses?.code ?? "—"} · {s.courses?.name ?? "Course"}
+                          {s.name}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {formatCourseLabel(s.courses?.code, s.courses?.name) || "Course"}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {formatSingaporeDateTime(s.starts_at, {
