@@ -559,7 +559,7 @@ class TestMetricsEndpoint:
         assert api.get("/api/v1/metrics/", params={"hours": 999}, headers=headers).json()["window_hours"] == 24
 
     def test_access_rules(self, api, world):
-        assert api.get("/api/v1/metrics/", headers=world["instr_a"]["headers"]).status_code == 200
+        assert api.get("/api/v1/metrics/", headers=world["instr_a"]["headers"]).status_code == 403
         assert api.get("/api/v1/metrics/", headers=world["admin"]["headers"]).status_code == 200
         assert api.get("/api/v1/metrics/", headers=world["students"]["s1"]["headers"]).status_code == 403
         assert api.get("/api/v1/metrics/").status_code in (401, 403)

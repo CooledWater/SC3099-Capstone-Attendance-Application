@@ -59,6 +59,7 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       SEMESTER_START_DATE: ${SEMESTER_START_DATE:-}
       FACE_SERVICE_URL: http://face-recognition:8001
+      PROMETHEUS_URL: http://prometheus:9090
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       redis:
@@ -151,6 +152,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./module4-observability/grafana/provisioning/datasources.yml:/etc/grafana/provisioning/datasources/saiv.yml:ro

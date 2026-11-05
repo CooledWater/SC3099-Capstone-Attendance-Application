@@ -30,6 +30,8 @@ Exported (plus prometheus-client's default process/python collectors):
 * ``checkin_outcomes_total{status}`` - approved / flagged / rejected, for the
   flagged-versus-approved ratio.
 * ``checkin_risk_score`` - histogram of the final combined risk score.
+* ``checkin_risk_level_total{band}`` - non-overlapping low/medium/high/critical
+  counts using the API risk-level boundaries (0.3, 0.5 and 0.7).
 """
 
 from fastapi import APIRouter, Response
@@ -98,6 +100,16 @@ CHECKIN_RISK = _metric(
     "Combined risk score (0-1) of recorded check-ins.",
     buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
 )
+CHECKIN_RISK_BANDS = _metric(
+    Counter,
+    "checkin_risk_level_total",
+    "Recorded check-ins by non-overlapping risk band.",
+    ["band"],
+)
+
+if CHECKIN_RISK_BANDS is not None:
+    for _band in ("low", "medium", "high", "critical"):
+        CHECKIN_RISK_BANDS.labels(band=_band)
 
 if CHECKIN_OUTCOMES is not None:
     # Export every outcome at 0 so flagged/approved ratios have a series from
@@ -130,7 +142,11 @@ def record_checkin(status: str, risk_score: float) -> None:
     if status == "approved":
         CHECKIN_SUCCESS.inc()
     CHECKIN_OUTCOMES.labels(status=status if status in _CHECKIN_STATUSES else "other").inc()
-    CHECKIN_RISK.observe(min(1.0, max(0.0, float(risk_score))))
+    risk = min(1.0, max(0.0, float(risk_score)))
+    CHECKIN_RISK.observe(risk)
+    if CHECKIN_RISK_BANDS is not None:
+        band = "critical" if risk >= 0.7 else "high" if risk >= 0.5 else "medium" if risk >= 0.3 else "low"
+        CHECKIN_RISK_BANDS.labels(band=band).inc()
 
 
 router = APIRouter()

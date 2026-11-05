@@ -4,8 +4,6 @@ import { EnrollmentsPanel } from "./EnrollmentsPanel";
 import { ExportPanel } from "./ExportPanel";
 import { SessionsPanel } from "./SessionsPanel";
 import { CheckInsPanel } from "./CheckInsPanel";
-import { AuditLogs } from "./AuditLogs";
-import { MetricsPanel } from "./MetricsPanel";
 import { Tabs } from "./Tabs";
 import { InstructorOverview } from "./InstructorOverview";
 import { useSessionValue } from "@/hooks/useSessionValue";
@@ -18,8 +16,6 @@ const tabs = [
   { id: "checkins", label: "Check-ins" },
   { id: "enrollments", label: "Enrollments" },
   { id: "export", label: "Export" },
-  { id: "audit", label: "Audit logs" },
-  { id: "metrics", label: "Metrics" },
 ] as const;
 type Tab = (typeof tabs)[number]["id"];
 
@@ -86,8 +82,8 @@ export function InstructorView({ userId }: { userId: string }) {
   );
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [reviewOnly, setReviewOnly] = useState(false);
-  const needsCheckInRows = tab === "sessions" || tab === "metrics";
-  const needsSessionRows = tab === "sessions" || tab === "metrics";
+  const needsCheckInRows = tab === "sessions";
+  const needsSessionRows = tab === "sessions";
   const checkIns = useQuery({
     queryKey: ["check-ins", userId],
     queryFn: fetchCheckIns,
@@ -205,7 +201,6 @@ export function InstructorView({ userId }: { userId: string }) {
           stateKey={`instructor:${userId}:roster`}
         />
       )}
-      {tab === "audit" && <AuditLogs />}
       {tab === "export" && (
         <ExportPanel
           courses={instructorCourses}
@@ -213,7 +208,6 @@ export function InstructorView({ userId }: { userId: string }) {
           error={courses.isError}
         />
       )}
-      {tab === "metrics" && <MetricsPanel rows={rows} />}
     </>
   );
 }

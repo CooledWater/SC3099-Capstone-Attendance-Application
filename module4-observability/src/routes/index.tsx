@@ -48,8 +48,8 @@ const headline = {
   },
   admin: {
     eyebrow: "System console",
-    title: "Institution overview",
-    blurb: "System-wide metrics across every course.",
+    title: "Admin overview",
+    blurb: "",
   },
 } as const;
 

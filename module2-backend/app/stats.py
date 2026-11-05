@@ -30,6 +30,7 @@ import os
 import random
 import threading
 import time
+import httpx
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
@@ -52,6 +53,7 @@ CHECKIN_STATUSES = ("approved", "flagged", "rejected", "pending", "appealed")
 # Risk bands from API-SPECIFICATION.md's session risk_distribution.
 MEDIUM_RISK = 0.3
 HIGH_RISK = 0.5
+CRITICAL_RISK = 0.7
 
 # Not defined anywhere in the docs; a student below this is listed under
 # ``low_attendance_alerts`` on the course stats.
@@ -599,11 +601,12 @@ def stats_course_overview(
         risk_bins[int(index)]["count"] = int(count)
         scored_count += int(count)
 
-    # Expose the dashboard's three bands without another query. Keep the
+    # Expose the API's four risk levels without another query. Keep the
     # numerical bins for existing consumers; their boundaries align exactly.
-    band_counts = {"low": 0, "medium": 0, "high": 0}
+    band_counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
     for item in risk_bins:
-        key = "low" if item["max"] <= MEDIUM_RISK else "medium" if item["max"] <= HIGH_RISK else "high"
+        key = ("low" if item["max"] <= MEDIUM_RISK else "medium" if item["max"] <= HIGH_RISK
+               else "high" if item["max"] <= CRITICAL_RISK else "critical")
         band_counts[key] += item["count"]
     risk_bands = [{"key": key, "count": count} for key, count in band_counts.items()]
 
@@ -1269,14 +1272,77 @@ class MetricsMiddleware:
             )
 
 
+LATENCY_P95_QUERY = (
+    'histogram_quantile(0.95, sum by (le) '
+    '(rate(http_request_duration_seconds_bucket{service="backend"}[1h]))) * 1000'
+)
+
+
+REQUEST_RATE_QUERY = 'sum(rate(http_requests_total{service="backend"}[1h])) * 3600'
+ERROR_RATE_QUERY = (
+    '100 * (sum(rate(http_requests_total{service="backend",status_class="5xx"}[1h])) '
+    'or vector(0)) / sum(rate(http_requests_total{service="backend"}[1h]))'
+)
+
+
+def _prometheus_metric_value(query: str) -> float | None:
+    """Read one fixed aggregate, preserving missing data instead of inventing zero."""
+    try:
+        response = httpx.get(
+            os.getenv("PROMETHEUS_URL", "http://localhost:9090").rstrip("/") + "/api/v1/query",
+            params={"query": query},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload["status"] != "success" or payload["data"]["resultType"] != "vector":
+            raise ValueError("Invalid Prometheus response")
+        results = payload["data"]["result"]
+        value = float(results[0]["value"][1]) if results else None
+        if value is not None and (not math.isfinite(value) or value < 0):
+            value = None
+    except httpx.RequestError:
+        raise HTTPException(503, "Prometheus is unavailable") from None
+    except (httpx.HTTPStatusError, ValueError, KeyError, TypeError, IndexError):
+        raise HTTPException(502, "Could not read Prometheus metric") from None
+    return value
+
+
+@router.get("/metrics/latency")
+def api_latency(
+    current_user: User = Depends(require_roles("admin", read_only=True)),
+):
+    """One-hour, all-endpoint backend p95 estimated from Prometheus buckets."""
+    value = _prometheus_metric_value(LATENCY_P95_QUERY)
+    return {"p95_ms": value, "window_hours": 1, "source": "prometheus"}
+
+
+@router.get("/metrics/request-rate")
+def api_request_rate(
+    current_user: User = Depends(require_roles("admin", read_only=True)),
+):
+    """Average requests per hour over the last hour across all backend endpoints."""
+    return {"requests_per_hour": _prometheus_metric_value(REQUEST_RATE_QUERY),
+            "window_hours": 1, "source": "prometheus"}
+
+
+@router.get("/metrics/error-rate")
+def api_error_rate(
+    current_user: User = Depends(require_roles("admin", read_only=True)),
+):
+    """One-hour backend 5xx percentage; absent 5xx series means zero errors."""
+    return {"error_rate_percent": _prometheus_metric_value(ERROR_RATE_QUERY),
+            "window_hours": 1, "source": "prometheus"}
+
+
 @router.get("/metrics/")
 def list_api_metrics(
     hours: int = Query(default=12, description="Look-back window in hours"),
     limit: int = 120,
     endpoint: str | None = None,
-    current_user: User = Depends(require_roles("instructor", "admin", read_only=True)),
+    current_user: User = Depends(require_roles("admin", read_only=True)),
 ):
-    """Per-endpoint p95 latency, request count and success rate (percent).
+    """Admin-only per-endpoint p95 latency, request count and success rate (percent).
 
     Rows are hourly buckets, newest first. Only requests served by this
     process since it started are included.

@@ -2,13 +2,18 @@
 import { keepPreviousData, useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import type { Device } from "@/lib/devices";
+import { deviceApprovalStatus, deviceApprovalLabels, type Device } from "@/lib/devices";
 
 type Row = Device & { user_email?: string | null; user_name?: string | null };
 type Action = {
   id: string;
   method: "PATCH" | "DELETE";
-  updates?: { device_name?: string; is_trusted?: boolean; is_active?: boolean };
+  updates?: {
+    device_name?: string;
+    is_trusted?: boolean;
+    is_active?: boolean;
+    override_device_limit?: boolean;
+  };
 };
 const control =
   "rounded-lg border border-border bg-secondary/40 px-3 py-2 text-sm disabled:opacity-50";
@@ -25,17 +30,19 @@ export function DeviceApprovals({
   const [page, setPage] = useState(0);
   const [active, setActive] = useState(initialActive);
   const [trusted, setTrusted] = useState(initialTrusted);
+  const [approval, setApproval] = useState("all");
   const [userEmail, setUserEmail] = useState("");
   const [editing, setEditing] = useState<Row | null>(null);
   const [name, setName] = useState("");
   const qc = useQueryClient();
   const debouncedUserEmail = useDebouncedValue(userEmail);
   const devices = useQuery({
-    queryKey: ["admin-devices", userId, active, trusted, debouncedUserEmail, page],
+    queryKey: ["admin-devices", userId, active, trusted, debouncedUserEmail, page, approval],
     queryFn: ({ signal }) => {
       const params = new URLSearchParams({ limit: "25", offset: String(page * 25) });
       if (active !== "all") params.set("is_active", active);
       if (trusted !== "all") params.set("is_trusted", trusted);
+      if (approval !== "all") params.set("approval_status", approval);
       if (debouncedUserEmail.trim()) params.set("user_email", debouncedUserEmail.trim());
       return api.request<{ items: Row[]; total: number }>(`/devices/?${params}`, { signal });
     },
@@ -55,6 +62,7 @@ export function DeviceApprovals({
         qc.invalidateQueries({ queryKey: ["admin-devices"] }),
         qc.invalidateQueries({ queryKey: ["my-devices"] }),
         qc.invalidateQueries({ queryKey: ["admin-device-approval-count", userId] }),
+        qc.invalidateQueries({ queryKey: ["audit-logs"] }),
       ]);
     },
   });
@@ -90,14 +98,34 @@ export function DeviceApprovals({
           <select
             className={control}
             value={trusted}
+            aria-label="Filter device trust"
             onChange={(e) => {
               setTrusted(e.target.value);
               setPage(0);
             }}
           >
             <option value="all">All</option>
-            <option value="true">Approved</option>
+            <option value="true">Trusted</option>
             <option value="false">Untrusted</option>
+          </select>
+        </label>
+        <label>
+          Approval status{" "}
+          <select
+            className={control}
+            value={approval}
+            aria-label="Filter device approval status"
+            onChange={(event) => {
+              setApproval(event.target.value);
+              setActive("all");
+              setTrusted("all");
+              setPage(0);
+            }}
+          >
+            <option value="all">All</option>
+            <option value="pending">Pending approval</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected (device limit)</option>
           </select>
         </label>
         <input
@@ -134,161 +162,175 @@ export function DeviceApprovals({
               <th className="p-3">User</th>
               <th className="p-3">Device</th>
               <th className="p-3">Status</th>
-              <th className="p-3">Check-ins</th>
+              <th className="p-3">Trust</th>
               <th className="p-3">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {devices.data?.items.map((device) => (
-              <tr className="border-t border-border" key={device.id}>
-                <td className="p-3">
-                  <span className="block font-medium">{device.user_name || "Unknown user"}</span>
-                  <span className="block text-xs text-muted-foreground">{device.user_email}</span>
-                </td>
-                <td className="p-3">
-                  {editing?.id === device.id ? (
-                    <form
-                      className="flex flex-wrap items-center gap-2"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        if (update.isPending || !name.trim()) return;
-                        if (name.trim() === (device.device_name ?? "")) {
-                          setEditing(null);
-                          return;
-                        }
-                        update.mutate({
-                          id: device.id,
-                          method: "PATCH",
-                          updates: { device_name: name.trim() },
-                        });
-                      }}
-                    >
-                      <input
-                        aria-label="Device name"
-                        className={control}
-                        autoFocus
-                        onFocus={(event) => event.currentTarget.select()}
-                        required
-                        maxLength={255}
-                        disabled={update.isPending}
-                        value={name}
-                        onChange={(event) => setName(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape" && !update.isPending) {
-                            event.preventDefault();
+            {devices.data?.items.map((device) => {
+              const status = deviceApprovalStatus(device);
+              const rejected = status === "rejected";
+              const approveAndActivate = rejected || status === "inactive";
+              return (
+                <tr className="border-t border-border" key={device.id}>
+                  <td className="p-3">
+                    <span className="block font-medium">{device.user_name || "Unknown user"}</span>
+                    <span className="block text-xs text-muted-foreground">{device.user_email}</span>
+                  </td>
+                  <td className="p-3">
+                    {editing?.id === device.id ? (
+                      <form
+                        className="flex flex-wrap items-center gap-2"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (update.isPending || !name.trim()) return;
+                          if (name.trim() === (device.device_name ?? "")) {
                             setEditing(null);
+                            return;
                           }
+                          update.mutate({
+                            id: device.id,
+                            method: "PATCH",
+                            updates: { device_name: name.trim() },
+                          });
                         }}
-                      />
-                      <button className={control} disabled={update.isPending || !name.trim()}>
-                        Save
-                      </button>
+                      >
+                        <input
+                          aria-label="Device name"
+                          className={control}
+                          autoFocus
+                          onFocus={(event) => event.currentTarget.select()}
+                          required
+                          maxLength={255}
+                          disabled={update.isPending}
+                          value={name}
+                          onChange={(event) => setName(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape" && !update.isPending) {
+                              event.preventDefault();
+                              setEditing(null);
+                            }
+                          }}
+                        />
+                        <button className={control} disabled={update.isPending || !name.trim()}>
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className={control}
+                          disabled={update.isPending}
+                          onClick={() => setEditing(null)}
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
                       <button
                         type="button"
-                        className={control}
+                        className="rounded text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                        title="Double-click to edit; press Enter or F2 when focused"
+                        aria-label={`Edit device name: ${device.device_name || "Browser"}`}
                         disabled={update.isPending}
-                        onClick={() => setEditing(null)}
-                      >
-                        Cancel
-                      </button>
-                    </form>
-                  ) : (
-                    <button
-                      type="button"
-                      className="rounded text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                      title="Double-click to edit; press Enter or F2 when focused"
-                      aria-label={`Edit device name: ${device.device_name || "Browser"}`}
-                      disabled={update.isPending}
-                      onDoubleClick={() => {
-                        update.reset();
-                        setEditing(device);
-                        setName(device.device_name ?? "");
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === "F2") {
-                          event.preventDefault();
+                        onDoubleClick={() => {
                           update.reset();
                           setEditing(device);
                           setName(device.device_name ?? "");
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === "F2") {
+                            event.preventDefault();
+                            update.reset();
+                            setEditing(device);
+                            setName(device.device_name ?? "");
+                          }
+                        }}
+                      >
+                        {device.device_name || "Browser"}
+                      </button>
+                    )}
+                  </td>
+                  <td className="p-3">
+                    <span
+                      className={`inline-block whitespace-nowrap rounded-full px-2 py-1 text-xs ${
+                        rejected
+                          ? "bg-destructive/10 text-destructive"
+                          : !device.is_active
+                            ? "bg-secondary text-muted-foreground"
+                            : device.is_trusted
+                              ? "bg-accent/10 text-accent"
+                              : "bg-orange-400/10 text-orange-400"
+                      }`}
+                    >
+                      {deviceApprovalLabels[status]}
+                    </span>
+                    {device.shared_browser && (
+                      <strong className="block text-destructive">Shared browser</strong>
+                    )}
+                  </td>
+                  <td className="p-3">{device.is_trusted ? "Trusted" : "Untrusted"}</td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className={`${control} ${device.is_trusted ? "text-orange-400" : "text-accent"}`}
+                        disabled={(!device.is_active && !approveAndActivate) || update.isPending}
+                        onClick={() =>
+                          confirm(
+                            device,
+                            approveAndActivate
+                              ? "Approve and activate this extra device, allowing the account to exceed two active devices?"
+                              : device.is_trusted
+                                ? "Revoke trust for this device?"
+                                : "Have you independently verified this user and device? Approve this device?",
+                            {
+                              method: "PATCH",
+                              updates: approveAndActivate
+                                ? { is_trusted: true, override_device_limit: true }
+                                : { is_trusted: !device.is_trusted },
+                            },
+                          )
                         }
-                      }}
-                    >
-                      {device.device_name || "Browser"}
-                    </button>
-                  )}
-                  <small className="block text-muted-foreground">
-                    Approval reference:{" "}
-                    {(device.browser_fingerprint ?? device.device_fingerprint).slice(0, 16)}
-                  </small>
-                </td>
-                <td className="p-3">
-                  <span
-                    className={`inline-block whitespace-nowrap rounded-full px-2 py-1 text-xs ${
-                      !device.is_active
-                        ? "bg-secondary text-muted-foreground"
-                        : device.is_trusted
-                          ? "bg-accent/10 text-accent"
-                          : "bg-orange-400/10 text-orange-400"
-                    }`}
-                  >
-                    {!device.is_active ? "Inactive" : device.is_trusted ? "Approved" : "Untrusted"}
-                  </span>
-                  {device.shared_browser && (
-                    <strong className="block text-destructive">
-                      Shared browser · check-ins flagged
-                    </strong>
-                  )}
-                </td>
-                <td className="p-3">{device.total_checkins}</td>
-                <td className="p-3">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className={`${control} ${device.is_trusted ? "text-orange-400" : "text-accent"}`}
-                      disabled={!device.is_active || update.isPending}
-                      onClick={() =>
-                        confirm(
-                          device,
-                          device.is_trusted
-                            ? "Revoke trust for this device?"
-                            : "Have you independently verified this user and device? Approve this device?",
-                          { method: "PATCH", updates: { is_trusted: !device.is_trusted } },
-                        )
-                      }
-                    >
-                      {device.is_trusted ? "Revoke trust" : "Approve device"}
-                    </button>
-                    <button
-                      className={control}
-                      disabled={update.isPending}
-                      onClick={() =>
-                        confirm(
-                          device,
-                          device.is_active
-                            ? "Deactivate this device? Its trust setting will be retained."
-                            : "Reactivate this device with its existing trust setting?",
-                          { method: "PATCH", updates: { is_active: !device.is_active } },
-                        )
-                      }
-                    >
-                      {device.is_active ? "Deactivate" : "Reactivate"}
-                    </button>
-                    <button
-                      className={`${control} text-destructive`}
-                      disabled={update.isPending}
-                      onClick={() =>
-                        confirm(
-                          device,
-                          "Remove this device from the registered device list and revoke its trust? Check-in history will be retained.",
-                          { method: "DELETE" },
-                        )
-                      }
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                      >
+                        {approveAndActivate
+                          ? "Approve extra device"
+                          : device.is_trusted
+                            ? "Revoke trust"
+                            : "Approve device"}
+                      </button>
+                      {!rejected && (
+                        <button
+                          className={control}
+                          disabled={update.isPending}
+                          onClick={() =>
+                            confirm(
+                              device,
+                              device.is_active
+                                ? "Deactivate this device? Its trust setting will be retained."
+                                : "Reactivate this device with its existing trust setting?",
+                              { method: "PATCH", updates: { is_active: !device.is_active } },
+                            )
+                          }
+                        >
+                          {device.is_active ? "Deactivate" : "Reactivate"}
+                        </button>
+                      )}
+                      <button
+                        className={`${control} text-destructive`}
+                        disabled={update.isPending}
+                        onClick={() =>
+                          confirm(
+                            device,
+                            "Remove this device from the registered device list and revoke its trust? Check-in history will be retained.",
+                            { method: "DELETE" },
+                          )
+                        }
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

@@ -1,5 +1,5 @@
 import { api, type AppRole } from "./api";
-import type { CourseRow } from "./attendance";
+import type { ApiSession, CourseRow } from "./attendance";
 
 export type AdminUser = {
   id: string;
@@ -79,15 +79,47 @@ export const unassignTA = (courseId: string, userId: string) =>
     method: "DELETE",
   });
 
+export async function fetchCourseSessions(courseId: string, signal?: AbortSignal) {
+  const items: ApiSession[] = [];
+  while (true) {
+    const params = new URLSearchParams({
+      course_id: courseId,
+      limit: "100",
+      offset: String(items.length),
+    });
+    const page = await api.request<Page<ApiSession>>(`/sessions/?${params}`, {
+      signal: signal ?? null,
+    });
+    items.push(...page.items);
+    if (!page.items.length || items.length >= page.total) return items;
+  }
+}
+
+export type TASessionPage = {
+  items: { session_id: string }[];
+  total: number;
+};
+
+const taSessionsPath = (courseId: string, userId: string) =>
+  `/admin/courses/${encodeURIComponent(courseId)}/tas/${encodeURIComponent(userId)}/sessions`;
+
+export const fetchTASessions = (courseId: string, userId: string, signal?: AbortSignal) =>
+  api.request<TASessionPage>(taSessionsPath(courseId, userId), { signal: signal ?? null });
+
+export const assignTASessions = (courseId: string, userId: string, sessionIds: string[]) =>
+  api.request<TASessionPage & { assigned: string[]; already_assigned: string[] }>(
+    taSessionsPath(courseId, userId),
+    { method: "POST", body: JSON.stringify({ session_ids: sessionIds }) },
+  );
+
 export const updateAdminUser = (userId: string, updates: { role?: AppRole; is_active?: boolean }) =>
   api.request(`/users/${encodeURIComponent(userId)}`, {
     method: "PATCH",
     body: JSON.stringify(updates),
   });
 
-// The device management endpoint uses active + untrusted as its approvable
-// rule; removed registrations are excluded by the backend's managed_devices filter.
+// Module 2 distinguishes active pending approvals from rejected device-limit requests.
 export const fetchPendingDeviceCount = (signal?: AbortSignal) =>
-  api.request<{ total: number }>("/devices/?limit=1&offset=0&is_active=true&is_trusted=false", {
+  api.request<{ total: number }>("/devices/?limit=1&offset=0&approval_status=pending", {
     signal: signal ?? null,
   });

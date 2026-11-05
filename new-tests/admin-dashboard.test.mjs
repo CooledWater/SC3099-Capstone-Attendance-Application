@@ -30,13 +30,16 @@ function harness({
   request = async () => ({}),
   query = () => [],
   queryState = () => ({}),
+  mutationState = {},
   confirm = true,
 } = {}) {
   const states = [],
     cache = new Map(),
     calls = [],
     mutations = [],
-    invalidations = [];
+    invalidations = [],
+    queries = [],
+    confirmations = [];
   let cursor = 0;
   function useState(initial) {
     const i = cursor++;
@@ -56,7 +59,9 @@ function harness({
     useRef: (value) => ({ current: value }),
   };
   const queryHooks = {
-    useQuery: (options) => ({
+    useQuery: (options) => {
+      queries.push(options);
+      return ({
       data: query(options.queryKey),
       isSuccess: true,
       isPending: false,
@@ -64,7 +69,7 @@ function harness({
       isError: false,
       refetch() {},
       ...queryState(options.queryKey),
-    }),
+    }); },
     useQueryClient: () => ({
       invalidateQueries: async (options) => {
         invalidations.push(options.queryKey);
@@ -75,6 +80,7 @@ function harness({
       isError: false,
       isSuccess: false,
       reset() {},
+      ...mutationState,
       mutate: (value) => {
         const pending = Promise.resolve()
           .then(() => options.mutationFn(value))
@@ -96,7 +102,7 @@ function harness({
       Date,
       URLSearchParams,
       TextEncoder,
-      window: { confirm: () => confirm },
+      window: { confirm: (message) => { confirmations.push(message); return confirm; } },
       require(name) {
         if (name === "react") return hooks;
         if (name === "react/jsx-runtime") return jsx;
@@ -109,6 +115,7 @@ function harness({
         if (name.endsWith("/session-permissions"))
           return load("lib/session-permissions.ts");
         if (name.endsWith("/admin")) return load("lib/admin.ts");
+        if (name.endsWith("/devices")) return load("lib/devices.ts");
         if (name.endsWith("/password-policy"))
           return load("lib/password-policy.ts");
         if (name.endsWith("/time") || name === "./time")
@@ -136,6 +143,8 @@ function harness({
     load,
     calls,
     invalidations,
+    queries,
+    confirmations,
     reset() {
       states.length = 0;
     },
@@ -172,6 +181,97 @@ const click = (tree, label) =>
     (node) => node.type === "button" && text(node) === label,
   ).props.onClick();
 const prevent = { preventDefault() {} };
+
+test("TA session API helpers paginate within the course and encode bulk assignment identifiers", async () => {
+  const signal = new AbortController().signal;
+  const h = harness({ request: async (path) => path.startsWith("/sessions/")
+    ? { items: [{ id: path.includes("offset=0") ? "s1" : "s2" }], total: 2 }
+    : { items: [], total: 0 } });
+  const api = h.load("lib/admin.ts");
+  assert.equal((await api.fetchCourseSessions("course /", signal)).length, 2);
+  for (const [path, options] of h.calls) {
+    assert.equal(new URLSearchParams(path.split("?")[1]).get("course_id"), "course /");
+    assert.equal(options.signal, signal);
+  }
+  await api.fetchTASessions("course /", "ta /", signal);
+  await api.assignTASessions("course /", "ta /", ["s1", "s2"]);
+  assert.equal(h.calls[2][0], "/admin/courses/course%20%2F/tas/ta%20%2F/sessions");
+  assert.equal(h.calls[2][1].signal, signal);
+  assert.equal(h.calls[3][1].method, "POST");
+  assert.deepEqual(JSON.parse(h.calls[3][1].body), { session_ids: ["s1", "s2"] });
+});
+
+const pickerProps = { courseId: "A", taId: "ta", taName: "Assistant", userId: "admin", disabled: false };
+const pickerSession = (id, course_id = "A") => ({ id, course_id, name: id, scheduled_start: "2026-11-05T02:00:00Z", status: "scheduled" });
+function pickerHarness(options = {}) {
+  const h = harness({
+    query: key => key[0] === "admin-course-sessions"
+      ? [pickerSession("assigned"), pickerSession("new1"), pickerSession("new2"), pickerSession("foreign", "B")]
+      : { items: [{ session_id: "assigned" }] },
+    ...options,
+  });
+  const component = h.load("components/dashboard/TASessionPicker.tsx").TASessionPicker;
+  return { h, render: (props = pickerProps) => h.render(component, props) };
+}
+const checkboxes = tree => nodes(tree).filter(node => node.type === "input" && node.props.type === "checkbox");
+
+test("TA picker preserves existing assignments and submits only selected sessions from the course", async () => {
+  const { h, render } = pickerHarness();
+  let tree = render();
+  assert.equal(checkboxes(tree).length, 3);
+  assert.equal(checkboxes(tree)[0].props.checked, true);
+  assert.equal(checkboxes(tree)[0].props.disabled, true);
+  checkboxes(tree)[1].props.onChange({ target: { checked: true } });
+  tree = render();
+  checkboxes(tree)[2].props.onChange({ target: { checked: true } });
+  tree = render();
+  checkboxes(tree)[1].props.onChange({ target: { checked: false } });
+  tree = render();
+  click(tree, "Assign selected (1)");
+  await h.settle();
+  assert.deepEqual(JSON.parse(h.calls[0][1].body), { session_ids: ["new2"] });
+  assert.equal(h.calls[0][0], "/admin/courses/A/tas/ta/sessions");
+  assert.equal(find(render(), node => node.type === "button" && text(node) === "Assign selected (0)").props.disabled, true);
+  assert.ok(h.invalidations.some(key => key[0] === "admin-ta-sessions" && key[2] === "A" && key[3] === "ta"));
+  assert.ok(h.invalidations.some(key => key[0] === "audit-logs"));
+});
+
+test("TA picker blocks empty, unavailable, inactive and pending submissions and shows retryable errors", () => {
+  const cases = [
+    {},
+    { queryState: () => ({ isPending: true, isSuccess: false }) },
+    { queryState: () => ({ isError: true, isSuccess: false }) },
+    { mutationState: { isPending: true } },
+  ];
+  for (const options of cases) {
+    const { h, render } = pickerHarness(options);
+    const tree = render();
+    const submit = find(tree, node => node.type === "button" && /Assign selected|Assigning/.test(text(node)));
+    assert.equal(submit.props.disabled, true);
+    submit.props.onClick();
+    assert.equal(h.calls.length, 0);
+    if (options.queryState?.().isError) assert.match(text(tree), /Could not load.*Retry/);
+  }
+  const { render } = pickerHarness();
+  assert.equal(find(render({ ...pickerProps, disabled: true }), node => node.type === "button" && text(node) === "Assign sessions").props.disabled, true);
+});
+
+test("TA picker retains selected sessions after failure and caps new assignments at 200", () => {
+  const { render } = pickerHarness({ mutationState: { isError: true, error: new Error("TA is no longer assigned to this course") } });
+  let tree = render();
+  checkboxes(tree)[1].props.onChange({ target: { checked: true } });
+  tree = render();
+  assert.equal(checkboxes(tree)[1].props.checked, true);
+  assert.match(text(tree), /TA is no longer assigned to this course/);
+  const limited = pickerHarness({ query: key => key[0] === "admin-course-sessions"
+    ? Array.from({ length: 201 }, (_, i) => pickerSession(`s${i}`)) : { items: [] } });
+  const choices = checkboxes(limited.render());
+  for (let i = 0; i < 200; i++) choices[i].props.onChange({ target: { checked: true } });
+  tree = limited.render();
+  assert.equal(checkboxes(tree)[200].props.disabled, true);
+  assert.equal(checkboxes(tree)[0].props.disabled, false);
+  assert.equal(find(tree, node => node.type === "button" && text(node) === "Assign selected (200)").props.disabled, false);
+});
 
 test("admin session permission includes other owners; missing identity and read-only remain denied", () => {
   const { canManageSession } = harness().load("lib/session-permissions.ts");
@@ -523,6 +623,122 @@ test("device controls submit rename, trust, activation and removal independently
   assert.deepEqual(JSON.parse(h.calls[1][1].body), { is_active: false });
   assert.equal(h.calls[2][1].method, "DELETE");
   assert.deepEqual(JSON.parse(h.calls[3][1].body), { device_name: "New" });
+});
+
+test("rejected extra device approval explicitly activates a backend limit exception", async () => {
+  const device = { id: "extra/device", device_fingerprint: "extra", device_name: "Third browser",
+    is_active: false, is_trusted: false, approval_status: "rejected" };
+  const h = harness({ query: () => ({ items: [device], total: 1 }) });
+  const Component = h.load("components/dashboard/DeviceApprovals.tsx").DeviceApprovals;
+  const tree = h.render(Component, { userId: "admin" });
+  assert.match(text(tree), /Rejected \(device limit\)/);
+  assert.ok(nodes(tree).some(node => node.type === "td" && text(node) === "Untrusted"));
+  assert.doesNotMatch(text(tree), /Trust score:|Login allowed|Approval reference:/);
+  const approve = find(tree, node => node.type === "button" && text(node) === "Approve extra device");
+  assert.equal(approve.props.disabled, false);
+  assert.equal(nodes(tree).some(node => node.type === "button" && text(node) === "Reactivate"), false);
+  approve.props.onClick();
+  await h.settle();
+  assert.match(h.confirmations[0], /exceed two active devices/);
+  assert.equal(h.calls[0][0], "/devices/extra%2Fdevice");
+  assert.deepEqual(JSON.parse(h.calls[0][1].body), { is_trusted: true, override_device_limit: true });
+  assert.ok(h.invalidations.some(key => key[0] === "admin-device-approval-count"));
+  assert.ok(h.invalidations.some(key => key[0] === "audit-logs"));
+});
+
+test("inactive devices offer explicit extra-device approval when normal reactivation may exceed the limit", async () => {
+  for (const trusted of [false, true]) {
+    const device = { id: "inactive", device_name: "Laptop", device_fingerprint: "fp",
+      is_active: false, is_trusted: trusted, approval_status: "inactive" };
+    const h = harness({ query: () => ({ items: [device], total: 1 }) });
+    const Component = h.load("components/dashboard/DeviceApprovals.tsx").DeviceApprovals;
+    const tree = h.render(Component, { userId: "admin" });
+    const approve = find(tree, node => node.type === "button" && text(node) === "Approve extra device");
+    assert.equal(approve.props.disabled, false);
+    assert.ok(nodes(tree).some(node => node.type === "button" && text(node) === "Reactivate"));
+    approve.props.onClick();
+    await h.settle();
+    assert.match(h.confirmations[0], /exceed two active devices/);
+    assert.deepEqual(JSON.parse(h.calls[0][1].body), { is_trusted: true, override_device_limit: true });
+  }
+});
+
+test("admin device table uses trusted/untrusted labels and omits check-in details and references", async () => {
+  const devices = [
+    { id: "low", device_name: "Second", device_fingerprint: "test_device_a74c", is_active: true, is_trusted: false, trust_score: "low", approval_status: "pending", total_checkins: 982 },
+    { id: "high", device_name: "First", device_fingerprint: "hidden-reference", is_active: true, is_trusted: true, trust_score: "high", approval_status: "approved", total_checkins: 673 },
+  ];
+  const h = harness({ query: () => ({ items: devices, total: 2 }) });
+  const Component = h.load("components/dashboard/DeviceApprovals.tsx").DeviceApprovals;
+  let tree = h.render(Component, { userId: "admin" });
+  assert.deepEqual(nodes(tree).filter(node => node.type === "th").map(text), ["User", "Device", "Status", "Trust", "Actions"]);
+  const rows = nodes(tree).filter(node => node.type === "tr" && nodes(node).some(child => child.type === "td"));
+  assert.equal(nodes(rows[0]).filter(node => node.type === "td").map(text)[3], "Untrusted");
+  assert.equal(nodes(rows[1]).filter(node => node.type === "td").map(text)[3], "Trusted");
+  assert.doesNotMatch(text(tree), /Trust score|Login and check-in|Login allowed|Approval reference|test_device_a74c|hidden-reference|982|673/);
+  const filter = find(tree, node => node.props?.["aria-label"] === "Filter device trust");
+  assert.deepEqual(nodes(filter).filter(node => node.type === "option").map(text), ["All", "Trusted", "Untrusted"]);
+  for (const value of ["true", "false"]) {
+    filter.props.onChange({ target: { value } });
+    tree = h.render(Component, { userId: "admin" });
+    await h.queries.at(-1).queryFn({ signal: undefined });
+    assert.equal(new URLSearchParams(h.calls.at(-1)[0].split("?")[1]).get("is_trusted"), value);
+  }
+});
+
+test("extra-device exceptions require confirmation and block double submission while pending", async () => {
+  const device = { id: "d", device_fingerprint: "fp", is_active: false, is_trusted: false, approval_status: "rejected" };
+  const h = harness({ confirm: false, query: () => ({ items: [device], total: 1 }) });
+  const Component = h.load("components/dashboard/DeviceApprovals.tsx").DeviceApprovals;
+  click(h.render(Component, { userId: "admin" }), "Approve extra device");
+  await h.settle();
+  assert.equal(h.calls.length, 0);
+  const pending = harness({ mutationState: { isPending: true }, query: () => ({ items: [device], total: 1 }) });
+  const pendingTree = pending.render(pending.load("components/dashboard/DeviceApprovals.tsx").DeviceApprovals, { userId: "admin" });
+  assert.equal(find(pendingTree, node => node.type === "button" && text(node) === "Approve extra device").props.disabled, true);
+});
+
+test("approval filters query backend status and clear conflicting active and trust filters", async () => {
+  const h = harness({ query: () => ({ items: [], total: 0 }) });
+  const Component = h.load("components/dashboard/DeviceApprovals.tsx").DeviceApprovals;
+  const props = { userId: "admin", initialActive: "true", initialTrusted: "false" };
+  const tree = h.render(Component, props);
+  find(tree, node => node.props?.["aria-label"] === "Filter device approval status").props.onChange({ target: { value: "rejected" } });
+  h.render(Component, props);
+  const signal = new AbortController().signal;
+  await h.queries.at(-1).queryFn({ signal });
+  const [path, init] = h.calls[0];
+  const params = new URLSearchParams(path.split("?")[1]);
+  assert.equal(params.get("approval_status"), "rejected");
+  assert.equal(params.get("offset"), "0");
+  assert.equal(params.has("is_active"), false);
+  assert.equal(params.has("is_trusted"), false);
+  assert.equal(init.signal, signal);
+});
+
+test("My devices uses backend approval states and explains pending versus rejected access", () => {
+  const devices = [
+    { id: "first", device_fingerprint: "one", is_active: true, is_trusted: true, approval_status: "approved" },
+    { id: "second", device_fingerprint: "two", is_active: true, is_trusted: false, approval_status: "pending" },
+    { id: "third", device_fingerprint: "three", is_active: false, is_trusted: false, approval_status: "rejected" },
+  ];
+  const h = harness({ query: key => key[0] === "my-devices" ? devices : "one" });
+  const tree = h.render(h.load("components/dashboard/MyDevicesPanel.tsx").MyDevicesPanel, {});
+  const content = text(tree);
+  assert.match(content, /Pending approval/);
+  assert.match(content, /Rejected \(device limit\)/);
+  assert.match(content, /Login and check-in allowed/);
+  assert.match(content, /Login allowed\. Check-in blocked/);
+  assert.match(content, /Trust scoreHigh/);
+  assert.match(content, /Trust scoreLow/);
+});
+
+test("approval KPI counts backend pending devices separately from rejected requests", async () => {
+  const h = harness({ request: async () => ({ total: 2 }) });
+  const signal = new AbortController().signal;
+  assert.equal((await h.load("lib/admin.ts").fetchPendingDeviceCount(signal)).total, 2);
+  assert.equal(new URLSearchParams(h.calls[0][0].split("?")[1]).get("approval_status"), "pending");
+  assert.equal(h.calls[0][1].signal, signal);
 });
 
 test("cancelled device confirmations never send a mutation", async () => {

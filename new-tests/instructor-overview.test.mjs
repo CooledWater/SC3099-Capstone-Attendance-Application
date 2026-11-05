@@ -18,7 +18,7 @@ function elements(node) {
   return [node, ...elements(node.props?.children)];
 }
 
-function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: ["low", "medium", "high"].map(key => ({ key, count: 0 })) }, extraProps = {}) {
+function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: ["low", "medium", "high", "critical"].map(key => ({ key, count: 0 })) }, extraProps = {}) {
   const values = [];
   let cursor = 0, query, courseQuery, requestOptions;
   const context = { exports: {}, require(name) {
@@ -85,11 +85,11 @@ test("admin course drilldown keeps its reporting week and hides monthly controls
 });
 
 test("risk histogram renders API bands directly without numerical bins", () => {
-  const h = harness({}, { scored_count: 12, bands: [
-    { key: "low", count: 7 }, { key: "medium", count: 3 }, { key: "high", count: 2 },
+  const h = harness({}, { scored_count: 13, bands: [
+    { key: "low", count: 7 }, { key: "medium", count: 3 }, { key: "high", count: 2 }, { key: "critical", count: 1 },
   ] });
   const titles = elements(h.render()).map(node => node.props?.title).filter(Boolean);
-  assert.deepEqual(titles, ["Low (<0.3): 7 check-ins", "Medium (0.3–<0.5): 3 check-ins", "High (≥0.5): 2 check-ins"]);
+  assert.deepEqual(titles, ["Low (<0.3): 7 check-ins", "Medium (0.3–<0.5): 3 check-ins", "High (0.5–<0.7): 2 check-ins", "Critical (≥0.7): 1 check-ins"]);
 });
 
 test("cleared or invalid period input preserves the selected monthly and weekly ranges", () => {

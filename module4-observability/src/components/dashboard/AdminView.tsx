@@ -332,7 +332,7 @@ export function AdminView({ userId }: { userId: string }) {
         />
       )}
       {tab === "audit" && <AuditLogs />}
-      {tab === "metrics" && <MetricsPanel showGrafanaLink />}
+      {tab === "metrics" && <MetricsPanel />}
     </>
   );
 }

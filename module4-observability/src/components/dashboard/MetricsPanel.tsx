@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { KpiCard } from "./KpiCard";
-import type { CheckInRow } from "./AttendanceTable";
 
 const grafanaUrl = import.meta.env["VITE_GRAFANA_URL"] ?? "http://localhost:3001";
 
@@ -15,12 +14,7 @@ type Metric = {
   success_rate: number;
 };
 
-export function MetricsPanel({
-  showGrafanaLink = false,
-}: {
-  rows?: CheckInRow[];
-  showGrafanaLink?: boolean;
-} = {}) {
+export function MetricsPanel() {
   const q = useQuery({
     queryKey: ["api-metrics"],
     refetchInterval: 30000,
@@ -30,13 +24,25 @@ export function MetricsPanel({
     },
   });
 
+  const latency = useQuery({
+    queryKey: ["api-latency", 1],
+    queryFn: () => api.request<{ p95_ms: number | null }>("/metrics/latency"),
+    refetchInterval: 30000,
+  });
+  const p95 = latency.data?.p95_ms;
+  const requestRate = useQuery({
+    queryKey: ["api-request-rate", 1],
+    queryFn: () => api.request<{ requests_per_hour: number | null }>("/metrics/request-rate"),
+    refetchInterval: 30000,
+  });
+  const hourlyRate = requestRate.data?.requests_per_hour;
+  const errorRateQuery = useQuery({
+    queryKey: ["api-error-rate", 1],
+    queryFn: () => api.request<{ error_rate_percent: number | null }>("/metrics/error-rate"),
+    refetchInterval: 30000,
+  });
+  const errorRate = errorRateQuery.data?.error_rate_percent;
   const metrics = q.data ?? [];
-  const p95 = metrics.length
-    ? Math.round(metrics.reduce((s, m) => s + m.p95_ms, 0) / metrics.length)
-    : 0;
-  const requests = metrics.reduce((s, m) => s + m.request_count, 0);
-  const errors = metrics.reduce((s, m) => s + m.error_count, 0);
-  const errorRate = requests ? (errors / requests) * 100 : 0;
 
   const byEndpoint = [...new Set(metrics.map((m) => m.endpoint))].map((e) => {
     const list = metrics.filter((m) => m.endpoint === e);
@@ -53,41 +59,99 @@ export function MetricsPanel({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <KpiCard
           label="API p95 latency"
-          value={`${p95} ms`}
-          note="across all endpoints, last 12h"
-          tone={p95 > 400 ? "warning" : "accent"}
-          progress={Math.min(100, (p95 / 600) * 100)}
+          value={
+            latency.isError
+              ? "Unavailable"
+              : latency.isPending
+                ? "Loading…"
+                : p95 == null
+                  ? "No data"
+                  : `${Math.round(p95)} ms`
+          }
+          note="across all endpoints, last 1h"
+          tone={p95 != null && p95 > 400 ? "warning" : "accent"}
         />
+        {latency.isError && (
+          <p role="alert" className="lg:col-span-12 text-sm text-destructive">
+            Could not load latency.{" "}
+            <button type="button" className="underline" onClick={() => void latency.refetch()}>
+              Retry
+            </button>
+          </p>
+        )}
         <KpiCard
           label="Request rate"
-          value={`${Math.round(requests / 12)}/h`}
-          note={`${requests} requests in 12 hours`}
+          value={
+            requestRate.isError
+              ? "Unavailable"
+              : requestRate.isPending
+                ? "Loading…"
+                : hourlyRate == null
+                  ? "No data"
+                  : `${Math.round(hourlyRate)}/h`
+          }
+          note="across all endpoints, last 1h"
           tone="brand"
           bars={[40, 62, 51, 78, 66, 100]}
         />
+        {requestRate.isError && (
+          <p role="alert" className="lg:col-span-12 text-sm text-destructive">
+            Could not load request rate.{" "}
+            <button type="button" className="underline" onClick={() => void requestRate.refetch()}>
+              Retry
+            </button>
+          </p>
+        )}
         <KpiCard
           label="Error rate"
-          value={`${errorRate.toFixed(1)}%`}
-          note={`${errors} 5xx server errors`}
-          tone={errorRate >= 3 ? "warning" : "accent"}
-          progress={Math.min(100, errorRate * 10)}
+          value={
+            errorRateQuery.isError
+              ? "Unavailable"
+              : errorRateQuery.isPending
+                ? "Loading…"
+                : errorRate == null
+                  ? "No data"
+                  : `${errorRate.toFixed(1)}%`
+          }
+          note="5xx errors across all endpoints, last 1h"
+          tone={errorRate != null && errorRate >= 3 ? "warning" : "accent"}
+          progress={Math.min(100, (errorRate ?? 0) * 10)}
         />
+        {errorRateQuery.isError && (
+          <p role="alert" className="lg:col-span-12 text-sm text-destructive">
+            Could not load error rate.{" "}
+            <button
+              type="button"
+              className="underline"
+              onClick={() => void errorRateQuery.refetch()}
+            >
+              Retry
+            </button>
+          </p>
+        )}
       </div>
+
+      <section className="mt-4 overflow-hidden rounded-2xl border border-border bg-glass">
+        <h2 className="px-5 pt-5 font-display text-sm font-medium text-card-foreground">
+          Technical monitoring
+        </h2>
+        <p className="px-5 py-3 text-xs text-muted-foreground">
+          Live graphs from Prometheus. Sign in to Grafana below if prompted.
+        </p>
+        <iframe
+          title="Grafana technical monitoring graphs"
+          src={`${grafanaUrl.replace(/\/$/, "")}/d/saiv-technical/saiv-technical?orgId=1&from=now-12h&to=now&refresh=15s&theme=dark&kiosk`}
+          className="h-[1050px] w-full border-0 md:h-[850px]"
+          loading="lazy"
+        />
+      </section>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
         <div className="animate-rise rounded-2xl border border-border bg-glass p-5 lg:col-span-12">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="font-display text-sm font-medium text-card-foreground">Endpoint metrics</p>
-            {showGrafanaLink && (
-              <a
-                href={`${grafanaUrl}/d/saiv-technical/saiv-technical?kiosk=1`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-primary underline-offset-4 hover:underline"
-              >
-                Open Grafana technical dashboard
-              </a>
-            )}
+            <p className="font-display text-sm font-medium text-card-foreground">
+              Endpoint metrics
+            </p>
           </div>
           <table className="mt-3 w-full text-left text-sm">
             <thead>
@@ -124,7 +188,6 @@ export function MetricsPanel({
           </table>
         </div>
       </div>
-
     </>
   );
 }

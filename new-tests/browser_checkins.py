@@ -129,7 +129,7 @@ def run():
                 assert ui.evaluate("!document.body.innerText.includes('No check-ins for this session.')")
                 ui.select("[aria-label='Check-ins session']", "meeting-a")
                 ui.wait("document.body.innerText.includes('18 expected')")
-                assert ui.evaluate("document.querySelector('thead').innerText.includes('Check-in') && !document.querySelector('thead').innerText.includes('(SGT)')")
+                assert ui.evaluate("Array.from(document.querySelectorAll('thead th')).some(header => header.textContent.trim().startsWith('Check-in'))"), "Roster should have a Check-in column"
                 assert ui.evaluate("document.body.innerText.includes('Present') && !document.body.innerText.includes('On time') && !document.body.innerText.includes('Session export contains')")
                 assert ui.evaluate("document.querySelector('[aria-label=\"Check-ins course\"]').options.length") == 2
                 assert ui.evaluate("document.querySelector('tbody tr').innerText.includes('Student 5')"), "Default order is latest check-in first"

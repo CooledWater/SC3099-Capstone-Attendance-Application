@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { TASessionPicker } from "./TASessionPicker";
 import {
   assignTA,
   fetchAdminCourses,
@@ -298,7 +299,7 @@ function CourseStaff({ course, userId }: { course: AdminCourse; userId: string }
       <div className="space-y-3 border-t border-border pt-4">
         <h3 className="font-medium">Teaching assistants</h3>
         <p className="text-sm text-muted-foreground">
-          Assignments grant access to this course’s sessions and check-ins.
+          Assign TAs to this course, then select the sessions they can access.
         </p>
         {assignments.isPending && <p role="status">Loading assignments…</p>}
         {assignments.isError && (
@@ -318,6 +319,13 @@ function CourseStaff({ course, userId }: { course: AdminCourse; userId: string }
               {ta.full_name} · {ta.email}
               {!ta.is_active && " (inactive)"}
             </span>
+            <TASessionPicker
+              courseId={course.id}
+              taId={ta.user_id}
+              taName={ta.full_name}
+              userId={userId}
+              disabled={pending || !ta.is_active}
+            />
             <button
               className={button}
               disabled={pending}

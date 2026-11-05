@@ -35,7 +35,7 @@ type OverviewData = {
   };
   risk_distribution: {
     scored_count: number;
-    bands: Array<{ key: "low" | "medium" | "high"; count: number }>;
+    bands: Array<{ key: "low" | "medium" | "high" | "critical"; count: number }>;
   };
   trend: Array<{
     start: string;
@@ -357,7 +357,8 @@ export function InstructorOverview({
   const bandLabels = {
     low: { label: "Low", range: "<0.3" },
     medium: { label: "Medium", range: "0.3–<0.5" },
-    high: { label: "High", range: "≥0.5" },
+    high: { label: "High", range: "0.5–<0.7" },
+    critical: { label: "Critical", range: "≥0.7" },
   };
   const riskBands = data.risk_distribution.bands.map((item) => ({
     ...bandLabels[item.key],
