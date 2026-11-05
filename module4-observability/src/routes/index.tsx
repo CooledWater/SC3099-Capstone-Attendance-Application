@@ -34,12 +34,12 @@ const headline = {
   student: {
     eyebrow: "My attendance",
     title: "Your check-in history",
-    blurb: "Everything recorded against your account.",
+    blurb: "",
   },
   ta: {
     eyebrow: "Assistant console",
-    title: "Sessions you assist",
-    blurb: "Check-ins for the courses you support.",
+    title: "TA overview",
+    blurb: "",
   },
   instructor: {
     eyebrow: "Attendance console",

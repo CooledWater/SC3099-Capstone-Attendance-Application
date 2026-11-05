@@ -175,9 +175,9 @@ export function CourseHistory({ rows, initialCourseId = "all", initialStatuses =
           <button type="button" className="ml-2 underline" onClick={() => { setStatuses([]); setPage(0); }}>Clear status filters</button>
         </p>}
         {history.isError && <p role="alert" className="mt-3 text-sm text-destructive">Could not load check-in history. <button type="button" className="underline" onClick={() => void history.refetch()}>Retry</button></p>}
-        <div className="mt-4 overflow-x-auto" aria-busy={updating}>
+        <div className="mt-4 max-h-[55vh] overflow-auto" role="region" aria-label="Check-in history" tabIndex={0} aria-busy={updating}>
           <table className="w-full min-w-[650px] text-left text-sm">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-card">
               <tr className="text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="pb-2 font-medium">Course</th>
                 <th className="pb-2 font-medium">Session time</th>
