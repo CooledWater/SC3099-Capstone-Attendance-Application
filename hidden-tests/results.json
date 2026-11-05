@@ -1,0 +1,1235 @@
+{
+  "assessment_date": "2026-11-05",
+  "timezone": "Asia/Singapore",
+  "source_revision": "fdd5d0820fbadf14470b58116a73742d76166878",
+  "command": "python hidden-tests/run.py --redis-server=/path/to/redis-server --include-interpretations --run-stress --junitxml=/tmp/hidden-tests.xml",
+  "summary": {
+    "collected": 190,
+    "passed": 171,
+    "failed": 17,
+    "skipped": 2,
+    "errors": 0,
+    "seconds": 88.781
+  },
+  "environment": {
+    "python": "3.11.10",
+    "database": "temporary SQLite files, not PostgreSQL",
+    "redis": "7.2.4; owned process; persistence disabled",
+    "native_models": "MediaPipe 0.10.18, OpenCV 4.11.0, dlib 20.0.1, checked-in PAD and landmarker assets",
+    "local_build_limitation": "dlib PNG support disabled for local SDK compatibility; application image decoding uses Pillow",
+    "stress_p95_target_seconds": 2.0,
+    "target_is_inferred": true,
+    "physical_corpus_supplied": false,
+    "postgres_executed": false
+  },
+  "public_suite": {
+    "passed": 102,
+    "skipped": 1,
+    "failed": 0,
+    "seconds": 55.69
+  },
+  "source_hashes": {
+    "module2-backend/app/main.py": "e45edee6aa04888e47a66f0332f2b97e42f828adca92f936b5b73045c5a344de",
+    "module2-backend/app/security.py": "e0482662fc6eb28d566e3c918f4b7dbaf2103d6d7407a7fca02cb676caef66a9",
+    "module2-backend/app/models.py": "782bc9c29e9d5aaed7368a7dec68cd6f053fb521d185b277702d424d4a965ece",
+    "module2-backend/app/data_deletion.py": "92a33b3e0caaac4425760a8f7419c9b5dd3d3859172fa295f90716157176ae51",
+    "module3-face-recognition/app/main.py": "c22f9af3bbcc104e014893ac615b957af994025a001cbe1e2ae3670c51fb9ed1",
+    "module3-face-recognition/app/detection.py": "4cac2b655402d2d5f87895258d79e53056ddfcd4015ce1d9c5605d345cde6153",
+    "module3-face-recognition/app/embedding.py": "885d127ef09ad37a6e7b43aba9198e4ad177f04ba174ab419b0ddeef3559dff4",
+    "module3-face-recognition/app/template.py": "93af53be47e4c92d183f2829d1910c7f49d3100452cef71f437487750d539596"
+  },
+  "cases": [
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[consent]",
+      "status": "passed",
+      "seconds": 0.017
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[presentation]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[duplicate]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[same_capture]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[missing_file]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[unknown_kind]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[video_without_frames]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_bad_corpus_cannot_be_counted_as_real_attack_coverage[url]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_corpus_loader",
+      "name": "test_confirmed_local_corpus_loads_metadata_without_image_bytes",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_identity_across_sample_photographs[obama.jpg-True]",
+      "status": "passed",
+      "seconds": 8.73
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_identity_across_sample_photographs[obama2.jpg-True]",
+      "status": "passed",
+      "seconds": 0.072
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_identity_across_sample_photographs[obama3.jpg-True]",
+      "status": "passed",
+      "seconds": 0.087
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_identity_across_sample_photographs[biden.jpg-False]",
+      "status": "passed",
+      "seconds": 0.075
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_enrollment_consent_is_explicit_boolean[False]",
+      "status": "passed",
+      "seconds": 0.004
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_enrollment_consent_is_explicit_boolean[None]",
+      "status": "passed",
+      "seconds": 0.006
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_enrollment_consent_is_explicit_boolean[true]",
+      "status": "passed",
+      "seconds": 0.004
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_enrollment_consent_is_explicit_boolean[1]",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_malformed_images_fail_privately[%%%not-base64%%%]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_malformed_images_fail_privately[]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_malformed_images_fail_privately[eA==]",
+      "status": "passed",
+      "seconds": 0.025
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_malformed_images_fail_privately[data:text/html;base64,PHNjcmlwdD4=]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_malformed_images_fail_privately[\\U0001f9ec]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_reference_template_validation[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]",
+      "status": "passed",
+      "seconds": 0.004
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_reference_template_validation[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]",
+      "status": "passed",
+      "seconds": 0.005
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_reference_template_validation[gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg]",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_reference_template_validation[AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_reference_template_validation[]",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_reference_template_validation[../../etc/passwd]",
+      "status": "passed",
+      "seconds": 0.009
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_no_face_cannot_enroll_match_or_pass_liveness",
+      "status": "passed",
+      "seconds": 0.156
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_multiple_faces_cannot_be_enrolled_as_one_identity",
+      "status": "passed",
+      "seconds": 0.049
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_oversized_json_body_is_rejected_before_inference",
+      "status": "passed",
+      "seconds": 0.028
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_parallel_identity_comparisons_do_not_mix_results",
+      "status": "failed",
+      "seconds": 0.434,
+      "reason": "AssertionError: Concurrent outcomes (identity,actual,expected,score,face_detected) differ from serial controls: [('same_identity', False, True, 0.0, True), ('same_identity', False, True, 0.0, True), ('same_identity', False, True, 0.0, True), ('same_identity', False, True, 0.0, True)]\nassert not [('same_identity', False, True, 0.0, True), ('same_identity', False, True, 0.0, True), ('same_identity', False, True, 0.0, True), ('same_identity', False, True, 0.0, True)]"
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_scores_reject_invalid_json_numbers[True]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_scores_reject_invalid_json_numbers[0.9]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_scores_reject_invalid_json_numbers[-0.01]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_scores_reject_invalid_json_numbers[1.01]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_scores_reject_invalid_json_numbers[nan]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_scores_reject_invalid_json_numbers[inf]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_breakdown_is_finite_and_matches_threshold_semantics[0]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_breakdown_is_finite_and_matches_threshold_semantics[0.2]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_breakdown_is_finite_and_matches_threshold_semantics[0.4]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_breakdown_is_finite_and_matches_threshold_semantics[0.6]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_breakdown_is_finite_and_matches_threshold_semantics[0.8]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_risk_breakdown_is_finite_and_matches_threshold_semantics[1]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_worsening_identity_and_liveness_cannot_lower_risk",
+      "status": "passed",
+      "seconds": 0.006
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_obvious_proxy_user_agent_cannot_reduce_network_risk",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_metrics_do_not_expose_biometrics",
+      "status": "passed",
+      "seconds": 0.004
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_standalone_attestation_checks_exact_signed_bytes[None]",
+      "status": "passed",
+      "seconds": 0.02
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_standalone_attestation_checks_exact_signed_bytes[challenge]",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_standalone_attestation_checks_exact_signed_bytes[signature]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_standalone_attestation_checks_exact_signed_bytes[key]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_face_recognition",
+      "name": "test_standalone_attestation_checks_exact_signed_bytes[invalid_pem]",
+      "status": "passed",
+      "seconds": 0.005
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_real_redis_outage_blocks_protected_security_operations",
+      "status": "passed",
+      "seconds": 1.615
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_unavailable_face_service_cannot_fabricate_a_pass[False]",
+      "status": "passed",
+      "seconds": 1.489
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_unavailable_face_service_cannot_fabricate_a_pass[True]",
+      "status": "passed",
+      "seconds": 1.679
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_concurrent_registration_cannot_exceed_device_slots",
+      "status": "skipped",
+      "seconds": 0.0,
+      "reason": "Requires the disposable PostgreSQL Compose profile"
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_revoking_device_blocks_issued_proof",
+      "status": "passed",
+      "seconds": 1.204
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_student_cannot_grant_device_trust_or_change_another_device",
+      "status": "passed",
+      "seconds": 0.677
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_required_biometric_failures_cannot_be_approved_by_trusted_device",
+      "status": "passed",
+      "seconds": 0.489
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_missing_required_biometrics_never_fabricates_a_pass[compat]",
+      "status": "passed",
+      "seconds": 0.366
+    },
+    {
+      "module": "test_failures_and_transactions",
+      "name": "test_missing_required_biometrics_never_fabricates_a_pass[strict]",
+      "status": "passed",
+      "seconds": 1.241
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[latitude-90.001]",
+      "status": "passed",
+      "seconds": 0.343
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[latitude--90.001]",
+      "status": "passed",
+      "seconds": 0.341
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[longitude-180.001]",
+      "status": "passed",
+      "seconds": 0.341
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[longitude--180.001]",
+      "status": "passed",
+      "seconds": 0.342
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[latitude-nan]",
+      "status": "passed",
+      "seconds": 0.342
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[longitude-inf]",
+      "status": "passed",
+      "seconds": 0.342
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[longitude--inf]",
+      "status": "passed",
+      "seconds": 0.343
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[location_accuracy_meters--1]",
+      "status": "passed",
+      "seconds": 0.342
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[location_accuracy_meters-nan]",
+      "status": "passed",
+      "seconds": 0.341
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_invalid_gps_never_creates_attendance[location_accuracy_meters-inf]",
+      "status": "passed",
+      "seconds": 0.342
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_geofence_boundaries_with_trusted_device[0-approved]",
+      "status": "passed",
+      "seconds": 0.35
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_geofence_boundaries_with_trusted_device[99-approved]",
+      "status": "passed",
+      "seconds": 0.351
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_geofence_boundaries_with_trusted_device[101-flagged]",
+      "status": "passed",
+      "seconds": 0.352
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_geofence_boundaries_with_trusted_device[199-flagged]",
+      "status": "passed",
+      "seconds": 0.364
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_geofence_boundaries_with_trusted_device[201-rejected]",
+      "status": "passed",
+      "seconds": 0.351
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_geofence_boundaries_with_trusted_device[10000-rejected]",
+      "status": "passed",
+      "seconds": 0.35
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_effective_session_venue_overrides_course_defaults",
+      "status": "passed",
+      "seconds": 0.342
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_low_accuracy_is_visible_in_risk_evidence",
+      "status": "passed",
+      "seconds": 0.344
+    },
+    {
+      "module": "test_geolocation",
+      "name": "test_impossible_travel_between_two_valid_venues_is_detected",
+      "status": "failed",
+      "seconds": 0.364,
+      "reason": "AssertionError: assert 'impossible_travel' in set()"
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_privacy_inspector_rejects_leaks_without_echoing_them[\\xff\\xd8\\xffraw]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_privacy_inspector_rejects_leaks_without_echoing_them[\\x89PNG\\r\\n\\x1a\\nraw]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_privacy_inspector_rejects_leaks_without_echoing_them[/9j/eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA==]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_privacy_inspector_rejects_leaks_without_echoing_them[value3]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_privacy_inspector_rejects_leaks_without_echoing_them[value4]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_privacy_inspector_rejects_leaks_without_echoing_them[value5]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_inspectors",
+      "name": "test_template_and_bounded_scalar_metadata_are_not_raw_images",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_repeated_static_photo_cannot_pass_motion[None]",
+      "status": "passed",
+      "seconds": 0.474
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_repeated_static_photo_cannot_pass_motion[challenge1]",
+      "status": "passed",
+      "seconds": 0.393
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_repeated_static_photo_cannot_pass_motion[challenge2]",
+      "status": "passed",
+      "seconds": 0.422
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[too_few]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[too_many]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[duplicate]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[descending]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[gap]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[late_start]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[too_short]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[negative]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[over_duration]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[boolean_time]",
+      "status": "passed",
+      "seconds": 0.005
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[string_time]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[per_frame_oversize]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_invalid_sequences_fail_before_inference[total_oversize]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_client_cannot_override_liveness_policy[override0]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_client_cannot_override_liveness_policy[override1]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_client_cannot_override_liveness_policy[override2]",
+      "status": "passed",
+      "seconds": 0.006
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_client_cannot_override_liveness_policy[override3]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_client_cannot_override_liveness_policy[override4]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_native_static_sequence_never_becomes_backend_proof",
+      "status": "passed",
+      "seconds": 0.898
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_challenge_invalidated_by_expiry_or_enrollment_change[expired]",
+      "status": "passed",
+      "seconds": 0.487
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_challenge_invalidated_by_expiry_or_enrollment_change[withdrawn_consent]",
+      "status": "passed",
+      "seconds": 0.489
+    },
+    {
+      "module": "test_liveness",
+      "name": "test_challenge_invalidated_by_expiry_or_enrollment_change[reenrolled_face]",
+      "status": "passed",
+      "seconds": 0.582
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_passwords_are_bcrypt_with_documented_cost",
+      "status": "passed",
+      "seconds": 0.391
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_user_and_device_reads_never_return_password_material[/users/me]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_user_and_device_reads_never_return_password_material[/users/]",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_user_and_device_reads_never_return_password_material[/devices/my-devices]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_validation_errors_do_not_echo_password_or_image",
+      "status": "passed",
+      "seconds": 0.333
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_enabled_json_logging_redacts_sensitive_values",
+      "status": "passed",
+      "seconds": 0.07
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_main_schema_has_no_blob_or_raw_biometric_columns",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_enrollment_and_checkin_store_only_templates_and_no_submitted_images",
+      "status": "passed",
+      "seconds": 0.641
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_service_logs_and_work_directory_do_not_persist_captures",
+      "status": "passed",
+      "seconds": 0.597
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_audit_is_append_only_over_http",
+      "status": "passed",
+      "seconds": 0.382
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_audit_is_append_only_for_direct_database_writes[update]",
+      "status": "failed",
+      "seconds": 0.334,
+      "reason": "AssertionError: Direct SQL UPDATE was allowed on audit_logs\nassert not True"
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_audit_is_append_only_for_direct_database_writes[delete]",
+      "status": "failed",
+      "seconds": 0.334,
+      "reason": "AssertionError: Direct SQL DELETE was allowed on audit_logs\nassert not True"
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_checkin_has_thirty_day_retention_deadline",
+      "status": "failed",
+      "seconds": 0.346,
+      "reason": "AssertionError: No retention deadline assigned to check-in\nassert None is not None"
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_deletion_deadline_is_idempotent_and_cancel_requires_password",
+      "status": "passed",
+      "seconds": 1.158
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_due_deletion_removes_personal_records_but_preserves_audit",
+      "status": "passed",
+      "seconds": 1.413
+    },
+    {
+      "module": "test_privacy",
+      "name": "test_audit_details_and_error_logs_never_store_passwords",
+      "status": "passed",
+      "seconds": 0.498
+    },
+    {
+      "module": "test_real_attacks",
+      "name": "test_real_capture_outcome[None]",
+      "status": "skipped",
+      "seconds": 0.0,
+      "reason": "Physical attack/genuine corpus not supplied; see hidden-tests/README.md"
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_cannot_be_forged_rebound_or_expired[signature]",
+      "status": "passed",
+      "seconds": 0.352
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_cannot_be_forged_rebound_or_expired[wrong_key]",
+      "status": "passed",
+      "seconds": 0.352
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_cannot_be_forged_rebound_or_expired[wrong_session]",
+      "status": "passed",
+      "seconds": 0.358
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_cannot_be_forged_rebound_or_expired[wrong_owner]",
+      "status": "passed",
+      "seconds": 0.684
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_cannot_be_forged_rebound_or_expired[expired]",
+      "status": "passed",
+      "seconds": 0.351
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_cannot_be_forged_rebound_or_expired[incomplete]",
+      "status": "passed",
+      "seconds": 0.35
+    },
+    {
+      "module": "test_replay",
+      "name": "test_signature_replay_is_checked_after_attendance_row_is_removed",
+      "status": "passed",
+      "seconds": 0.354
+    },
+    {
+      "module": "test_replay",
+      "name": "test_device_proof_is_not_consumed_after_closed_window_rejection",
+      "status": "passed",
+      "seconds": 0.352
+    },
+    {
+      "module": "test_replay",
+      "name": "test_failed_checkin_after_device_verification_rolls_back_nonce",
+      "status": "passed",
+      "seconds": 0.354
+    },
+    {
+      "module": "test_replay",
+      "name": "test_first_submission_race_has_one_record_and_one_audit_pair",
+      "status": "passed",
+      "seconds": 0.388
+    },
+    {
+      "module": "test_replay",
+      "name": "test_refresh_rotation_replay[compat]",
+      "status": "failed",
+      "seconds": 0.337,
+      "reason": "AssertionError: compat: refresh replay accepted\nassert 200 == 401\n +  where 200 = <Response [200 OK]>.status_code"
+    },
+    {
+      "module": "test_replay",
+      "name": "test_refresh_rotation_replay[strict]",
+      "status": "passed",
+      "seconds": 0.337
+    },
+    {
+      "module": "test_replay",
+      "name": "test_concurrent_refresh_reuse_has_exactly_one_winner",
+      "status": "passed",
+      "seconds": 0.348
+    },
+    {
+      "module": "test_replay",
+      "name": "test_logout_revokes_presented_refresh_cookie[compat]",
+      "status": "failed",
+      "seconds": 0.338,
+      "reason": "AssertionError: compat: logged-out refresh token remains usable\nassert 200 == 401\n +  where 200 = <Response [200 OK]>.status_code"
+    },
+    {
+      "module": "test_replay",
+      "name": "test_logout_revokes_presented_refresh_cookie[strict]",
+      "status": "passed",
+      "seconds": 0.338
+    },
+    {
+      "module": "test_replay",
+      "name": "test_motion_requirements_are_server_owned_and_retry_invalidates_previous",
+      "status": "passed",
+      "seconds": 0.464
+    },
+    {
+      "module": "test_replay",
+      "name": "test_motion_proof_cannot_cross_accounts_or_accept_client_scores",
+      "status": "passed",
+      "seconds": 0.878
+    },
+    {
+      "module": "test_security",
+      "name": "test_access_token_validation[expired]",
+      "status": "passed",
+      "seconds": 0.347
+    },
+    {
+      "module": "test_security",
+      "name": "test_access_token_validation[wrong_signature]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_access_token_validation[none_algorithm]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_access_token_validation[wrong_type]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_access_token_validation[missing_user]",
+      "status": "passed",
+      "seconds": 0.335
+    },
+    {
+      "module": "test_security",
+      "name": "test_access_token_validation[malformed]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_signed_role_claim_cannot_override_database_role",
+      "status": "passed",
+      "seconds": 0.333
+    },
+    {
+      "module": "test_security",
+      "name": "test_token_lifetimes_and_password_absence",
+      "status": "passed",
+      "seconds": 0.332
+    },
+    {
+      "module": "test_security",
+      "name": "test_deactivation_revokes_access_and_refresh",
+      "status": "passed",
+      "seconds": 0.336
+    },
+    {
+      "module": "test_security",
+      "name": "test_non_admin_cannot_read_audit_or_bulk_create_accounts[student]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_non_admin_cannot_read_audit_or_bulk_create_accounts[ta]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_non_admin_cannot_read_audit_or_bulk_create_accounts[instructor]",
+      "status": "passed",
+      "seconds": 0.333
+    },
+    {
+      "module": "test_security",
+      "name": "test_profile_mass_assignment_cannot_change_role_trust_or_template",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_cross_student_and_unassigned_staff_cannot_read_or_review_checkins",
+      "status": "passed",
+      "seconds": 1.683
+    },
+    {
+      "module": "test_security",
+      "name": "test_student_cannot_override_history_identity_filter",
+      "status": "passed",
+      "seconds": 0.677
+    },
+    {
+      "module": "test_security",
+      "name": "test_sql_injection_does_not_expand_admin_search[' OR 1=1 --]",
+      "status": "passed",
+      "seconds": 0.335
+    },
+    {
+      "module": "test_security",
+      "name": "test_sql_injection_does_not_expand_admin_search['; DROP TABLE users; --]",
+      "status": "passed",
+      "seconds": 0.334
+    },
+    {
+      "module": "test_security",
+      "name": "test_sql_injection_does_not_expand_admin_search[%_\\\\' OR 'x'='x]",
+      "status": "passed",
+      "seconds": 0.335
+    },
+    {
+      "module": "test_security",
+      "name": "test_stored_xss_is_escaped_and_csv_formula_is_neutralized",
+      "status": "passed",
+      "seconds": 0.352
+    },
+    {
+      "module": "test_security",
+      "name": "test_cors_exact_origin_matching[http://localhost:3000-True]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "module": "test_security",
+      "name": "test_cors_exact_origin_matching[https://attacker.example.org-False]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_security",
+      "name": "test_cors_exact_origin_matching[http://localhost:3000.attacker.example.org-False]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_security",
+      "name": "test_cors_exact_origin_matching[null-False]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "module": "test_security",
+      "name": "test_refresh_cookie_is_httponly_scoped_and_samesite",
+      "status": "passed",
+      "seconds": 0.497
+    },
+    {
+      "module": "test_security",
+      "name": "test_checkin_requires_each_consent[compat-camera_consent]",
+      "status": "failed",
+      "seconds": 0.346,
+      "reason": "AssertionError: compat: check-in persisted after camera_consent withdrawal\nassert 201 == 403\n +  where 201 = <Response [201 Created]>.status_code"
+    },
+    {
+      "module": "test_security",
+      "name": "test_checkin_requires_each_consent[compat-geolocation_consent]",
+      "status": "failed",
+      "seconds": 0.345,
+      "reason": "AssertionError: compat: check-in persisted after geolocation_consent withdrawal\nassert 201 == 403\n +  where 201 = <Response [201 Created]>.status_code"
+    },
+    {
+      "module": "test_security",
+      "name": "test_checkin_requires_each_consent[strict-camera_consent]",
+      "status": "passed",
+      "seconds": 0.346
+    },
+    {
+      "module": "test_security",
+      "name": "test_checkin_requires_each_consent[strict-geolocation_consent]",
+      "status": "passed",
+      "seconds": 0.347
+    },
+    {
+      "module": "test_security",
+      "name": "test_exact_login_ip_limit[compat]",
+      "status": "failed",
+      "seconds": 0.068,
+      "reason": "AssertionError: compat: 61st login was not rate limited\nassert 401 == 429"
+    },
+    {
+      "module": "test_security",
+      "name": "test_exact_login_ip_limit[strict]",
+      "status": "passed",
+      "seconds": 0.069
+    },
+    {
+      "module": "test_security",
+      "name": "test_forwarded_ip_cannot_bypass_login_limit",
+      "status": "failed",
+      "seconds": 0.084,
+      "reason": "AssertionError: Changing an unverified forwarded IP bypassed the login bucket\nassert 401 == 429"
+    },
+    {
+      "module": "test_security",
+      "name": "test_exact_registration_ip_limit[compat]",
+      "status": "failed",
+      "seconds": 1.817,
+      "reason": "AssertionError: compat: 11th registration was not rate limited\nassert 201 == 429"
+    },
+    {
+      "module": "test_security",
+      "name": "test_exact_registration_ip_limit[strict]",
+      "status": "passed",
+      "seconds": 1.654
+    },
+    {
+      "module": "test_security",
+      "name": "test_checkin_limit_counts_failed_attempts_per_user[compat]",
+      "status": "failed",
+      "seconds": 0.354,
+      "reason": "AssertionError: compat: 11th check-in attempt was not rate limited\nassert 404 == 429"
+    },
+    {
+      "module": "test_security",
+      "name": "test_checkin_limit_counts_failed_attempts_per_user[strict]",
+      "status": "passed",
+      "seconds": 0.69
+    },
+    {
+      "module": "test_security",
+      "name": "test_authenticated_api_limit_has_exact_user_boundary[compat]",
+      "status": "failed",
+      "seconds": 1.019,
+      "reason": "AssertionError: compat: 1001st API request was not rate limited\nassert 200 == 429\n +  where 200 = <Response [200 OK]>.status_code"
+    },
+    {
+      "module": "test_security",
+      "name": "test_authenticated_api_limit_has_exact_user_boundary[strict]",
+      "status": "passed",
+      "seconds": 1.116
+    },
+    {
+      "module": "test_stress",
+      "name": "test_one_hundred_distinct_profile_reads",
+      "status": "passed",
+      "seconds": 5.284,
+      "measurements": {
+        "requests": "100",
+        "p95_seconds": "0.0834",
+        "status_counts": "{'200': 100}"
+      }
+    },
+    {
+      "module": "test_stress",
+      "name": "test_one_hundred_real_password_logins",
+      "status": "failed",
+      "seconds": 2.549,
+      "reason": "AssertionError: p95=2.386s exceeds local target 2.000s; statuses={'200': 100}\nassert 2.3863398750545457 < 2.0",
+      "measurements": {
+        "requests": "100",
+        "p95_seconds": "2.3863",
+        "status_counts": "{'200': 100}"
+      }
+    },
+    {
+      "module": "test_stress",
+      "name": "test_one_hundred_checkins_preserve_records_and_audit",
+      "status": "passed",
+      "seconds": 0.897,
+      "measurements": {
+        "requests": "100",
+        "p95_seconds": "0.3131",
+        "status_counts": "{'201': 100}"
+      }
+    },
+    {
+      "module": "test_stress",
+      "name": "test_one_hundred_native_face_comparisons",
+      "status": "failed",
+      "seconds": 2.314,
+      "reason": "AssertionError: p95=2.124s exceeds local target 2.000s; statuses={'200': 100}\nassert 2.1236211659852415 < 2.0",
+      "measurements": {
+        "requests": "100",
+        "p95_seconds": "2.1236",
+        "status_counts": "{'200': 100}"
+      }
+    },
+    {
+      "module": "test_stress",
+      "name": "test_one_hundred_full_native_biometric_checkins",
+      "status": "failed",
+      "seconds": 16.096,
+      "reason": "AssertionError: p95=5.894s exceeds local target 2.000s; statuses={'201': 100}\nassert 5.893958417000249 < 2.0",
+      "measurements": {
+        "requests": "100",
+        "p95_seconds": "5.894",
+        "status_counts": "{'201': 100}"
+      }
+    },
+    {
+      "module": "test_stress",
+      "name": "test_one_hundred_duplicate_submissions_have_one_winner",
+      "status": "passed",
+      "seconds": 0.491,
+      "measurements": {
+        "status_counts": "{'400': 99, '201': 1}"
+      }
+    },
+    {
+      "module": "test_stress",
+      "name": "test_health_remains_available_during_and_after_load",
+      "status": "passed",
+      "seconds": 1.131,
+      "measurements": {
+        "requests": "20",
+        "p95_seconds": "0.2524",
+        "status_counts": "{'200': 20}"
+      }
+    }
+  ]
+}
