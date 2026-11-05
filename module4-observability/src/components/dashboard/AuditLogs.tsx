@@ -409,7 +409,6 @@ export function AuditLogs() {
                 </td>
                 <td className="px-5 py-3 text-xs">
                   <span className="block font-medium">{row.action.replace(/_/g, " ")}</span>
-                  <span className="mt-1 block text-[10px] text-muted-foreground">{row.action}</span>
                 </td>
                 <td className="px-5 py-3 text-xs">{row.resource_type ?? "—"}</td>
                 <td className="px-5 py-3">

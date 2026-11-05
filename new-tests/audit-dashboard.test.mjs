@@ -440,7 +440,7 @@ test("activity rows follow reference hierarchy and View opens full details witho
   );
   assert.ok(text(table).includes("09:00"));
   assert.ok(text(table).includes("user updated"));
-  assert.ok(text(table).includes("user_updated"));
+  assert.ok(!text(table).includes("user_updated"));
   assert.equal(text(table).includes("11111111…"), false);
   assert.equal(text(table).includes("22222222…"), false);
   assert.equal(text(table).includes('A "quoted", value'), false);
