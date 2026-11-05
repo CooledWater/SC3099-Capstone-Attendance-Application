@@ -1,10 +1,11 @@
+import { courseLabels } from "./course-label-helper.mjs";
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-const ts = createRequire(new URL('../module1-frontend/package.json', import.meta.url))('typescript');
+const ts = createRequire(new URL('../module4-observability/package.json', import.meta.url))('typescript');
 const jsx = (type, props, key) => ({ type, props, key });
 
 // Exercise the real component handlers with isolated hooks and API transports.
@@ -36,7 +37,7 @@ function mount(path, name, props, imports) {
     exports: {}, navigator: { onLine: true },
     window: { addEventListener() {}, removeEventListener() {}, setInterval() { return 1; }, clearInterval() {} },
     document: { hidden: false, addEventListener() {}, removeEventListener() {} },
-    require: module => module === 'react' ? react : module === 'react/jsx-runtime'
+    require: module => module === '@/lib/course-label' ? courseLabels : module === 'react' ? react : module === 'react/jsx-runtime'
       ? { jsx, jsxs: jsx, Fragment: 'fragment' } : imports[module] ?? {},
   };
   const compiled = ts.transpileModule(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'), {

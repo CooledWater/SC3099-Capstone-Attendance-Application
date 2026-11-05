@@ -1,3 +1,4 @@
+import { courseLabels } from "./course-label-helper.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -9,7 +10,7 @@ function load(path, resolve) {
   const code = ts.transpileModule(readFileSync(new URL(`../module4-observability/src/${path}`, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
-  const context = { exports: {}, require: name => name === "react/jsx-runtime" ? jsx : resolve(name) };
+  const context = { exports: {}, require: name => name === "@/lib/course-label" ? courseLabels : name === "react/jsx-runtime" ? jsx : resolve(name) };
   vm.runInNewContext(code, context); return context.exports;
 }
 const time = load("lib/time.ts", () => ({}));

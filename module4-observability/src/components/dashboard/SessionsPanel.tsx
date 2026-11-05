@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { canManageSession } from "@/lib/session-permissions";
 import { SessionCalendar } from "./SessionCalendar";
@@ -566,7 +567,7 @@ export function SessionsPanel({
               <option value="">Select course</option>
               {availableCourses.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.code} · {c.name}
+                  {formatCourseLabel(c.code, c.name)}
                 </option>
               ))}
             </select>
@@ -682,7 +683,7 @@ export function SessionsPanel({
             <option value="all">All courses</option>
             {availableCourses.map((course) => (
               <option key={course.id} value={course.id}>
-                {course.code} · {course.name}
+                {formatCourseLabel(course.code, course.name)}
               </option>
             ))}
           </select>
@@ -950,7 +951,7 @@ export function SessionsPanel({
                     <option value="">Select course</option>
                     {availableCourses.map((course) => (
                       <option key={course.id} value={course.id}>
-                        {course.code} · {course.name}
+                        {formatCourseLabel(course.code, course.name)}
                       </option>
                     ))}
                   </select>

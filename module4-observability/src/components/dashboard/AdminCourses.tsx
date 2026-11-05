@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -150,7 +151,7 @@ export function AdminCourses({ userId }: { userId: string }) {
             >
               {courses.data?.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.code} · {item.name} · {item.semester}
+                  {formatCourseLabel(item.code, item.name)} · {item.semester}
                 </option>
               ))}
             </select>

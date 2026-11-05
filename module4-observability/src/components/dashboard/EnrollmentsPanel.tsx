@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useSessionValue } from "@/hooks/useSessionValue";
@@ -166,7 +167,7 @@ export function EnrollmentsPanel({
           >
             {courses.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.code} - {item.name}
+                {formatCourseLabel(item.code, item.name, " - ")}
               </option>
             ))}
           </select>

@@ -1,3 +1,4 @@
+import { courseLabels } from "./course-label-helper.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -96,6 +97,7 @@ test("review payload uses exact API statuses and retains returned factor precisi
 
 function rosterHarness() {
   const state = hooks(), context = { exports: {}, require(name) {
+    if (name === "@/lib/course-label") return courseLabels;
     if (name === "react") return state.react;
     if (name === "react/jsx-runtime") return jsx;
     if (name.endsWith("/checkin-roster")) return loadHelpers();
@@ -167,6 +169,7 @@ function detailHarness(initialStatus = "flagged") {
   let handler = async (id, status) => ({ id, status });
   const helpers = loadHelpers();
   const context = { exports: {}, Error, require(name) {
+    if (name === "@/lib/course-label") return courseLabels;
     if (name === "react") return state.react;
     if (name === "react/jsx-runtime") return jsx;
     if (name === "@tanstack/react-query") return {

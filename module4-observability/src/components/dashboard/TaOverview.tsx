@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -81,7 +82,7 @@ export function TaOverview({
           >
             {courses.map((course) => (
               <option key={course.id} value={course.id}>
-                {course.code} · {course.name}
+                {formatCourseLabel(course.code, course.name)}
               </option>
             ))}
           </select>

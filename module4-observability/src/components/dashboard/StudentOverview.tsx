@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchStudentOverview, type StudentOverview as Overview } from "@/lib/student-overview";
 import { formatSingaporeDateTime } from "@/lib/time";
@@ -45,7 +46,7 @@ export function StudentOverviewCards({ userId, courseId, onCourseChange, onAtten
             <select value={selected} disabled={!attendance.data.courses?.length}
               onChange={event => onCourseChange(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm">
               {!attendance.data.courses?.length && <option value="">No enrolled courses</option>}
-              {attendance.data.courses?.map(course => <option key={course.id} value={course.id}>{course.code} · {course.name}</option>)}
+              {attendance.data.courses?.map(course => <option key={course.id} value={course.id}>{formatCourseLabel(course.code, course.name)}</option>)}
             </select>
           </label>
           {periodError ? <p role="alert" className="mt-5 text-sm text-warning">{periodError}</p> : metric && <div className="mt-6 flex flex-wrap items-center gap-6">

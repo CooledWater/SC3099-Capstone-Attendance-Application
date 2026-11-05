@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -111,7 +112,7 @@ export function ExportPanel({
             >
               {courses.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.code} · {c.name}
+                  {formatCourseLabel(c.code, c.name)}
                 </option>
               ))}
             </select>

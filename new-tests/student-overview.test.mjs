@@ -1,3 +1,4 @@
+import { courseLabels } from "./course-label-helper.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -7,7 +8,7 @@ const require = createRequire(new URL("../module4-observability/package.json", i
 const ts = require("typescript");
 function load(path, imports) {
   const code = ts.transpileModule(readFileSync(new URL(`../module4-observability/src/${path}`, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  const ctx = { exports: {}, require: imports, URLSearchParams };
+  const ctx = { exports: {}, require: name => name === "@/lib/course-label" ? courseLabels : imports(name), URLSearchParams };
   vm.runInNewContext(code, ctx); return ctx.exports;
 }
 function elements(node) {

@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useState } from "react";
 import { AttendanceRoster } from "./AttendanceTable";
 import { CheckInDetail } from "./InstructorCheckIns";
@@ -112,7 +113,7 @@ export function AdminCheckIns({
             <option value="all">All courses</option>
             {courses.map((course) => (
               <option key={course.id} value={course.id}>
-                {course.code} · {course.name}
+                {formatCourseLabel(course.code, course.name)}
               </option>
             ))}
           </select>

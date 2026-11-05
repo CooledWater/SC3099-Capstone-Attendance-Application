@@ -1,3 +1,4 @@
+import { courseLabels } from "./course-label-helper.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -22,6 +23,7 @@ function harness(courseState = {}, riskDistribution = { scored_count: 0, bands: 
   const values = [];
   let cursor = 0, query, courseQuery, requestOptions;
   const context = { exports: {}, require(name) {
+    if (name === "@/lib/course-label") return courseLabels;
     if (name === "@tanstack/react-router") return { Link: "Link" };
     if (name === "recharts") return {};
     if (name === "react/jsx-runtime") return jsx;
@@ -158,6 +160,7 @@ test("course statistics errors offer retry and loading does not display an overv
 test("attendance trend tooltip shows exact rates, date range and provisional counts without bridging missing data", () => {
   const charts = Object.fromEntries(["Line", "LineChart", "ResponsiveContainer", "Tooltip", "XAxis", "YAxis"].map(name => [name, name]));
   const context = { exports: {}, require(name) {
+    if (name === "@/lib/course-label") return courseLabels;
     if (name === "react/jsx-runtime") return jsx;
     if (name === "recharts") return charts;
     return {};

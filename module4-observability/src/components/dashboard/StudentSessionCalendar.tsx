@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -222,7 +223,7 @@ export function StudentSessionCalendar({
           <span className="sr-only">Course</span>
           <select aria-label="Course" value={courseId} onChange={(event) => onCourseChange(event.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-foreground">
             <option value="all">All courses</option>
-            {courseOptions.map((course) => <option key={course.course_id} value={course.course_id}>{course.course_code} · {course.course_name}</option>)}
+            {courseOptions.map((course) => <option key={course.course_id} value={course.course_id}>{formatCourseLabel(course.course_code, course.course_name)}</option>)}
           </select>
         </label>
       </div>

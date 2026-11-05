@@ -1,3 +1,4 @@
+import { courseLabels } from "./course-label-helper.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -117,6 +118,7 @@ function harness(initialFilter = {}, state = {}) {
       }
     },
     require(name) {
+      if (name === "@/lib/course-label") return courseLabels;
       if (name === "react") return hooks;
       if (name === "react/jsx-runtime") return jsx;
       if (name.endsWith("/time")) return times.exports;
@@ -294,6 +296,7 @@ test("cross-course table renders repeated students with distinct check-in keys a
   const context = {
     exports: {},
     require(name) {
+      if (name === "@/lib/course-label") return courseLabels;
       if (name === "react/jsx-runtime") return jsx;
       if (name === "react")
         return {

@@ -1,3 +1,4 @@
+import { formatCourseLabel } from "@/lib/course-label";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -384,7 +385,7 @@ export function InstructorOverview({
           >
             {courses.map((course) => (
               <option value={course.id} key={course.id}>
-                {course.code} · {course.name}
+                {formatCourseLabel(course.code, course.name)}
               </option>
             ))}
           </select>
