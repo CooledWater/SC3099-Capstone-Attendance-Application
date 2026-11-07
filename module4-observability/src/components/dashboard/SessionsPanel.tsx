@@ -608,7 +608,7 @@ export function SessionsPanel({
               <option value="">{venuePlaceholder}</option>
               {venueOptions.map((venue) => (
                 <option key={venue.code} value={venue.code}>
-                  {venue.code} · {venue.name}
+                  {venue.code}
                 </option>
               ))}
             </select>
@@ -971,7 +971,7 @@ export function SessionsPanel({
                     <option value="">{venuePlaceholder}</option>
                     {venueOptions.map((venue) => (
                       <option key={venue.code} value={venue.code}>
-                        {venue.code} · {venue.name}
+                        {venue.code}
                       </option>
                     ))}
                   </select>

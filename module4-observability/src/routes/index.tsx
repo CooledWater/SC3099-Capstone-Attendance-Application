@@ -44,7 +44,7 @@ const headline = {
   instructor: {
     eyebrow: "Attendance console",
     title: "Instructor overview",
-    blurb: "Course analytics and student-level detail.",
+    blurb: "",
   },
   admin: {
     eyebrow: "System console",
