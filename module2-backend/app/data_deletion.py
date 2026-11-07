@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import inspect, Table, MetaData
+from sqlalchemy import inspect, Table, MetaData, and_, or_
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.auth import require_roles, verify_password, hash_password
@@ -95,14 +95,14 @@ def purge_due_students(factory=SessionLocal, now=None):
             db.query(BrowserRegistration).filter_by(user_id=user.id).delete(synchronize_session=False)
             # Some deployments include the documented risk_signals table in
             # addition to the mapped models. Remove its child records first.
-            if inspect(db.get_bind()).has_table('risk_signals'):
+            if inspect(db.connection()).has_table('risk_signals'):
                 signals = Table('risk_signals', MetaData(), autoload_with=db.connection())
                 db.execute(signals.delete().where(signals.c.checkin_id.in_(checkin_ids)))
             db.query(CheckIn).filter_by(student_id=user.id).delete(synchronize_session=False)
             db.query(Device).filter_by(user_id=user.id).delete(synchronize_session=False)
             db.query(Enrollment).filter_by(student_id=user.id).delete(synchronize_session=False)
             # Retired invitation metadata can still exist in older deployments.
-            if inspect(db.get_bind()).has_table('account_invitations'):
+            if inspect(db.connection()).has_table('account_invitations'):
                 legacy = Table('account_invitations', MetaData(), autoload_with=db.connection())
                 db.execute(legacy.delete().where(legacy.c.user_id == user.id))
             for fingerprint in fingerprints:
@@ -122,8 +122,39 @@ def purge_due_students(factory=SessionLocal, now=None):
 
 async def deletion_clock():
     while True:
-        try:
-            await run_in_threadpool(purge_due_students)
-        except Exception:
-            logging.getLogger(__name__).warning('Scheduled data cleanup unavailable; retrying')
+        # Independent transactions: a student-cleanup failure must not prevent
+        # check-in expiry. Run immediately at startup, then catch up every minute.
+        for cleanup in (purge_due_checkins, purge_due_students):
+            try:
+                await run_in_threadpool(cleanup)
+            except Exception:
+                logging.getLogger(__name__).warning('Scheduled data cleanup unavailable; retrying')
         await asyncio.sleep(60)
+
+
+def purge_due_checkins(factory=SessionLocal, now=None, batch_size=500):
+    """Delete one bounded batch, including children, without touching audit rows.
+
+    PostgreSQL workers claim different rows with SKIP LOCKED. A failed batch
+    rolls back children and parents together; the next tick retries. NULL legacy
+    deadlines expire from checked_in_at too, so migration rollout/downtime cannot
+    retain them forever. Existing non-NULL deadlines remain authoritative.
+    """
+    from app.push_notifications import PushDelivery
+    now = now or datetime.utcnow()
+    if batch_size < 1:
+        raise ValueError('batch_size must be positive')
+    with factory() as db:
+        ids = [row[0] for row in db.query(CheckIn.id).filter(or_(
+            CheckIn.scheduled_deletion_at <= now,
+            and_(CheckIn.scheduled_deletion_at.is_(None), CheckIn.checked_in_at <= now - timedelta(days=30)),
+        )).order_by(CheckIn.checked_in_at, CheckIn.id).limit(batch_size).with_for_update(skip_locked=True).all()]
+        if not ids:
+            return 0
+        db.query(PushDelivery).filter(PushDelivery.checkin_id.in_(ids)).delete(synchronize_session=False)
+        if inspect(db.connection()).has_table('risk_signals'):
+            signals = Table('risk_signals', MetaData(), autoload_with=db.connection())
+            db.execute(signals.delete().where(signals.c.checkin_id.in_(ids)))
+        deleted = db.query(CheckIn).filter(CheckIn.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        return deleted

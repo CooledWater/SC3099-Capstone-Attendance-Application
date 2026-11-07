@@ -1,4 +1,4 @@
-"""Opt-in safeguards that preserve the published classroom API by default."""
+"""Baseline classroom safeguards; strict mode adds deployment restrictions."""
 import hashlib
 import json
 import os
@@ -15,12 +15,12 @@ def strict_mode():
 
 
 def validate_settings():
+    if not os.getenv('REDIS_URL'):
+        raise RuntimeError('Security controls require REDIS_URL')
     if strict_mode():
         secret = os.getenv('JWT_SECRET', '')
         if len(secret) < 32 or 'your-secret' in secret.lower():
             raise RuntimeError('Strict security requires a non-placeholder JWT_SECRET of at least 32 characters')
-        if not os.getenv('REDIS_URL'):
-            raise RuntimeError('Strict security requires REDIS_URL')
 
 
 def cors_origins():
@@ -45,8 +45,6 @@ def redis_client():
 
 
 def enforce_rate_limit(category, identity, limit, seconds):
-    if not strict_mode():
-        return
     key = 'saiv:limit:' + category + ':' + hashlib.sha256(identity.encode()).hexdigest()
     try:
         count = redis_client().eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n", 1, key, seconds)
@@ -61,8 +59,6 @@ def _refresh_key(token):
 
 
 def check_refresh(token):
-    if not strict_mode():
-        return
     try:
         used = redis_client().exists(_refresh_key(token))
     except redis.RedisError:
@@ -72,8 +68,6 @@ def check_refresh(token):
 
 
 def consume_refresh(token, payload, reject_reuse=True):
-    if not strict_mode():
-        return
     ttl = max(1, int(payload['exp'] - time.time()) + 1)
     try:
         fresh = redis_client().set(_refresh_key(token), '1', nx=True, ex=ttl)

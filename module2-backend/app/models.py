@@ -548,7 +548,7 @@ class CheckIn(Base):
     appeal_reason = Column(Text, nullable=True)
     appealed_at = Column(DateTime, nullable=True)
 
-    scheduled_deletion_at = Column(DateTime, nullable=True)
+    scheduled_deletion_at = Column(DateTime, nullable=True, index=True)
 
 
 Index(
@@ -708,6 +708,12 @@ class AuditLog(Base):
 
 
 Index("ix_audit_logs_resource", AuditLog.resource_type, AuditLog.resource_id)
+
+
+@event.listens_for(AuditLog.__table__, "after_create")
+def _protect_audit_storage(table, connection, **kwargs):
+    from app.audit_storage import install_audit_guards
+    install_audit_guards(connection)
 
 
 @event.listens_for(AuditLog, "before_update")

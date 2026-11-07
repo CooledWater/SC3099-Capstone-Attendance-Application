@@ -60,6 +60,7 @@ class Settings(BaseModel):
         le=64 * 1024 * 1024,
     )
     max_image_dim: int = Field(default=DEFAULT_MAX_IMAGE_DIM, ge=1, le=8192)
+    inference_concurrency: int = Field(default=4, ge=1, le=64)
 
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     cors_allow_credentials: bool = False
@@ -238,6 +239,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
                 env, "MAX_IMAGE_BYTES", DEFAULT_MAX_IMAGE_BYTES
             ),
             max_image_dim=_parse_int(env, "MAX_IMAGE_DIM", DEFAULT_MAX_IMAGE_DIM),
+            inference_concurrency=_parse_int(env, "FACE_INFERENCE_CONCURRENCY", 4),
             cors_origins=_parse_cors_origins(env),
             cors_allow_credentials=_parse_bool(
                 env, "CORS_ALLOW_CREDENTIALS", False

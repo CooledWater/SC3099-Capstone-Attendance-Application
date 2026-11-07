@@ -104,8 +104,8 @@ app.include_router(device_binding.router)
 app.include_router(stats.router)
 app.include_router(audit.router)
 app.include_router(prometheus_metrics.router)
-from app.admission import DatabaseAdmission
-app.add_middleware(DatabaseAdmission)
+from app.admission import DatabaseAdmission, database_admission_capacity
+app.add_middleware(DatabaseAdmission, concurrency=database_admission_capacity(engine))
 app.add_middleware(motion.MotionBodyLimit)
 app.add_middleware(stats.MetricsMiddleware)
 app.add_middleware(audit.AuditContextMiddleware)
@@ -400,7 +400,7 @@ def logout_user(
     # valid token the client presented; an anonymous logout logs nothing.
     dashboard = request.url.path == "/api/v1/auth/dashboard/logout"
     token = request.cookies.get(DASHBOARD_COOKIE_NAME if dashboard else REFRESH_COOKIE_NAME)
-    if token and strict_mode():
+    if token:
         try:
             refresh_payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
             if refresh_payload.get('type') == 'refresh':
@@ -2372,7 +2372,7 @@ def create_checkin(
     db: Session = Depends(get_session_db)
 ):
     enforce_rate_limit('checkin', current_user.id, 10, 60)
-    if strict_mode() and not (current_user.camera_consent and current_user.geolocation_consent):
+    if not (current_user.camera_consent and current_user.geolocation_consent):
         raise HTTPException(403, 'Camera and geolocation consent are required')
     # Session, its course, and the enrollment/duplicate-checkin flags all in
     # one round trip: each network round trip to the (remote) database costs
@@ -2442,6 +2442,8 @@ def create_checkin(
         venue,
         accuracy=checkin_data.location_accuracy_meters,
     )
+    from app.travel import assess_impossible_travel
+    travel_signal = assess_impossible_travel(db, current_user.id, checkin_data, now)
     if checkin_data.motion_verification_id:
         biometrics = motion.consume(db, current_user, session.id, checkin_data.motion_verification_id)
     elif requires_motion:
@@ -2462,6 +2464,13 @@ def create_checkin(
     assessment = _combine_checkin_assessment(
         geo_assessment, biometrics, effective_threshold
     )
+    if travel_signal:
+        assessment['risk_factors'].append(travel_signal)
+        # Travel is a review signal, never a hard rejection or a fabricated
+        # biometric failure. Preserve stronger existing decisions.
+        assessment['risk_score'] = max(assessment['risk_score'], effective_threshold)
+        if assessment['status'] != 'rejected':
+            assessment['status'] = 'flagged'
 
     if not device_trusted:
         assessment['risk_score'] = max(assessment['risk_score'], device_contribution)
@@ -2509,6 +2518,7 @@ def create_checkin(
         student_id=current_user.id,
         status=checkin_status,
         checked_in_at=now,
+        scheduled_deletion_at=now + timedelta(days=30),
         verified_at=now if checkin_status == "approved" else None,
         latitude=checkin_data.latitude,
         longitude=checkin_data.longitude,

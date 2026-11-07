@@ -13,9 +13,14 @@ from app.database import get_db, get_read_db
 from app.models import User
 
 
+BCRYPT_ROUNDS = int(os.getenv("BCRYPT_ROUNDS", "10"))
+if BCRYPT_ROUNDS < 10:
+    raise RuntimeError("BCRYPT_ROUNDS must be at least 10")
+
 pwd_context = CryptContext(
     schemes=["bcrypt"],
-    deprecated="auto"
+    deprecated="auto",
+    bcrypt__rounds=BCRYPT_ROUNDS,
 )
 
 security = HTTPBearer()

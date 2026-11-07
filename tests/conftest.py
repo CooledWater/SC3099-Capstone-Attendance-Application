@@ -254,7 +254,14 @@ def auth_headers_student(http_client, test_student) -> Dict[str, str]:
         )
 
     token = response.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"}
+    # Attendance scenarios require an explicit student opt-in under the default
+    # classroom safeguards. Consent tests can still withdraw either permission.
+    consent = http_client.put('/api/v1/users/me', headers=headers, json={
+        'camera_consent': True, 'geolocation_consent': True,
+    })
+    assert consent.status_code == 200
+    return headers
 
 
 @pytest.fixture

@@ -179,6 +179,25 @@ def get_mediapipe_face_detector() -> Any:
     return detector
 
 
+def get_dlib_face_detector() -> Any:
+    """Own the mutable HOG scanner per worker, rather than share the API singleton.
+
+    face_recognition.face_locations uses one process-global dlib detector.
+    Concurrent calls to that scanner can mix boxes or crash in native code.
+    Keep the same model, upsampling and box convention without serializing
+    unrelated requests or retaining any request pixels in Python.
+    """
+    detector = getattr(_thread_models, "dlib_detector", None)
+    if detector is None:
+        try:
+            backend = importlib.import_module("dlib")
+            detector = backend.get_frontal_face_detector()
+        except Exception as exc:
+            raise ModelUnavailableError("The dlib HOG face detector failed to load") from exc
+        _thread_models.dlib_detector = detector
+    return detector
+
+
 def close_thread_local_models() -> None:
     """Close models held by the current thread, primarily for test teardown."""
 
@@ -188,6 +207,8 @@ def close_thread_local_models() -> None:
         if callable(close):
             close()
         delattr(_thread_models, "face_detector")
+    if hasattr(_thread_models, "dlib_detector"):
+        delattr(_thread_models, "dlib_detector")
 
 
 def _clip_css_box(
@@ -299,20 +320,13 @@ def _mediapipe_candidates(image: np.ndarray) -> tuple[_MediaPipeCandidate, ...]:
 
 
 def _dlib_locations(image: np.ndarray) -> tuple[CssBoundingBox, ...]:
-    backend = get_face_recognition_backend()
+    detector = get_dlib_face_detector()
     try:
-        raw_boxes = backend.face_locations(
-            image,
-            number_of_times_to_upsample=0,
-            model="hog",
-        )
+        rectangles = detector(image, 0)
         # Small images are cheap to retry and benefit most from one upsample.
-        if not raw_boxes and max(image.shape[:2]) <= 512:
-            raw_boxes = backend.face_locations(
-                image,
-                number_of_times_to_upsample=1,
-                model="hog",
-            )
+        if not rectangles and max(image.shape[:2]) <= 512:
+            rectangles = detector(image, 1)
+        raw_boxes = [(box.top(), box.right(), box.bottom(), box.left()) for box in rectangles]
     except Exception as exc:
         raise FaceDetectionError("dlib HOG face detection failed") from exc
 

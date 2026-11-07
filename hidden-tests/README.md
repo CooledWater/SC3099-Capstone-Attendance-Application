@@ -1,5 +1,10 @@
 # Hidden-style assessment suite
 
+Post-handoff fixes and current execution results are recorded separately in
+[`FIX_SUMMARY.md`](FIX_SUMMARY.md). The baseline reports below and in `RESULTS.md`
+remain historical evidence. The current harness uses private real Redis for both
+profiles and the backend deployment entry point; assessment assertions are unchanged.
+
 These are independently written tests based on `docs/Briefing.md`, the API,
 database, security and integration specifications, and the prior coverage audit.
 They are not the assessors' undisclosed tests and do not predict a grade. The

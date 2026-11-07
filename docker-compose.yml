@@ -53,6 +53,7 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
       STRICT_SECURITY_MODE: ${STRICT_SECURITY_MODE:-false}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8501}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
