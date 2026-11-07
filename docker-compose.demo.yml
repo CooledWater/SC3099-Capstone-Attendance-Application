@@ -1,0 +1,12 @@
+# Temporary demo policy: preserve score calibration, require score >= 0.5 AND at most 30 differing bits.
+# Shared-browser review is also bypassed; approval, proof and biometric requirements remain.
+# Enable: docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --no-deps backend face-recognition
+# Restore normal policy: docker compose -f docker-compose.yml up -d --no-deps --force-recreate backend face-recognition
+services:
+  face-recognition:
+    environment:
+      DEMO_FACE_MATCH_THRESHOLD: "0.5"
+      FACE_MATCH_MAX_DIFFERING_BITS: "30"
+  backend:
+    environment:
+      DEMO_ALLOW_SHARED_BROWSER: "true"

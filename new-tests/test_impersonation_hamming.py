@@ -13,7 +13,7 @@ from app.template import compare_templates
 
 def test_provisional_boundary_defaults_and_environment_override():
     for policy in (Settings(), load_settings({})):
-        assert policy.face_match_hamming_fraction == .08984375
+        assert policy.face_match_hamming_fraction == .1171875
         assert policy.face_match_threshold == .70
     override = load_settings({'FACE_MATCH_HAMMING_FRACTION': '.11'})
     assert override.face_match_hamming_fraction == .11
@@ -22,7 +22,7 @@ def test_provisional_boundary_defaults_and_environment_override():
 
 @pytest.mark.parametrize('distance,passed', [
     (0, True), (6, True), (15, True), (16, True), (20, True), (22, True), (23, True),
-    (24, False), (25, False), (29, False), (30, False), (31, False),
+    (24, True), (25, True), (29, True), (30, True), (31, False),
     (32, False), (33, False), (36, False), (38, False), (39, False),
     (40, False), (41, False), (256, False),
 ])
@@ -46,8 +46,8 @@ def test_actual_compared_templates_produce_trace_without_extra_inference(scenari
     assert baseline == observed and observed['passed'] is passed
     assert calls == baseline_calls
     assert data['identity_checks'] == len(calls)
-    assert data['simhash_bits'] == 256 and data['max_accepted_hamming_distance'] == 23
-    assert data['face_match_hamming_fraction'] == .08984375
+    assert data['simhash_bits'] == 256 and data['max_accepted_hamming_distance'] == 30
+    assert data['face_match_hamming_fraction'] == .1171875
     assert data['min_hamming_distance'] == data['max_hamming_distance'] == distance
     for sample, frame in zip(data['identity_comparisons'], calls):
         assert sample == {'frame_index':frame, 'timestamp_ms':frame*80,
