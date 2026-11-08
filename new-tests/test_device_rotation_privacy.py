@@ -90,16 +90,23 @@ def password(world):
     return {'password': 'testpass123'}
 
 
-def test_deletion_requires_password_is_idempotent_and_cancellable(world):
+def test_deletion_requires_password_closes_access_and_cannot_be_cancelled(world):
     credentials = password(world)
     assert world[0].post('/api/v1/users/me/deletion-request', json={'password': 'wrong'}).status_code == 403
     response = world[0].post('/api/v1/users/me/deletion-request', json=credentials)
     assert response.status_code == 200, response.text
     date = response.json()['scheduled_deletion_at']
     assert datetime.fromisoformat(date) > datetime.utcnow() + timedelta(days=29)
-    assert world[0].post('/api/v1/users/me/deletion-request', json=credentials).json()['scheduled_deletion_at'] == date
+    assert world[0].post('/api/v1/users/me/deletion-request', json=credentials).status_code == 403
+    # This fixture overrides authentication; the real-JWT closure suite checks session denial.
     assert world[0].get('/api/v1/users/me/deletion-request').json()['scheduled_deletion_at'] == date
-    assert world[0].request('DELETE', '/api/v1/users/me/deletion-request', json=credentials).json()['scheduled_deletion_at'] is None
+    assert world[0].request('DELETE', '/api/v1/users/me/deletion-request', json=credentials).status_code == 403
+    with SessionLocal() as db:
+        user = db.get(User, world[2][0])
+        assert user.is_active is False
+        assert user.scheduled_deletion_at == datetime.fromisoformat(date)
+    # Finish this account's lifecycle so it cannot leak a due request to another test.
+    assert purge_due_students(now=datetime.utcnow() + timedelta(days=31)) == 1
     world[1][0] = world[2][1]
     assert world[0].get('/api/v1/users/me/deletion-request').status_code == 403
 

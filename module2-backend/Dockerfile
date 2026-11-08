@@ -19,4 +19,7 @@ COPY . .
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Direct deployment: never reinterpret arbitrary forwarded headers. A deployment
+# with a trusted reverse proxy must explicitly override the command with
+# --proxy-headers --forwarded-allow-ips=<exact proxy addresses> (never '*').
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

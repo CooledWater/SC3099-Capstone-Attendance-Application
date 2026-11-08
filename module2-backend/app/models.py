@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime
+from pathlib import Path
+from datetime import datetime, timedelta
 
 from sqlalchemy import (
     event,
@@ -548,7 +549,12 @@ class CheckIn(Base):
     appeal_reason = Column(Text, nullable=True)
     appealed_at = Column(DateTime, nullable=True)
 
-    scheduled_deletion_at = Column(DateTime, nullable=True)
+    scheduled_deletion_at = Column(
+        DateTime, nullable=True,
+        default=lambda context: (
+            context.get_current_parameters().get('checked_in_at') or datetime.utcnow()
+        ) + timedelta(days=30),
+    )
 
 
 Index(
@@ -667,6 +673,8 @@ class AuditLog(Base):
 
     Deliberately has NO ``updated_at``, and the ORM listeners below refuse any
     UPDATE/DELETE issued through a mapped instance: rows are append-only.
+    PostgreSQL also rejects SQL UPDATE/DELETE/TRUNCATE through the creation
+    trigger below (existing databases apply the explicit SQL migration).
     ``details`` is a JSON document stored as TEXT.
     """
 
@@ -708,6 +716,15 @@ class AuditLog(Base):
 
 
 Index("ix_audit_logs_resource", AuditLog.resource_type, AuditLog.resource_id)
+
+
+@event.listens_for(AuditLog.__table__, "after_create")
+def _install_audit_append_only(table, connection, **kwargs):
+    # create_all does not alter existing tables. Existing deployments apply the
+    # reviewed SQL migration explicitly; never migrate a shared DB on import.
+    if connection.dialect.name == 'postgresql':
+        migration = Path(__file__).resolve().parents[1] / 'migrations' / '20261108_audit_append_only.sql'
+        connection.exec_driver_sql(migration.read_text())
 
 
 @event.listens_for(AuditLog, "before_update")

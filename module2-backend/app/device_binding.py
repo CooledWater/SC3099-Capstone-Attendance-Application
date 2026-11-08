@@ -114,7 +114,7 @@ def account_fingerprint(user_id, browser_fingerprint):
 
 def lock_account(db, user_id):
     # PostgreSQL serializes registration/reactivation for the same account.
-    db.query(User).filter_by(id=user_id).with_for_update().one()
+    return db.query(User).filter_by(id=user_id).populate_existing().with_for_update().one()
 
 
 def active_count(db, user_id):
@@ -283,7 +283,9 @@ def issue(payload: ChallengeRequest, user: User = Depends(require_roles('student
 
 def resolve(db, user, payload):
     # Lock against approval/revocation changes while the attendance is committed.
-    lock_account(db, user.id)
+    account = lock_account(db, user.id)
+    if not account.is_active:
+        raise HTTPException(401, 'User not found or inactive')
     device = find_device(db, user.id, payload.device_fingerprint)
     active = active_count(db, user.id)
     # More than two active devices only arises from an explicit admin exception,

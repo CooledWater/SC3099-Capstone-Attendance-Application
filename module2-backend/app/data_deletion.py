@@ -3,9 +3,9 @@ import asyncio
 import logging
 import secrets
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import inspect, Table, MetaData
+from sqlalchemy import inspect, Table, MetaData, or_, and_
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.auth import require_roles, verify_password, hash_password
@@ -39,7 +39,7 @@ def deletion_status(user=Depends(require_roles('student'))):
 
 
 @router.post('')
-def request_deletion(payload: PasswordConfirmation, db: Session = Depends(get_db), user=Depends(require_roles('student'))):
+def request_deletion(payload: PasswordConfirmation, response: Response, db: Session = Depends(get_db), user=Depends(require_roles('student'))):
     from app.device_binding import lock_account
     from app.security import enforce_rate_limit
     enforce_rate_limit('privacy-confirmation', user.id, 10, 3600)
@@ -48,11 +48,19 @@ def request_deletion(payload: PasswordConfirmation, db: Session = Depends(get_db
     if not user.is_active or user.role != 'student':
         raise HTTPException(403, 'An active student account is required')
     confirm_password(user, payload.password)
-    if user.scheduled_deletion_at is None:
-        user.scheduled_deletion_at = datetime.utcnow() + timedelta(days=30)
-        create_audit_log(db, 'user_updated', user.id, user.id, details={'event': 'data_deletion_requested'})
-        db.commit()
-    return result(user)
+    user.is_active = False
+    user.scheduled_deletion_at = datetime.utcnow() + timedelta(days=30)
+    deadline = user.scheduled_deletion_at
+    create_audit_log(db, 'user_updated', user.id, user.id,
+                     details={'event': 'account_closed', 'is_active': False,
+                              'scheduled_deletion_at': deadline.isoformat()})
+    db.commit()
+    # Database activity checks revoke every access/refresh session, including
+    # other browsers. Clear both local app cookies after the closure commits.
+    from app.main import _clear_refresh_cookie
+    _clear_refresh_cookie(response)
+    _clear_refresh_cookie(response, dashboard=True)
+    return {'scheduled_deletion_at': deadline}
 
 
 @router.delete('')
@@ -120,10 +128,41 @@ def purge_due_students(factory=SessionLocal, now=None):
         return len(users)
 
 
+def purge_expired_checkins(factory=SessionLocal, now=None, batch_size=100):
+    """Delete due attendance only; accounts and immutable audit logs survive.
+
+    Legacy NULL deadlines expire from checked_in_at, without a data backfill.
+    Row locks partition batches between workers; child cleanup and deletion
+    commit atomically and can be retried after any failure.
+    """
+    from app.push_notifications import PushDelivery
+    now = now or datetime.utcnow()
+    with factory() as db:
+        ids = [row[0] for row in db.query(CheckIn.id).filter(or_(
+            CheckIn.scheduled_deletion_at <= now,
+            and_(CheckIn.scheduled_deletion_at.is_(None),
+                 CheckIn.checked_in_at <= now - timedelta(days=30)),
+        )).order_by(CheckIn.checked_in_at, CheckIn.id).limit(batch_size)
+            .with_for_update(skip_locked=True).all()]
+        if not ids:
+            return 0
+        db.query(PushDelivery).filter(PushDelivery.checkin_id.in_(ids)).delete(synchronize_session=False)
+        if inspect(db.connection()).has_table('risk_signals'):
+            signals = Table('risk_signals', MetaData(), autoload_with=db.connection())
+            db.execute(signals.delete().where(signals.c.checkin_id.in_(ids)))
+        db.query(CheckIn).filter(CheckIn.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        return len(ids)
+
+
 async def deletion_clock():
     while True:
         try:
             await run_in_threadpool(purge_due_students)
         except Exception:
             logging.getLogger(__name__).warning('Scheduled data cleanup unavailable; retrying')
+        try:
+            await run_in_threadpool(purge_expired_checkins)
+        except Exception:
+            logging.getLogger(__name__).warning('Check-in retention cleanup unavailable; retrying')
         await asyncio.sleep(60)

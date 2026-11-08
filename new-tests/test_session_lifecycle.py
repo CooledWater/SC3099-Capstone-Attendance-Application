@@ -217,3 +217,24 @@ async def test_clock_retries_after_database_failure(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await session_lifecycle.session_clock()
     assert len(calls) == 2
+
+
+def test_multiple_overdue_sessions_close_and_capture_every_snapshot(db):
+    from app.models import SessionAttendanceSnapshot
+    first = session(db, -120, -60)
+    second = session(db, -90, -30)
+    assert synchronize_sessions(db, NOW) == 4
+    assert first.status == second.status == 'closed'
+    assert {row.session_id for row in db.query(SessionAttendanceSnapshot)} == {first.id, second.id}
+    assert db.query(AuditLog).count() == 4
+    assert synchronize_sessions(db, NOW) == 0
+
+
+def test_targeted_reconciliation_keeps_other_due_sessions_untouched(db):
+    from app.models import SessionAttendanceSnapshot
+    target = session(db, -120, -60)
+    other = session(db, -90, -30)
+    assert synchronize_sessions(db, NOW, session_id=target.id) == 2
+    assert target.status == 'closed'
+    assert other.status == 'scheduled'
+    assert {row.session_id for row in db.query(SessionAttendanceSnapshot)} == {target.id}

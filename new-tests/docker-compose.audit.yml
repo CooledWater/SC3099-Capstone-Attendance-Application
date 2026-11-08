@@ -39,5 +39,6 @@ services:
       PYTHONDONTWRITEBYTECODE: '1'
     volumes:
       - ../module2-backend/app:/app/app:ro
+      - ../module2-backend/migrations:/app/migrations:ro
       - ..:/repo:ro
       - ${SAIV_AUDIT_RESULTS_DIR:-/tmp/saiv-audit-results}:/results

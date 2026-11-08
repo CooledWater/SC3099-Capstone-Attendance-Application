@@ -43,18 +43,32 @@ recovered by this protocol; register a new browser through the usual approval fl
 
 ## Student data-deletion request
 
-**Profile → Settings → Delete my data** explains deletion and requires the current
-password. Students can view, schedule, or cancel their own request:
+**Profile → Settings → Delete my data** closes the student account immediately after
+password confirmation and an explicit acknowledgement. The frontend clears its
+credentials/offline view and signs out. Access tokens and refresh cookies from
+all browsers/apps are rejected through the existing database activity checks;
+the response also expires both local application refresh cookies.
 
-- `GET /api/v1/users/me/deletion-request`
-- `POST /api/v1/users/me/deletion-request`, body `{password}`
-- `DELETE /api/v1/users/me/deletion-request`, body `{password}`
+- `GET /api/v1/users/me/deletion-request` displays any existing cleanup deadline to an active student.
+- `POST /api/v1/users/me/deletion-request`, body `{password}`, atomically disables the account and sets `users.scheduled_deletion_at` to 30 days after closure.
+- `DELETE /api/v1/users/me/deletion-request` remains for legacy requests made under the previous active-account waiting policy. A newly closed account cannot authenticate to cancel deletion.
 
-The existing `users.scheduled_deletion_at` stores the deadline, thirty days after
-the first request. Repeated requests do not postpone it. Cancellation requires the
-password and is allowed before the deadline. Existing accounts remain usable
-until deletion; staff accounts cannot use these student endpoints. Normal
-authentication/rate limits apply, with a separate password-confirmation limit.
+There is no account-restoration flow. Ordinary admin activation/reassignment is
+blocked while the closed account awaits cleanup. Email/name, password hash and
+other personal data remain until cleanup; the account is unusable immediately.
+Existing active requests from the older policy are not migrated silently. If
+such a student confirms account closure, access ends immediately and the new
+cleanup deadline starts at that closure, as explained on the screen.
+
+The original security document's “User PII: 30 days after deletion” is ambiguous;
+this immediate-closure/30-day-cleanup interpretation was explicitly chosen by the
+user on 8 November 2026. No admin approval is required. Staff accounts cannot use
+these student endpoints. Existing authentication/password-confirmation limits
+remain. Wrong passwords leave activity and deadline unchanged.
+
+Check-in records independently expire 30 days after their check-in time. Account
+closure does not reset or extend those deadlines; account cleanup may remove
+remaining check-ins earlier. Audit history retains its separate exemption.
 
 A background worker checks due requests every minute, in batches of ten, with
 row locks. It removes the student's check-ins and associated risk signals, device

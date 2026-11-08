@@ -1,4 +1,4 @@
-"""Opt-in safeguards that preserve the published classroom API by default."""
+"""Rate limits and refresh revocation apply in both classroom and strict modes."""
 import hashlib
 import json
 import os
@@ -45,12 +45,10 @@ def redis_client():
 
 
 def enforce_rate_limit(category, identity, limit, seconds):
-    if not strict_mode():
-        return
     key = 'saiv:limit:' + category + ':' + hashlib.sha256(identity.encode()).hexdigest()
     try:
         count = redis_client().eval("local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n", 1, key, seconds)
-    except redis.RedisError:
+    except (redis.RedisError, KeyError):
         raise HTTPException(503, 'Security service unavailable; retry later')
     if count > limit:
         raise HTTPException(429, 'Too many requests; retry later', headers={'Retry-After': str(seconds)})
@@ -61,23 +59,19 @@ def _refresh_key(token):
 
 
 def check_refresh(token):
-    if not strict_mode():
-        return
     try:
         used = redis_client().exists(_refresh_key(token))
-    except redis.RedisError:
+    except (redis.RedisError, KeyError):
         raise HTTPException(503, 'Security service unavailable; retry later')
     if used:
         raise HTTPException(401, 'Refresh token already used or revoked')
 
 
 def consume_refresh(token, payload, reject_reuse=True):
-    if not strict_mode():
-        return
     ttl = max(1, int(payload['exp'] - time.time()) + 1)
     try:
         fresh = redis_client().set(_refresh_key(token), '1', nx=True, ex=ttl)
-    except redis.RedisError:
+    except (redis.RedisError, KeyError):
         raise HTTPException(503, 'Security service unavailable; retry later')
     if reject_reuse and not fresh:
         raise HTTPException(401, 'Refresh token already used or revoked')

@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import engine, Base, get_db, get_read_db
-from app.session_lifecycle import session_lifespan, get_session_db
+from app.session_lifecycle import session_lifespan, get_session_db, synchronize_checkin_session
 from app import models
 from app.models import AuditLog, User, Course, Enrollment, Session as SessionModel, SessionAssistant, CheckIn, Device
 from app.schemas import (
@@ -400,7 +400,7 @@ def logout_user(
     # valid token the client presented; an anonymous logout logs nothing.
     dashboard = request.url.path == "/api/v1/auth/dashboard/logout"
     token = request.cookies.get(DASHBOARD_COOKIE_NAME if dashboard else REFRESH_COOKIE_NAME)
-    if token and strict_mode():
+    if token:
         try:
             refresh_payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
             if refresh_payload.get('type') == 'refresh':
@@ -569,13 +569,16 @@ def activate_user(
     current_user: User = Depends(require_roles("admin")),
     db: Session = Depends(get_db)
 ):
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
 
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
+
+    if user.scheduled_deletion_at is not None:
+        raise HTTPException(409, 'Account deletion is pending; the account cannot be reactivated')
 
     user.is_active = True
     create_audit_log(
@@ -781,7 +784,7 @@ def update_user(
     current_user: User = Depends(require_roles("admin")),
     db: Session = Depends(get_db)
 ):
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
 
     if not user:
         raise HTTPException(
@@ -794,6 +797,10 @@ def update_user(
         for field, value in update_data.model_dump(exclude_unset=True).items()
         if value is not None
     }
+
+    if (not user.is_active and user.scheduled_deletion_at is not None
+            and (updates.get('is_active') is True or 'role' in updates)):
+        raise HTTPException(409, 'Account deletion is pending; the account cannot be restored or reassigned')
 
     for field, value in updates.items():
         setattr(user, field, value)
@@ -2167,12 +2174,13 @@ def _assess_checkin_geofence(
     radius = venue["radius_meters"]
 
     if radius > 0:
-        # Linear risk scaling between the two documented reference points:
-        # 0.0 at the venue itself, 1.0 (capped) at the "2x geofence" line
-        # that API-SPECIFICATION.md already defines as the hard-reject cutoff.
-        risk_score = min(distance / radius, 2.0) / 2.0
-        exceeds_hard_limit = distance > 2 * radius
-        outside_bounds = distance > radius
+        # A micrometre tolerance absorbs Haversine round-off at exact edges;
+        # it does not change the policy for millimetre boundary probes.
+        outside_bounds = distance > radius and not math.isclose(distance, radius, rel_tol=0, abs_tol=1e-6)
+        exceeds_hard_limit = distance > 2 * radius and not math.isclose(distance, 2 * radius, rel_tol=0, abs_tol=1e-6)
+        # Inside the inclusive radius contributes no geo risk. Preserve the
+        # existing graded outside score and >2x hard rejection.
+        risk_score = min(distance / radius, 2.0) / 2.0 if outside_bounds else 0.0
     else:
         # Degenerate zero-radius geofence: any nonzero distance is outside.
         risk_score = 1.0 if distance > 0 else 0.0
@@ -2369,10 +2377,10 @@ def _combine_checkin_assessment(
 def create_checkin(
     checkin_data: CheckInCreate,
     current_user: User = Depends(require_roles("student")),
-    db: Session = Depends(get_session_db)
+    db: Session = Depends(get_db)
 ):
     enforce_rate_limit('checkin', current_user.id, 10, 60)
-    if strict_mode() and not (current_user.camera_consent and current_user.geolocation_consent):
+    if not (current_user.camera_consent and current_user.geolocation_consent):
         raise HTTPException(403, 'Camera and geolocation consent are required')
     # Session, its course, and the enrollment/duplicate-checkin flags all in
     # one round trip: each network round trip to the (remote) database costs
@@ -2408,13 +2416,14 @@ def create_checkin(
 
     session, course, has_active_enrollment, has_duplicate_checkin, requires_motion = row
 
+    now = datetime.utcnow()
+    synchronize_checkin_session(db, session, now)
+
     if session.status != "active":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Session is not active"
         )
-
-    now = datetime.utcnow()
 
     if now < session.checkin_opens_at or now > session.checkin_closes_at:
         raise HTTPException(
@@ -2509,6 +2518,7 @@ def create_checkin(
         student_id=current_user.id,
         status=checkin_status,
         checked_in_at=now,
+        scheduled_deletion_at=now + timedelta(days=30),
         verified_at=now if checkin_status == "approved" else None,
         latitude=checkin_data.latitude,
         longitude=checkin_data.longitude,

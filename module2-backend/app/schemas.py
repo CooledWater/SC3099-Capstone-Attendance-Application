@@ -7,6 +7,15 @@ from app.password_policy import validate_new_password
 class RequestModel(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
+    @field_validator('latitude', 'longitude', 'venue_latitude', 'venue_longitude',
+                     'location_accuracy_meters', mode='before', check_fields=False)
+    @classmethod
+    def reject_boolean_coordinates(cls, value):
+        # bool subclasses int, and Pydantic otherwise turns True into 1.0.
+        if isinstance(value, bool):
+            raise ValueError('Location values must be numbers, not booleans')
+        return value
+
 
 class PasswordRequest(RequestModel):
     password: str = Field(max_length=72)

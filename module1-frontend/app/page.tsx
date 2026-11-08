@@ -101,12 +101,16 @@ export default function Home() {
     return () => { window.clearInterval(timer); window.removeEventListener('focus', reconnect); };
   }, [offlineView, user]);
 
-  async function signOut() {
+  async function signOut(accountClosed = false) {
     signedOut.current = true;
     try { sessionStorage.setItem('saiv.student.signed-out', 'true'); } catch { /* Storage is optional. */ }
+    if (accountClosed) {
+      clearTokens();
+      setProfileOpen(false); setOfflineView(false); setSnapshot(null); setUser(undefined); setBusy(false);
+    }
     // Remove offline access before waiting for a backend logout request.
-    await disablePush().catch(() => undefined);
     await clearOfflineSessions().catch(() => undefined);
+    await disablePush().catch(() => undefined);
     if (navigator.onLine) await logout();
     else clearTokens();
     setProfileOpen(false); setOfflineView(false); setSnapshot(null); setUser(undefined); setBusy(false);
@@ -117,7 +121,7 @@ export default function Home() {
     <div className="profile-card"><AppLogo size={80}/><h1>Your profile</h1>
       {user && <dl><dt>Name</dt><dd>{user.full_name}</dd><dt>Email</dt><dd>{user.email}</dd><dt>Account</dt><dd>{user.role}</dd></dl>}
       <p><a className="button primary" href="/dashboard" target="_blank" rel="noopener noreferrer">Open dashboard in browser ↗</a></p>
-      {user && <PermissionSettings user={user} demo={false} onChange={setUser}/>}
+      {user && <PermissionSettings user={user} demo={false} onChange={setUser} onDeleted={() => void signOut(true)}/>}
       {user && <MyDevices userId={user.id} demo={false} visible={profileOpen} onRegistered={() => setDeviceError('')}/>}
       <PwaInstall busy={busy || restoring}/>
     </div>

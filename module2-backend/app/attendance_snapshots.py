@@ -5,17 +5,20 @@ from datetime import datetime, timedelta
 from app.models import AuditLog, Enrollment, Session as Meeting, SessionAttendanceSnapshot as Snapshot
 
 
-def capture_attendance_snapshots(db, now=None):
+def capture_attendance_snapshots(db, now=None, *, session_id=None):
     """Backfill missing held sessions using available immutable enrollment events.
 
     Call inside the lifecycle/enrollment transaction. Existing snapshots are never
     updated, including on re-enrollment or subsequent scheduler ticks.
     """
     now = now or datetime.utcnow()
-    meetings = db.query(Meeting).outerjoin(Snapshot, Snapshot.session_id == Meeting.id).filter(
+    query = db.query(Meeting).outerjoin(Snapshot, Snapshot.session_id == Meeting.id).filter(
         Snapshot.session_id.is_(None), Meeting.status.in_(("active", "closed")),
         Meeting.scheduled_start <= now,
-    ).order_by(Meeting.id).all()
+    )
+    if session_id is not None:
+        query = query.filter(Meeting.id == session_id)
+    meetings = query.order_by(Meeting.id).all()
     if not meetings:
         return 0
     course_ids = {meeting.course_id for meeting in meetings}
