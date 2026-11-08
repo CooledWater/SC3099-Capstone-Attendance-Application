@@ -5,19 +5,24 @@ services:
   # Infrastructure Services
   # ==========================================================================
 
+  # Local PostgreSQL is the only application database. The schema is created
+  # by the backend on first start (SQLAlchemy create_all); data persists in the
+  # postgres_data volume until `docker compose down -v`.
   postgres:
     image: postgres:15-alpine
     container_name: saiv-postgres
     environment:
-      POSTGRES_USER: saiv
-      POSTGRES_PASSWORD: saiv_password
-      POSTGRES_DB: saiv
+      POSTGRES_USER: ${POSTGRES_USER:-saiv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-saiv_password}
+      POSTGRES_DB: ${POSTGRES_DB:-saiv}
+      TZ: UTC
+      PGTZ: UTC
     ports:
-      - "5434:5432"
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U saiv"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -49,7 +54,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in the root .env file}"
+      # Always the bundled local PostgreSQL container. Deliberately not read
+      # from a DATABASE_URL variable, so a stale external URL in .env can
+      # never redirect the backend to a remote database.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-saiv}:${POSTGRES_PASSWORD:-saiv_password}@postgres:5432/${POSTGRES_DB:-saiv}
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
       STRICT_SECURITY_MODE: ${STRICT_SECURITY_MODE:-false}
@@ -63,6 +71,8 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -116,7 +126,8 @@ services:
     ports:
       - "8501:8501"
     environment:
-      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set}"
+      # Listed for INTEGRATION-GUIDE.md parity; the dashboard reads data via the backend API.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-saiv}:${POSTGRES_PASSWORD:-saiv_password}@postgres:5432/${POSTGRES_DB:-saiv}
       BACKEND_URL: http://backend:8000
       DASHBOARD_BASE_PATH: /dashboard/
       VITE_API_BASE_URL: /api/v1

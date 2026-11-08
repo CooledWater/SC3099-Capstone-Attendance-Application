@@ -7,7 +7,7 @@ Without --apply, the transaction rolls back after reporting affected counts.
 import json
 import sys
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, inspect, text
 from app.database import engine
 
 
@@ -23,8 +23,8 @@ DEPENDENCIES = [
 
 
 def cleanup(apply=False):
-    if engine.dialect.name != "postgresql" or "supabase" not in (engine.url.host or ""):
-        raise RuntimeError("Expected the configured Supabase PostgreSQL database")
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("Expected the configured PostgreSQL database")
     with engine.connect() as connection:
         transaction = connection.begin()
         try:
@@ -48,7 +48,12 @@ def cleanup(apply=False):
                 "SELECT id FROM courses WHERE lower(trim(name)) <> :name"
             ), {"name": "test course"}).scalars())
             counts = {}
+            existing = set(inspect(connection).get_table_names())
             for table, column, parent in DEPENDENCIES:
+                if table not in existing:
+                    # Legacy tables (e.g. account_invitations) are absent on fresh schemas.
+                    counts[table] = 0
+                    continue
                 # Identifiers come only from the constant whitelist above.
                 related_counts = values(f"SELECT count(*) FROM {table} WHERE {column} IN :ids", ids[parent])
                 counts[table] = related_counts[0] if related_counts else 0

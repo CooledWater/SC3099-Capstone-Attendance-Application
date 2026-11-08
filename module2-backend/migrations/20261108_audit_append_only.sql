@@ -1,4 +1,4 @@
--- PostgreSQL 14+ / Supabase. Apply explicitly in a transaction to an existing
+-- PostgreSQL 14+. Apply explicitly in a transaction to an existing
 -- deployment using its schema owner; fresh ORM schemas install this at creation.
 -- No rows are changed. Audit inserts, selects and FK anchors remain available.
 -- Use a nonowner runtime role with SELECT/INSERT only on audit_logs; do not grant

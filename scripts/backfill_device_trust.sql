@@ -1,4 +1,4 @@
--- Backfill existing devices for the device trust/approval rules (PostgreSQL / Supabase).
+-- Backfill existing devices for the device trust/approval rules (PostgreSQL).
 --
 -- Rules now enforced by the backend: a user's 1st device is HIGH and auto-approved, the 2nd
 -- is LOW and pending admin approval (check-ins allowed but flagged), and registrations beyond
@@ -25,7 +25,7 @@
 -- Re-runnable: a second run approves nothing (approved users are skipped, and any device an
 -- admin later revokes has an audit record). Runs in one transaction that ROLLS BACK by default:
 -- review the preview, then change the final ROLLBACK to COMMIT.
--- Do not run against the shared Supabase database without team sign-off.
+-- Fresh local databases do not need it. Run only against a database that holds pre-change devices.
 
 BEGIN;
 

@@ -69,6 +69,11 @@ Your team will implement 4 modules:
 
 ### Quick Start
 
+> **Full local deployment:** see [LOCAL-SETUP.md](LOCAL-SETUP.md). The stack is
+> self-contained. The backend uses the bundled PostgreSQL container, and no external
+> database or Supabase project is needed. Run `Copy-Item .env.example .env` (optional),
+> then `docker compose up -d --build`.
+
 ```bash
 # Navigate to project directory
 cd student-starter

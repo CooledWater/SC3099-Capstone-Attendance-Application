@@ -1,4 +1,4 @@
--- Session-level TA assignments (PostgreSQL / Supabase). NOT executed automatically.
+-- Session-level TA assignments (PostgreSQL). NOT executed automatically.
 --
 -- Adds session_assistants, matching app/models.py SessionAssistant. A TA can reach a
 -- session only through a row here AND a course_assistants row for the session's course,

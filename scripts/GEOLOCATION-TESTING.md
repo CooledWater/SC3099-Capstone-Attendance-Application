@@ -33,7 +33,7 @@ Re-running is safe:
 ## Running it
 
 Before you start:
-- The backend is running on `http://localhost:8000` against the shared Supabase project.
+- The backend is running on `http://localhost:8000` against the local Docker PostgreSQL database (`docker compose up -d`).
 - You have the venue coordinates. Measure them on site (for example, drop a pin in Google Maps and copy the latitude and longitude to 6 decimal places). Never guess them.
 - You have the instructor and admin passwords. They are typed at hidden prompts and are never printed or saved. The test student passwords are in the git-ignored `.secrets/sc3099-test-accounts.csv`.
 

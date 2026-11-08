@@ -431,9 +431,9 @@ class SessionAttendanceSnapshot(Base):
 class Venue(Base):
     """Admin-maintained catalogue of lecture halls instructors pick from.
 
-    Not in DATABASE-SCHEMA.md (user-approved extension, 2026-10-25). The live
-    Supabase table was created by hand with matching SQL, so create_all() only
-    builds it on fresh/test databases. Sessions copy a venue's coordinates into
+    Not in DATABASE-SCHEMA.md (user-approved extension, 2026-10-25). create_all()
+    builds it on fresh databases; rows are admin-maintained (see
+    scripts/seed_local_venues.sql). Sessions copy a venue's coordinates into
     their own venue_* columns, so geofencing never reads this table.
     """
 
