@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import (
     event,
+    true,
     Column,
     String,
     Boolean,
@@ -63,12 +64,14 @@ class User(Base):
 
     camera_consent = Column(
         Boolean,
-        default=False
+        default=True,
+        server_default=true()
     )
 
     geolocation_consent = Column(
         Boolean,
-        default=False
+        default=True,
+        server_default=true()
     )
 
     face_embedding_hash = Column(
