@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .attestation import verify_device_attestation
+from .admission import InferenceAdmission
 from .config import settings
 from .detection import (
     FaceDetectionError,
@@ -150,6 +151,7 @@ class ContentLengthLimitMiddleware:
 
 
 app.add_middleware(ContentLengthLimitMiddleware)
+app.add_middleware(InferenceAdmission, concurrency=settings.inference_concurrency)
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,

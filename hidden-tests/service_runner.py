@@ -26,8 +26,12 @@ def main():
                 db.add(User(email="hidden-admin@example.org", full_name="Disposable test administrator",
                             role="admin", hashed_password=hash_password(os.environ["SAIV_HIDDEN_PASSWORD"])))
                 db.commit()
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=int(port), access_log=False, log_level="warning")
+    if role == 'backend':
+        # Exercise the deployment entry point, including its proxy trust policy.
+        from app.server import run
+    else:
+        from uvicorn import run
+    run(app, host="127.0.0.1", port=int(port), access_log=False, log_level="warning")
 
 
 if __name__ == "__main__":

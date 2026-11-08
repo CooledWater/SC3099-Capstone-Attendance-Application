@@ -128,10 +128,10 @@ class TestBasicPerformance:
     def test_concurrent_logins(self, client):
         """Test handling of concurrent login requests."""
         def perform_login():
+            email = f"perf_{uuid.uuid4().hex[:8]}@test.com"
             try:
                 # Register unique user
-                email = f"perf_{uuid.uuid4().hex[:8]}@test.com"
-                client.post("/api/v1/auth/register", json={
+                register_response = client.post("/api/v1/auth/register", json={
                     "email": email,
                     "password": "testpass123",
                     "full_name": "Performance Test",
@@ -143,14 +143,28 @@ class TestBasicPerformance:
                     "email": email,
                     "password": "testpass123"
                 })
-                return response.status_code == 200
-            except Exception:
-                return False
+                return {
+                    "email": email,
+                    "register_status": register_response.status_code,
+                    "register_detail": register_response.text[:200] if register_response.status_code != 201 else None,
+                    "login_status": response.status_code,
+                    "login_detail": response.text[:200] if response.status_code != 200 else None,
+                    "success": response.status_code == 200,
+                }
+            except Exception as exc:
+                return {
+                    "email": email,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "success": False,
+                }
 
         # Run 10 concurrent logins
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(perform_login) for _ in range(10)]
             results = [f.result() for f in as_completed(futures)]
 
-        success_rate = sum(results) / len(results)
-        assert success_rate >= 0.8, f"Success rate {success_rate:.0%} < 80%"
+        success_rate = sum(result["success"] for result in results) / len(results)
+        assert success_rate >= 0.8, (
+            f"Success rate {success_rate:.0%} < 80%; "
+            f"worker results: {results}"
+        )

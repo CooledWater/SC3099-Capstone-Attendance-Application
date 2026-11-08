@@ -1,5 +1,4 @@
 import uuid
-from pathlib import Path
 from datetime import datetime, timedelta
 
 from sqlalchemy import (
@@ -550,7 +549,7 @@ class CheckIn(Base):
     appealed_at = Column(DateTime, nullable=True)
 
     scheduled_deletion_at = Column(
-        DateTime, nullable=True,
+        DateTime, nullable=True, index=True,
         default=lambda context: (
             context.get_current_parameters().get('checked_in_at') or datetime.utcnow()
         ) + timedelta(days=30),
@@ -719,12 +718,10 @@ Index("ix_audit_logs_resource", AuditLog.resource_type, AuditLog.resource_id)
 
 
 @event.listens_for(AuditLog.__table__, "after_create")
-def _install_audit_append_only(table, connection, **kwargs):
-    # create_all does not alter existing tables. Existing deployments apply the
-    # reviewed SQL migration explicitly; never migrate a shared DB on import.
-    if connection.dialect.name == 'postgresql':
-        migration = Path(__file__).resolve().parents[1] / 'migrations' / '20261108_audit_append_only.sql'
-        connection.exec_driver_sql(migration.read_text())
+def _protect_audit_storage(table, connection, **kwargs):
+    # Both fresh schemas and explicit Alembic upgrades share the same guards.
+    from app.audit_storage import install_audit_guards
+    install_audit_guards(connection)
 
 
 @event.listens_for(AuditLog, "before_update")

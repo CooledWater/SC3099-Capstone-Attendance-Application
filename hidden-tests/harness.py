@@ -228,6 +228,7 @@ class Runtime:
                    CHECKIN_DIAGNOSTICS_ENABLED="false", CHECKIN_DIAGNOSTIC_SESSION_IDS="",
                    MPLCONFIGDIR=str(self.directory / "matplotlib"), PAD_MODE="enforce", PAD_THRESHOLD="0.75",
                    FACE_MATCH_THRESHOLD="0.70", LIVENESS_THRESHOLD="0.85")
+        env['FORWARDED_ALLOW_IPS'] = ''
         env.pop("PYTHONPATH", None)
         return env
 
@@ -245,7 +246,7 @@ class Runtime:
             else:
                 env["DATABASE_URL"] = "sqlite:///" + str(self.directory / (key + ".sqlite3"))
             env["STRICT_SECURITY_MODE"] = str(strict).lower()
-            env["REDIS_URL"] = f"redis://127.0.0.1:{self.redis()}/{'1' if strict else '0'}" if strict else "redis://127.0.0.1:1/0"
+            env["REDIS_URL"] = f"redis://127.0.0.1:{self.redis()}/{'1' if strict else '0'}"
             env["FACE_SERVICE_URL"] = f"http://127.0.0.1:{self.face_port}"
             self.backends[key] = Service(self, key, free_port(), env)
         return self.backends[key]
@@ -258,10 +259,10 @@ class Runtime:
         return self.face_service
 
     def clear_limits(self, service):
-        if service.name == "strict":
+        if service.name in ("compat", "strict"):
             import redis
             with redis.Redis.from_url(service.env["REDIS_URL"]) as client:
-                client.flushdb()  # Database 1 of the Redis process this harness owns.
+                client.flushdb()  # Only the selected DB of the Redis process this harness owns.
 
     def close(self):
         for service in reversed(self.services):

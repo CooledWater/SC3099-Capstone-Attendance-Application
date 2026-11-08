@@ -1,7 +1,0 @@
-{
-  "monitor_since": "REPLACE_WITH_UTC_ISO_TIMESTAMP_BEFORE_FIRST_CHALLENGE",
-  "sessions": [
-    {"label": "real_face_control", "id": "REPLACE_WITH_CONTROL_SESSION_UUID"},
-    {"label": "phone_video", "id": "REPLACE_WITH_VIDEO_SESSION_UUID"}
-  ]
-}

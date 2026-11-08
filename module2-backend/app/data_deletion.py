@@ -103,14 +103,14 @@ def purge_due_students(factory=SessionLocal, now=None):
             db.query(BrowserRegistration).filter_by(user_id=user.id).delete(synchronize_session=False)
             # Some deployments include the documented risk_signals table in
             # addition to the mapped models. Remove its child records first.
-            if inspect(db.get_bind()).has_table('risk_signals'):
+            if inspect(db.connection()).has_table('risk_signals'):
                 signals = Table('risk_signals', MetaData(), autoload_with=db.connection())
                 db.execute(signals.delete().where(signals.c.checkin_id.in_(checkin_ids)))
             db.query(CheckIn).filter_by(student_id=user.id).delete(synchronize_session=False)
             db.query(Device).filter_by(user_id=user.id).delete(synchronize_session=False)
             db.query(Enrollment).filter_by(student_id=user.id).delete(synchronize_session=False)
             # Retired invitation metadata can still exist in older deployments.
-            if inspect(db.get_bind()).has_table('account_invitations'):
+            if inspect(db.connection()).has_table('account_invitations'):
                 legacy = Table('account_invitations', MetaData(), autoload_with=db.connection())
                 db.execute(legacy.delete().where(legacy.c.user_id == user.id))
             for fingerprint in fingerprints:
@@ -129,30 +129,8 @@ def purge_due_students(factory=SessionLocal, now=None):
 
 
 def purge_expired_checkins(factory=SessionLocal, now=None, batch_size=100):
-    """Delete due attendance only; accounts and immutable audit logs survive.
-
-    Legacy NULL deadlines expire from checked_in_at, without a data backfill.
-    Row locks partition batches between workers; child cleanup and deletion
-    commit atomically and can be retried after any failure.
-    """
-    from app.push_notifications import PushDelivery
-    now = now or datetime.utcnow()
-    with factory() as db:
-        ids = [row[0] for row in db.query(CheckIn.id).filter(or_(
-            CheckIn.scheduled_deletion_at <= now,
-            and_(CheckIn.scheduled_deletion_at.is_(None),
-                 CheckIn.checked_in_at <= now - timedelta(days=30)),
-        )).order_by(CheckIn.checked_in_at, CheckIn.id).limit(batch_size)
-            .with_for_update(skip_locked=True).all()]
-        if not ids:
-            return 0
-        db.query(PushDelivery).filter(PushDelivery.checkin_id.in_(ids)).delete(synchronize_session=False)
-        if inspect(db.connection()).has_table('risk_signals'):
-            signals = Table('risk_signals', MetaData(), autoload_with=db.connection())
-            db.execute(signals.delete().where(signals.c.checkin_id.in_(ids)))
-        db.query(CheckIn).filter(CheckIn.id.in_(ids)).delete(synchronize_session=False)
-        db.commit()
-        return len(ids)
+    """Compatibility name for the shared bounded retention cleanup."""
+    return purge_due_checkins(factory=factory, now=now, batch_size=batch_size)
 
 
 async def deletion_clock():
@@ -166,3 +144,31 @@ async def deletion_clock():
         except Exception:
             logging.getLogger(__name__).warning('Check-in retention cleanup unavailable; retrying')
         await asyncio.sleep(60)
+
+
+def purge_due_checkins(factory=SessionLocal, now=None, batch_size=500):
+    """Delete one bounded batch, including children, without touching audit rows.
+
+    PostgreSQL workers claim different rows with SKIP LOCKED. A failed batch
+    rolls back children and parents together; the next tick retries. NULL legacy
+    deadlines expire from checked_in_at too, so migration rollout/downtime cannot
+    retain them forever. Existing non-NULL deadlines remain authoritative.
+    """
+    from app.push_notifications import PushDelivery
+    now = now or datetime.utcnow()
+    if batch_size < 1:
+        raise ValueError('batch_size must be positive')
+    with factory() as db:
+        ids = [row[0] for row in db.query(CheckIn.id).filter(or_(
+            CheckIn.scheduled_deletion_at <= now,
+            and_(CheckIn.scheduled_deletion_at.is_(None), CheckIn.checked_in_at <= now - timedelta(days=30)),
+        )).order_by(CheckIn.checked_in_at, CheckIn.id).limit(batch_size).with_for_update(skip_locked=True).all()]
+        if not ids:
+            return 0
+        db.query(PushDelivery).filter(PushDelivery.checkin_id.in_(ids)).delete(synchronize_session=False)
+        if inspect(db.connection()).has_table('risk_signals'):
+            signals = Table('risk_signals', MetaData(), autoload_with=db.connection())
+            db.execute(signals.delete().where(signals.c.checkin_id.in_(ids)))
+        deleted = db.query(CheckIn).filter(CheckIn.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        return deleted

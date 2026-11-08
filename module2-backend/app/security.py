@@ -15,12 +15,12 @@ def strict_mode():
 
 
 def validate_settings():
+    if not os.getenv('REDIS_URL'):
+        raise RuntimeError('Security controls require REDIS_URL')
     if strict_mode():
         secret = os.getenv('JWT_SECRET', '')
         if len(secret) < 32 or 'your-secret' in secret.lower():
             raise RuntimeError('Strict security requires a non-placeholder JWT_SECRET of at least 32 characters')
-        if not os.getenv('REDIS_URL'):
-            raise RuntimeError('Strict security requires REDIS_URL')
 
 
 def cors_origins():
