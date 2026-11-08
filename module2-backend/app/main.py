@@ -78,7 +78,14 @@ from jose import jwt, JWTError
 from app.auth import JWT_SECRET, ALGORITHM
 
 from app import device_binding, audit, motion, prometheus_metrics, stats, attendance_roster, student_overview, venues, course_assistants
-from app.permissions import assigned_course_scope, assigned_session_scope, assists, can_staff_session, teaches
+from app.permissions import (
+    assigned_course_scope,
+    assigned_session_scope,
+    assists,
+    can_staff_session,
+    instructs_course,
+    instructs_session,
+)
 from app.security import strict_mode, enforce_rate_limit, check_refresh, consume_refresh, cors_origins
 from app.audit import create_audit_log
 from app import checkin_diagnostics, push_notifications, device_rotation, data_deletion
@@ -1407,7 +1414,8 @@ def list_course_enrollments(
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(404, "Course not found")
-    if current_user.role == "instructor" and course.instructor_id != current_user.id:
+    # Listing only: unassigned courses are readable by instructors (app/permissions.py).
+    if current_user.role == "instructor" and not instructs_course(course, current_user.id):
         raise HTTPException(403, "Insufficient permissions")
     if current_user.role == "ta" and not assists(db, current_user, course.id):
         raise HTTPException(403, "Insufficient permissions")
@@ -1573,8 +1581,8 @@ def _serialize_session_summary(db: Session, session: SessionModel, context=None)
 
 
 def _teaches_session_course(db: Session, user: User, session: SessionModel) -> bool:
-    course = db.get(Course, session.course_id)
-    return teaches(user, course.instructor_id if course else None)
+    """Assigned course instructor, or the session's creator on an unassigned course."""
+    return instructs_session(user, session, db.get(Course, session.course_id))
 
 
 def _apply_status_transition(session: SessionModel, new_status: str) -> None:
@@ -1599,7 +1607,7 @@ def create_session(
             detail="Course not found"
         )
 
-    if current_user.role == "instructor" and course.instructor_id != current_user.id:
+    if current_user.role == "instructor" and not instructs_course(course, current_user.id):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     scheduled_start = _to_naive_utc(session_data.scheduled_start)
@@ -3370,8 +3378,8 @@ def export_session_attendance(
     session, course = row
     actor_id = current_user.id
 
-    # Assigned course instructor only (app/permissions.py).
-    if current_user.role == "instructor" and not teaches(current_user, course.instructor_id):
+    # Assigned course instructor, or the session's creator on an unassigned course.
+    if current_user.role == "instructor" and not instructs_session(current_user, session, course):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions"

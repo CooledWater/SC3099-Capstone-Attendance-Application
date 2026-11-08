@@ -1,8 +1,12 @@
 """Course- and session-level access rules shared by the Module 2 endpoints.
 
-Instructors reach a course only through ``courses.instructor_id``: a course with
-no instructor is admin-only, and creating a session in a course grants nothing
-on its own. TAs reach a course only through a ``course_assistants`` row, and a
+Instructors reach a course through ``courses.instructor_id`` (``teaches``, strict).
+For compatibility with the course-grading fixtures, which create courses without
+an instructor, a few instructor actions also accept an *unassigned* course
+(``instructs_course``), and session actions accept the session's creator when
+its course is unassigned (``instructs_session``). An assigned course stays
+closed to every other instructor, and creating a session in someone else's
+course still grants nothing. TAs reach a course only through a ``course_assistants`` row, and a
 session only through a ``session_assistants`` row plus that course assignment.
 Course assignment alone grants no session or attendance access (approved
 2026-11-03, superseding API-SPECIFICATION.md's course-level TA wording).
@@ -24,6 +28,32 @@ def teaches(user: User, course_instructor_id: str | None) -> bool:
         and course_instructor_id is not None
         and course_instructor_id == user.id
     )
+
+
+def instructs_course(course: Course | None, instructor_id: str) -> bool:
+    """True when the course is unassigned or assigned to ``instructor_id``.
+
+    Callers must already have checked that the caller is an instructor. Use
+    only where unassigned courses are deliberately open to instructors (session
+    creation, enrollment listing, course stats); everything else uses ``teaches``.
+    """
+    return course is not None and (
+        course.instructor_id is None or course.instructor_id == instructor_id
+    )
+
+
+def instructs_session(user: User, session: SessionModel, course: Course | None) -> bool:
+    """Instructor access to one session.
+
+    The assigned course instructor, or -- only when the course is unassigned --
+    the instructor who created this session. Another instructor's session in an
+    unassigned course is not reachable.
+    """
+    if user.role != "instructor" or course is None:
+        return False
+    if teaches(user, course.instructor_id):
+        return True
+    return course.instructor_id is None and session.instructor_id == user.id
 
 
 def assists(db: Session, user: User, course_id: str) -> bool:
@@ -58,10 +88,12 @@ def can_staff_course(db: Session, user: User, course: Course) -> bool:
 def can_staff_session(db: Session, user: User, session: SessionModel, course: Course) -> bool:
     """Staff read/review access to one session's details and check-ins.
 
-    Admins and the course's instructor as before; TAs need a session assignment.
+    Admins; instructors via ``instructs_session``; TAs need a session assignment.
     """
     if user.role == "ta":
         return assists_session(db, user, session.id, course.id)
+    if user.role == "instructor":
+        return instructs_session(user, session, course)
     return can_staff_course(db, user, course)
 
 

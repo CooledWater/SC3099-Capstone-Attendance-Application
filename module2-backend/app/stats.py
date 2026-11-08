@@ -35,14 +35,14 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, case, func
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.database import get_read_db
 from app.models import AuditLog, CheckIn, Course, Enrollment, Session as SessionModel, User, SessionAttendanceSnapshot
 from app import prometheus_metrics
-from app.permissions import assists_session, teaches
+from app.permissions import assists_session, instructs_course, instructs_session, teaches
 
 router = APIRouter(prefix="/api/v1", tags=["stats"])
 
@@ -133,9 +133,18 @@ def _iso_day(value) -> str:
 def _can_view_course(user: User, course_instructor_id: str | None) -> bool:
     """Admins see everything; instructors see only courses assigned to them.
 
-    Courses with no assigned instructor are admin-only (app/permissions.py).
+    Strict (``teaches``): used by /stats/overview's course filter. Per-course
+    stats use ``_can_view_course_stats``, which also admits unassigned courses.
     """
     return user.role == "admin" or teaches(user, course_instructor_id)
+
+
+def _can_view_course_stats(user: User, course: Course) -> bool:
+    """Per-course stats: admins, or instructors via ``instructs_course``
+    (assigned to them, or unassigned)."""
+    return user.role == "admin" or (
+        user.role == "instructor" and instructs_course(course, user.id)
+    )
 
 
 def _course_scope(user: User, course_id: str | None) -> list:
@@ -444,7 +453,7 @@ def stats_course_overview(
     course = db.query(Course).filter(Course.id == course_id).first()
     if not course:
         raise _not_found("Course")
-    if not _can_view_course(current_user, course.instructor_id):
+    if not _can_view_course_stats(current_user, course):
         raise _forbidden()
 
     period_filters = [SessionModel.course_id == course_id]
@@ -734,7 +743,7 @@ def stats_session(
     session, course, total_enrolled = row
     total_enrolled = int(total_enrolled)
 
-    if current_user.role == "instructor" and not _can_view_course(current_user, course.instructor_id):
+    if current_user.role == "instructor" and not instructs_session(current_user, session, course):
         raise _forbidden()
     if current_user.role == "ta" and not assists_session(db, current_user, session.id, course.id):
         raise _forbidden()
@@ -895,7 +904,7 @@ def stats_course(
     course, total_enrolled = row
     total_enrolled = int(total_enrolled)
 
-    if not _can_view_course(current_user, course.instructor_id):
+    if not _can_view_course_stats(current_user, course):
         raise _forbidden()
 
     session_filters = [
@@ -1024,6 +1033,9 @@ def stats_student(
     # Sharing one course grants access only to that instructor's course data.
     # Apply the scope before aggregation and before the recent-record limit.
     scope = _course_scope(current_user, None)
+    if current_user.role == "instructor":
+        # Unassigned courses also count (instructs_course in app/permissions.py).
+        scope = [or_(Course.instructor_id == current_user.id, Course.instructor_id.is_(None))]
 
     held_sessions = (
         db.query(SessionModel.id, SessionModel.course_id)
@@ -1060,7 +1072,7 @@ def stats_student(
     )
 
     if current_user.role != "admin" and not any(
-        _can_view_course(current_user, instructor_id)
+        instructor_id is None or _can_view_course(current_user, instructor_id)
         for _, _, instructor_id, _, _, _ in course_rows
     ):
         raise _forbidden()
