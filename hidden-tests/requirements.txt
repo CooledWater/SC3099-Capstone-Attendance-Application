@@ -1,3 +1,0 @@
--r ../module2-backend/requirements.txt
--r ../module3-face-recognition/requirements.txt
-

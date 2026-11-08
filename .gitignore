@@ -17,3 +17,9 @@ module1-frontend/public/sw-precache.js
 
 # Local scheduling verification environment
 .venv-scheduling/
+
+# Pytest cache
+.pytest_cache/
+
+# Generated public-test reports
+/test-results/

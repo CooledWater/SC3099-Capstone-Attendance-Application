@@ -1,0 +1,83 @@
+# Independent, disposable public-test stack. No host ports or shared data volumes.
+# Use an explicit project: docker compose -p saiv-public-tests -f compose.public-tests.yml ...
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: public_test
+      POSTGRES_PASSWORD: test-database-only-password
+      POSTGRES_DB: public_tests
+      TZ: UTC
+      PGTZ: UTC
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U public_test -d public_tests']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --save, '', --appendonly, 'no', --requirepass, test-redis-only-password]
+    healthcheck:
+      test: [CMD, redis-cli, -a, test-redis-only-password, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  face:
+    build: ./module3-face-recognition
+    environment:
+      TELEMETRY_ENABLED: 'false'
+      JSON_LOGGING_ENABLED: 'false'
+      MPLCONFIGDIR: /tmp/matplotlib
+      PAD_MODE: enforce
+      PAD_THRESHOLD: '0.75'
+      FACE_MATCH_HAMMING_FRACTION: '0.1171875'
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 2s
+      timeout: 5s
+      start_period: 30s
+      retries: 60
+
+  backend:
+    build: ./module2-backend
+    environment:
+      DATABASE_URL: postgresql://public_test:test-database-only-password@db:5432/public_tests
+      REDIS_URL: redis://:test-redis-only-password@redis:6379/0
+      JWT_SECRET: disposable-public-tests-only-signing-secret
+      STRICT_SECURITY_MODE: 'false'
+      REFRESH_COOKIE_SECURE: 'false'
+      FORWARDED_ALLOW_IPS: ''
+      FACE_SERVICE_URL: http://face:8001
+      CHECKIN_DIAGNOSTICS_ENABLED: 'false'
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      face: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 2s
+      timeout: 5s
+      start_period: 10s
+      retries: 30
+
+  runner:
+    build: ./test-support
+    environment:
+      SAIV_PUBLIC_TEST_ISOLATION: '1'
+      DATABASE_URL: postgresql://public_test:test-database-only-password@db:5432/public_tests
+      REDIS_URL: redis://:test-redis-only-password@redis:6379/0
+      TEST_BACKEND_URL: http://backend:8000
+      API_BASE_URL: http://backend:8000
+      TEST_FACE_URL: http://face:8001
+      PYTHONPATH: /suite/tests:/opt/test-support
+    volumes:
+      - ./tests:/suite/tests:ro
+      - ./sample_images:/suite/sample_images:ro
+      - ./test-results/public:/results
+    depends_on:
+      backend: {condition: service_healthy}
+      face: {condition: service_healthy}
