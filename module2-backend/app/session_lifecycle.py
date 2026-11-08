@@ -5,17 +5,33 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 
 from fastapi import Depends
-from sqlalchemy import func, update
+from sqlalchemy import exists, func, or_, update
 from starlette.concurrency import run_in_threadpool
 
 from app.database import SessionLocal, get_db
-from app.models import Session as AttendanceSession
+from app.models import Session as AttendanceSession, SessionAttendanceSnapshot
 
 
 def synchronize_sessions(db, now=None):
     from app.audit import create_audit_log
 
     now = now or datetime.utcnow()
+    # Most requests arrive between schedule transitions. Check for work in one
+    # read instead of issuing two no-op UPDATEs, a snapshot query, and a commit
+    # for every check-in. Keep the request transaction and authenticated user's
+    # loaded attributes intact when there is nothing to reconcile.
+    due_transition = exists().where(or_(
+        (AttendanceSession.status == 'scheduled') & (AttendanceSession.scheduled_start <= now),
+        (AttendanceSession.status == 'active') & (AttendanceSession.scheduled_end <= now),
+    ))
+    missing_snapshot = exists().where(
+        AttendanceSession.status.in_(('active', 'closed')),
+        AttendanceSession.scheduled_start <= now,
+        ~exists().where(SessionAttendanceSnapshot.session_id == AttendanceSession.id),
+    )
+    if not db.query(or_(due_transition, missing_snapshot)).scalar():
+        return 0
+
     transitions = (
         ("scheduled", "active", AttendanceSession.scheduled_start,
          {"actual_start": func.coalesce(AttendanceSession.actual_start, AttendanceSession.scheduled_start)}),
